@@ -3,9 +3,15 @@ import {
   buildAxes,
   buildChartArtifacts,
   buildChartOption,
+  buildChartPaneLayout,
+  defaultPaneRatios,
   buildEndpointLabels,
   buildMovementSeries,
   normalizeChartData,
+  paneLayoutStorageKey,
+  parseStoredPaneRatios,
+  resizeAdjacentPanes,
+  serializePaneRatios,
   validateAxes,
   validateSeries,
 } from "./chartBuilders";
@@ -32,12 +38,77 @@ describe("chart builders", () => {
     expect(result?.indicators).toEqual({ macd: [], ma: [], boll: [] });
   });
 
-  it("builds only one axis and no structure series for intraday", () => {
+  it("keeps intraday price and volume in separate chart grids", () => {
     const data = base({ timeframe: "1", bars: [bar("2026-01-01 09:30:00"), bar("2026-01-01 09:31:00", 10.1)] });
     const option = buildChartOption({ data, theme: "dark", subplotVisible: [true, true], visible: { pens: true, centers: true, movements: true } });
-    expect(option?.xAxis).toHaveLength(1);
-    expect(option?.yAxis).toHaveLength(1);
-    expect(option?.series.map((item: any) => item.type)).toEqual(["line", "line"]);
+    expect(option?.xAxis).toHaveLength(3);
+    expect(option?.yAxis).toHaveLength(3);
+    expect(option?.series.map((item: any) => item.type)).toEqual(["line", "line", "bar", "bar", "line", "line", "line"]);
+    expect(option?.series[2]).toMatchObject({ xAxisIndex: 1, yAxisIndex: 1, name: "成交量" });
+    expect(option?.dataZoom[0].xAxisIndex).toEqual([0, 1, 2]);
+  });
+
+  it("uses the same contiguous pane layout for intraday and K-line charts", () => {
+    for (const intraday of [true, false]) {
+      for (const subplotCount of [1, 2, 3, 4]) {
+        const layout = buildChartPaneLayout({ requestedHeight: 560, subplotCount, intraday });
+        expect(layout.heights).toHaveLength(subplotCount + 1);
+        expect(layout.heights[0]).toBeGreaterThanOrEqual(240);
+        expect(layout.heights.slice(1).every((height) => height >= 80)).toBe(true);
+        layout.tops.slice(1).forEach((top, index) => {
+          expect(top).toBeCloseTo(layout.tops[index] + layout.heights[index] + layout.gap);
+        });
+        expect(layout.tops.at(-1)! + layout.heights.at(-1)! + layout.bottomInset).toBeCloseTo(layout.chartHeight);
+      }
+    }
+  });
+
+  it("maps one through four subplots to matching grids and axes for every chart type", () => {
+    for (const timeframe of ["1", "d"]) {
+      for (const subplotCount of [1, 2, 3, 4]) {
+        const visible = Array.from({ length: 4 }, (_, index) => index < subplotCount);
+        const data = base({ timeframe });
+        const axes = buildAxes({ data, chartHeight: 800, subplotVisible: visible });
+        expect(axes.grid).toHaveLength(subplotCount + 1);
+        expect(axes.xAxis).toHaveLength(subplotCount + 1);
+        expect(axes.yAxis).toHaveLength(subplotCount + 1);
+        expect(axes.xAxis.slice(0, -1).every((axis: any) => axis.axisLabel.show === false)).toBe(true);
+        expect(axes.xAxis.at(-1)?.axisLabel.show).toBe(true);
+        expect(Object.values(axes.subplotAxisIndices)).toEqual(Array.from({ length: subplotCount }, (_, index) => index + 1));
+      }
+    }
+  });
+
+  it("defaults to a 60/40 split and grows only when minimum heights require it", () => {
+    expect(defaultPaneRatios(2)).toEqual([0.6, 0.2, 0.2]);
+    const roomy = buildChartPaneLayout({ requestedHeight: 800, subplotCount: 2, intraday: true });
+    expect(roomy.heights[0] / roomy.heights.reduce((sum, value) => sum + value, 0)).toBeCloseTo(0.6);
+    const crowded = buildChartPaneLayout({ requestedHeight: 560, subplotCount: 4, intraday: false });
+    expect(crowded.chartHeight).toBe(734);
+    expect(crowded.heights[0]).toBeGreaterThanOrEqual(240);
+    const compact = buildChartPaneLayout({ requestedHeight: 430, subplotCount: 4, intraday: true, compact: true });
+    expect(compact.heights[0]).toBeGreaterThanOrEqual(200);
+    expect(compact.heights.slice(1).every((height) => height >= 72)).toBe(true);
+  });
+
+  it("resizes only adjacent panes, preserves their sum and clamps minimums", () => {
+    const heights = [300, 100, 100];
+    const minimums = [240, 80, 80];
+    const ratios = resizeAdjacentPanes(heights, 0, 200, minimums);
+    const resized = ratios.map((ratio) => ratio * 500);
+    expect(resized).toEqual([320, 80, 100]);
+    expect(resized.reduce((sum, value) => sum + value, 0)).toBe(500);
+    expect(resizeAdjacentPanes(heights, 1, -200, minimums).map((ratio) => ratio * 500)).toEqual([300, 80, 120]);
+  });
+
+  it("versions stored layouts and isolates them by stock, timeframe and subplot count", () => {
+    const stored = serializePaneRatios([0.7, 0.3], 1);
+    expect(parseStoredPaneRatios(stored, 1)).toEqual([0.7, 0.3]);
+    expect(parseStoredPaneRatios("broken", 1)).toEqual([0.6, 0.4]);
+    expect(parseStoredPaneRatios(JSON.stringify({ version: 2, ratios: [0.8, 0.2] }), 1)).toEqual([0.6, 0.4]);
+    expect(paneLayoutStorageKey("000001", "d", 1)).not.toBe(paneLayoutStorageKey("000001", "5", 1));
+    expect(paneLayoutStorageKey("000001", "d", 1)).not.toBe(paneLayoutStorageKey("000002", "d", 1));
+    expect(paneLayoutStorageKey("000001", "d", 1)).not.toBe(paneLayoutStorageKey("000001", "d", 2));
   });
 
   it("builds a minimal single candlestick series when optional layers are absent", () => {

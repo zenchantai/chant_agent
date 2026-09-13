@@ -44,6 +44,12 @@ import { formatCompactNumber, formatIndicatorValue, formatPrice, formatVolume } 
 import {
   buildChartArtifacts,
   buildChartOption,
+  buildChartPaneLayout,
+  defaultPaneRatios,
+  paneLayoutStorageKey,
+  parseStoredPaneRatios,
+  resizeAdjacentPanes,
+  serializePaneRatios,
   buildAxes,
   buildPriceSeries,
   buildIndicatorSeries,
@@ -325,7 +331,7 @@ function Chart({
   visible: Record<string, boolean>;
   subplotIndicators: SubplotIndicator[];
   subplotVisible: SubplotVisibility;
-  onSubplotIndicator: (index: 0 | 1, value: SubplotIndicator) => void;
+  onSubplotIndicator: (index: number, value: SubplotIndicator) => void;
   onLayerToggle: (key: "pens" | "centers" | "movements") => void;
   mainIndicator?: {mode:"ma"|"boll"|"pen_center"|"none"; maPeriods:number[]; bollPeriod:number; bollMultiplier:number};
   onMainIndicator?: (mode:"ma"|"boll"|"pen_center"|"none") => void;
@@ -357,8 +363,27 @@ function Chart({
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [dragHandle, setDragHandle] = useState<"start"|"end"|"move"|null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [compactLayout, setCompactLayout] = useState(() => innerWidth <= 760);
   const safeData = normalizeChartData(data);
   const bars = safeData?.bars || [];
+  const activeSubplotCount = subplotVisible.filter(Boolean).length;
+  const paneKey = paneLayoutStorageKey(safeData?.symbol || "", safeData?.timeframe || "d", activeSubplotCount);
+  const [paneRatios, setPaneRatios] = useState(() => defaultPaneRatios(activeSubplotCount));
+  const paneResize = useRef<{ pointerId: number; separatorIndex: number; startY: number; heights: number[]; ratios: number[] } | null>(null);
+  const paneLayout = buildChartPaneLayout({ requestedHeight: height, subplotCount: activeSubplotCount, ratios: paneRatios, intraday: safeData?.timeframe === "1", mainIndicatorVisible: mainIndicator.mode !== "none", compact: compactLayout });
+  const effectiveHeight = paneLayout.chartHeight;
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 760px)");
+    const update = () => setCompactLayout(media.matches);
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+  useEffect(() => {
+    setPaneRatios(parseStoredPaneRatios(localStorage.getItem(paneKey), activeSubplotCount));
+  }, [paneKey, activeSubplotCount]);
+  const persistPaneRatios = (ratios: number[]) => {
+    localStorage.setItem(paneKey, serializePaneRatios(ratios, activeSubplotCount));
+  };
   const toPoint = useCallback((event: React.PointerEvent) => {
     if (!chart.current || !bars.length) return null;
     const rect = ref.current?.getBoundingClientRect(); if (!rect) return null;
@@ -478,6 +503,9 @@ function Chart({
         movementsStale,
         zoomStart: zoomState.current.start,
         zoomEnd: zoomState.current.end,
+        chartHeight: effectiveHeight,
+        paneRatios,
+        compactLayout,
         formatKlineTooltip,
         formatCenterTooltip,
         formatMovementTooltip,
@@ -547,7 +575,7 @@ function Chart({
         zr?.off("globalout", builderGlobalOut);
       } catch { /* ECharts may already be disposed during a fast switch. */ }
     };
-  }, [data, bars, onOlder, onSelect, height, visible, subplotIndicators, subplotVisible, mainIndicator, drawingTool, drawingItems, theme, movementsStale]);
+  }, [data, bars, onOlder, onSelect, height, visible, subplotIndicators, subplotVisible, mainIndicator, drawingTool, drawingItems, theme, movementsStale, paneRatios, compactLayout, effectiveHeight]);
   useEffect(() => {
     const el = ref.current;
     if (!el || !drawingOpen) return;
@@ -643,7 +671,7 @@ function Chart({
   const infoChangeAmount = infoBar && infoPreviousClose ? infoBar.close - infoPreviousClose : null;
   const chartActiveLevel = Number(data?.active_structure_level || 1);
   const chartCenterCount = centersForStructureLevel(data?.centers?.length ? data.centers : (data?.pen_centers || []), chartActiveLevel).length;
-  return <div className={`chart-shell ${data?.timeframe === "1" ? "intraday-chart" : "kline-chart"}`} style={{ height }} onClick={() => contextMenu && setContextMenu(null)}>
+  return <div className={`chart-shell ${data?.timeframe === "1" ? "intraday-chart" : "kline-chart"}`} style={{ height: effectiveHeight }} onClick={() => contextMenu && setContextMenu(null)}>
     <div ref={ref} className="chart" aria-label={bars.length ? "K线图" : "暂无行情图表"} />
     {safeData && !bars.length && <div className="chart-empty-state" role="status">暂无可绘制行情</div>}
     {renderError && <div className="chart-render-error" role="alert">{renderError}</div>}
@@ -663,7 +691,7 @@ function Chart({
       {preview && (() => { const [sx,sy]=pointPixel(preview.start), [ex,ey]=pointPixel(preview.end); const color=periodStructureColor(document.documentElement.dataset.theme === "light" ? "light":"dark", data?.timeframe || "d"); return preview && drawingTool === "rectangle" ? <rect x={Math.min(sx,ex)} y={Math.min(sy,ey)} width={Math.abs(ex-sx)} height={Math.abs(ey-sy)} fill={`${color}22`} stroke={color} strokeDasharray="5 4" /> : <line x1={sx} y1={sy} x2={ex} y2={ey} stroke={color} strokeWidth="2" strokeDasharray="5 4" />; })()}
       {selectedDrawing !== null && (() => { const item=(drawingItems || []).find((d)=>d.id===selectedDrawing); if(!item) return null; const [sx,sy]=pointPixel(item.start_anchor), [ex,ey]=pointPixel(item.end_anchor); return <g className="drawing-selection"><circle cx={sx} cy={sy} r="5"/><circle cx={ex} cy={ey} r="5"/></g>; })()}
     </svg>
-    {data?.timeframe !== "1" && <div className="chart-layer-controls" aria-label="缠论图层控制">
+    {data?.timeframe !== "1" && <div className="chart-layer-controls" style={{top: paneLayout.tops[0] + 6}} aria-label="缠论图层控制">
       {([['pens', '笔', 'pen'], ['centers', '中枢', 'center'], ['movements', '走势', 'movement']] as const).map(([key, label, icon]) => (
         <button
           key={key}
@@ -694,8 +722,63 @@ function Chart({
       <button onClick={() => { if (contextMenu.drawing) onDrawingDelete?.(contextMenu.drawing.id); if (contextMenu.node) onStructureDelete?.(contextMenu.node); setContextMenu(null); }}>删除</button>
       <button onClick={() => setContextMenu(null)}>取消</button>
     </div>}
+    {paneLayout.separators.map((separator, index) => {
+      const upper = paneLayout.heights[index], lower = paneLayout.heights[index + 1];
+      const pairTotal = upper + lower;
+      const applyResize = (delta: number, heights = paneLayout.heights) => {
+        const next = resizeAdjacentPanes(heights, index, delta, paneLayout.minHeights);
+        setPaneRatios(next);
+        return next;
+      };
+      return <div
+        key={`pane-separator-${index}`}
+        className="pane-resizer"
+        style={{top: separator - 5}}
+        role="separator"
+        aria-label={`调整${index === 0 ? "主图与副图" : `副图${index}与副图${index + 1}`}高度`}
+        aria-orientation="horizontal"
+        aria-valuemin={Math.round(paneLayout.minHeights[index] / pairTotal * 100)}
+        aria-valuemax={Math.round((pairTotal - paneLayout.minHeights[index + 1]) / pairTotal * 100)}
+        aria-valuenow={Math.round(upper / pairTotal * 100)}
+        tabIndex={0}
+        title="拖动调整相邻面板高度，双击恢复默认"
+        onPointerDown={(event) => {
+          event.preventDefault(); event.stopPropagation();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          paneResize.current = { pointerId: event.pointerId, separatorIndex: index, startY: event.clientY, heights: [...paneLayout.heights], ratios: paneLayout.ratios };
+        }}
+        onPointerMove={(event) => {
+          const drag = paneResize.current;
+          if (!drag || drag.pointerId !== event.pointerId || drag.separatorIndex !== index) return;
+          drag.ratios = applyResize(event.clientY - drag.startY, drag.heights);
+        }}
+        onPointerUp={(event) => {
+          const drag = paneResize.current;
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          persistPaneRatios(drag.ratios);
+          paneResize.current = null;
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={() => {
+          const drag = paneResize.current;
+          if (drag) persistPaneRatios(drag.ratios);
+          paneResize.current = null;
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault(); event.stopPropagation();
+          const next = defaultPaneRatios(activeSubplotCount);
+          setPaneRatios(next); persistPaneRatios(next);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+          event.preventDefault(); event.stopPropagation();
+          const next = applyResize(event.key === "ArrowUp" ? -12 : 12);
+          persistPaneRatios(next);
+        }}
+      ><span /></div>;
+    })}
     {data && <div className="main-indicator-controls"><select className={data.timeframe === "1" ? "intraday-indicator-hidden" : ""} value={mainIndicator.mode} disabled={data.timeframe === "1"} onChange={(event)=>onMainIndicator?.(event.target.value as any)} aria-label="主图指标"><option value="none">不显示指标</option><option value="ma">MA</option><option value="boll">布林线</option><option value="pen_center">笔中枢</option></select><button title={data.timeframe === "1" ? "分时图设置" : "主图指标设置"} aria-label={data.timeframe === "1" ? "分时图设置" : "主图指标设置"} onClick={onOpenIndicatorSettings}><Settings size={15}/></button></div>}
-    {subplotIndicators.map((indicator, index) => subplotVisible[index] && <label className={`indicator-select subplot-${index + 1}`} style={{top: `${subplotVisible.filter(Boolean).length === 1 ? 64 : subplotVisible.filter(Boolean).length === 2 ? 61 + index * 19 : subplotVisible.filter(Boolean).length === 3 ? 48 + index * 16 : 40 + index * 14}%`}} key={index}>
+    {subplotIndicators.map((indicator, index) => subplotVisible[index] && <label className={`indicator-select subplot-${index + 1}`} style={{top: paneLayout.tops[subplotVisible.slice(0, index).filter(Boolean).length + 1] + 4}} key={index}>
       <select value={indicator} onChange={(event) => onSubplotIndicator(index as 0 | 1, event.target.value as SubplotIndicator)}>
         <option value="macd">MACD(12,26,9)</option>
         <option value="volume">成交量</option>

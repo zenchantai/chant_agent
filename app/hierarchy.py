@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 
-HIERARCHY_VERSION = "center-hierarchy-same-level-color-v12"
+HIERARCHY_VERSION = "center-hierarchy-cache-fingerprint-v13"
 MAX_CENTER_LEVEL = 8
 EPSILON = 1e-9
 
@@ -129,7 +129,7 @@ def build_center_relations(centers: list[dict[str, Any]]) -> list[dict[str, Any]
         for previous, current in zip(items, items[1:]):
             relation = classify_center_relation(previous, current)
             # A single-point contact is an invalid/ambiguous boundary, not a
-            # persisted center relationship in the v12 contract. The level
+            # persisted center relationship in the v13 contract. The level
             # decomposition records it as an issue and stops confirmation.
             if relation == "touching":
                 continue

@@ -106,6 +106,7 @@ class Store:
                 adjustflag TEXT NOT NULL, definition_version TEXT NOT NULL, started_at TEXT NOT NULL,
                 finished_at TEXT, status TEXT NOT NULL, market_version TEXT NOT NULL,
                 coverage_version TEXT NOT NULL DEFAULT '', structure_version TEXT NOT NULL DEFAULT '',
+                calculator_fingerprint TEXT NOT NULL DEFAULT '',
                 error TEXT NOT NULL DEFAULT '')""")
             self.db.execute("CREATE INDEX IF NOT EXISTS idx_period_runs_lookup ON period_structure_runs(symbol,timeframe,adjustflag,id DESC)")
             for table in ("period_processed_bars", "period_fractals", "period_pens", "period_pen_centers", "period_center_relations", "period_movements"):
@@ -116,6 +117,8 @@ class Store:
                     PRIMARY KEY(run_id,ordinal))""")
                 self.db.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_range ON {table}(run_id,start_date,end_date)")
             run_columns = {row[1] for row in self.db.execute("PRAGMA table_info(period_structure_runs)")}
+            if "calculator_fingerprint" not in run_columns:
+                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN calculator_fingerprint TEXT NOT NULL DEFAULT ''")
             if "movement_count" not in run_columns:
                 self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN movement_count INTEGER NOT NULL DEFAULT 0")
             if "movement_input_hash" not in run_columns:
@@ -693,8 +696,12 @@ class Store:
             try:
                 self.db.execute("BEGIN IMMEDIATE")
                 cur = self.db.execute("""INSERT INTO period_structure_runs
-                    (symbol,timeframe,adjustflag,definition_version,started_at,status,market_version,coverage_version)
-                    VALUES(?,?,?,?,?,'running',?,?)""", (symbol,timeframe,adjustflag,definition_version,now,market_version,coverage_version))
+                    (symbol,timeframe,adjustflag,definition_version,started_at,status,market_version,coverage_version,calculator_fingerprint)
+                    VALUES(?,?,?,?,?,'running',?,?,?)""", (
+                        symbol, timeframe, adjustflag, definition_version, now,
+                        market_version, coverage_version,
+                        result.get("calculator_fingerprint", ""),
+                    ))
                 run_id = cur.lastrowid
                 for table, key in mapping:
                     values = []

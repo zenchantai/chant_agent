@@ -364,3 +364,77 @@ def test_build_hierarchy_upgrades_nine_pen_l1_extension_via_3x3():
     assert len(children) == 3
     assert all(len(item["source_unit_ids"]) == 3 for item in children)
     assert len({unit_id for item in children for unit_id in item["source_unit_ids"]}) == 9
+
+
+def test_1a0001_daily_34_pen_extension_builds_l2_candidate_and_l3():
+    # Static structural fixture from the 2022-03-03 through 2023-11-21 daily
+    # endpoints. It intentionally has no dependency on the production DB.
+    points = [
+        ("2022-03-03", 3500.2872), ("2022-03-16", 3023.3045),
+        ("2022-04-07", 3290.2561), ("2022-04-27", 2863.6497),
+        ("2022-06-15", 3358.5453), ("2022-06-23", 3262.2939),
+        ("2022-07-05", 3424.8366), ("2022-07-18", 3226.2315),
+        ("2022-07-28", 3305.7057), ("2022-09-05", 3172.0394),
+        ("2022-09-13", 3278.1659), ("2022-10-12", 2934.0922),
+        ("2022-10-18", 3099.9182), ("2022-10-31", 2885.0894),
+        ("2022-11-16", 3145.7526), ("2022-11-28", 3034.7045),
+        ("2022-12-07", 3226.0817), ("2022-12-23", 3031.5358),
+        ("2023-01-30", 3310.4903), ("2023-02-17", 3223.2581),
+        ("2023-03-07", 3342.8585), ("2023-03-30", 3220.9846),
+        ("2023-04-18", 3396.1745), ("2023-04-25", 3229.4461),
+        ("2023-05-09", 3418.9534), ("2023-05-25", 3168.5716),
+        ("2023-06-16", 3276.5522), ("2023-06-26", 3144.2484),
+        ("2023-07-14", 3248.3849), ("2023-07-24", 3151.1252),
+        ("2023-08-04", 3315.0492), ("2023-08-25", 3053.0373),
+        ("2023-09-04", 3177.0603), ("2023-10-23", 2923.5113),
+        ("2023-11-21", 3089.7738),
+    ]
+    pens = []
+    for index, (start, end) in enumerate(zip(points, points[1:])):
+        pens.append({
+            "id": f"p{index}", "ordinal": index,
+            "start_date": start[0], "end_date": end[0],
+            "start_price": start[1], "end_price": end[1],
+            "low": min(start[1], end[1]), "high": max(start[1], end[1]),
+            "direction": "up" if end[1] > start[1] else "down",
+            "status": "confirmed", "confirmed_at": end[0],
+            "range_index": 0, "continuous_range_id": 0, "sequence_id": 0,
+        })
+    target = {
+        "id": "target-l1", "kind": "pen_center", "level": 1,
+        "status": "confirmed", "direction": "down",
+        "start_date": "2022-03-16", "end_date": "2023-11-21",
+        "confirmed_at": "2022-06-15",
+        "zd": 3023.3045, "zg": 3290.2561,
+        "fixed_zd": 3023.3045, "fixed_zg": 3290.2561,
+        "dd": 2863.6497, "gg": 3500.2872,
+        "entry_pen_id": "p0",
+        "formation_pen_ids": ["p0", "p1", "p2", "p3"],
+        "core_pen_ids": ["p1", "p2", "p3"],
+        "extension_pen_ids": [f"p{i}" for i in range(4, 34)],
+        "source_pen_ids": [f"p{i}" for i in range(34)],
+        "pen_ids": [f"p{i}" for i in range(34)],
+        "range_index": 0, "continuous_range_id": 0, "sequence_id": 0,
+    }
+
+    result = build_hierarchy(pens, [target])
+    hierarchy_centers = [
+        item for item in result["centers"] if item.get("role") == "hierarchy"
+    ]
+    level_two = [item for item in hierarchy_centers if item["level"] == 2]
+    assert [
+        (item["start_date"], item["end_date"], item["status"], item["progress"])
+        for item in level_two
+    ] == [
+        ("2022-03-16", "2022-09-13", "confirmed", "3/3"),
+        ("2022-09-13", "2023-02-17", "confirmed", "3/3"),
+        ("2023-02-17", "2023-07-14", "confirmed", "3/3"),
+        ("2023-07-14", "2023-11-21", "provisional", "2/3"),
+    ]
+    assert all(item["upgrade_kind"] == "extension_3x3" for item in level_two)
+    level_three = [item for item in hierarchy_centers if item["level"] == 3]
+    assert [
+        (item["start_date"], item["end_date"], item["status"])
+        for item in level_three
+    ] == [("2022-03-16", "2023-07-14", "confirmed")]
+    assert result["max_available_center_level"] == 3

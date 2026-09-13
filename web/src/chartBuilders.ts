@@ -22,6 +22,9 @@ export type ChartBuildContext = {
   movementsStale?: boolean;
   zoomStart?: number;
   zoomEnd?: number;
+  chartHeight?: number;
+  paneRatios?: number[];
+  compactLayout?: boolean;
   formatKlineTooltip?: (bar?: Bar, previousClose?: number) => string;
   formatCenterTooltip?: (center: Node, chartTimeframe: string) => string;
   formatMovementTooltip?: (movement: Node, chartTimeframe?: string) => string;
@@ -38,6 +41,18 @@ export type ChartBuildArtifacts = {
   issues: ChartBuildIssue[];
   visibleCenters: Node[];
   visibleMovements: Node[];
+};
+
+export type ChartPaneLayout = {
+  chartHeight: number;
+  topInset: number;
+  bottomInset: number;
+  gap: number;
+  heights: number[];
+  minHeights: number[];
+  tops: number[];
+  separators: number[];
+  ratios: number[];
 };
 
 const PERIOD_LABELS: Record<string, string> = {
@@ -396,38 +411,133 @@ export const buildCenterAreas = (context: ChartBuildContext, dates: string[], is
 
 const subplotSlots = (visible: boolean[]) => visible.map((shown, index) => shown ? index : -1).filter((index) => index >= 0);
 
+export const defaultPaneRatios = (subplotCount: number) => {
+  const count = Math.max(0, Math.min(4, Math.floor(subplotCount)));
+  if (!count) return [1];
+  return [0.6, ...Array.from({ length: count }, () => 0.4 / count)];
+};
+
+export const normalizePaneRatios = (input: unknown, subplotCount: number) => {
+  const fallback = defaultPaneRatios(subplotCount);
+  if (!Array.isArray(input) || input.length !== fallback.length) return fallback;
+  const values = input.map(Number);
+  if (values.some((value) => !Number.isFinite(value) || value <= 0)) return fallback;
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return total > 0 ? values.map((value) => value / total) : fallback;
+};
+
+export const paneLayoutStorageKey = (symbol: string, timeframe: string, subplotCount: number) =>
+  `chan-pane-layout-${symbol}-${timeframe}-${Math.max(0, Math.min(4, Math.floor(subplotCount)))}`;
+
+export const parseStoredPaneRatios = (raw: string | null, subplotCount: number) => {
+  if (!raw) return defaultPaneRatios(subplotCount);
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.version !== 1) return defaultPaneRatios(subplotCount);
+    return normalizePaneRatios(parsed.ratios, subplotCount);
+  } catch {
+    return defaultPaneRatios(subplotCount);
+  }
+};
+
+export const serializePaneRatios = (ratios: number[], subplotCount: number) =>
+  JSON.stringify({ version: 1, ratios: normalizePaneRatios(ratios, subplotCount) });
+
+const allocatePaneHeights = (ratios: number[], availableHeight: number, minHeights: number[]) => {
+  const heights = Array(ratios.length).fill(0);
+  const remaining = new Set(ratios.map((_, index) => index));
+  let remainingHeight = availableHeight;
+  let remainingWeight = ratios.reduce((sum, value) => sum + value, 0);
+  while (remaining.size) {
+    const constrained = [...remaining].find((index) => remainingHeight * ratios[index] / remainingWeight < minHeights[index]);
+    if (constrained === undefined) break;
+    heights[constrained] = minHeights[constrained];
+    remainingHeight -= minHeights[constrained];
+    remainingWeight -= ratios[constrained];
+    remaining.delete(constrained);
+  }
+  remaining.forEach((index) => { heights[index] = remainingHeight * ratios[index] / remainingWeight; });
+  return heights;
+};
+
+export const buildChartPaneLayout = ({
+  requestedHeight,
+  subplotCount,
+  ratios,
+  intraday,
+  mainIndicatorVisible = true,
+  compact = false,
+}: {
+  requestedHeight: number;
+  subplotCount: number;
+  ratios?: number[];
+  intraday: boolean;
+  mainIndicatorVisible?: boolean;
+  compact?: boolean;
+}): ChartPaneLayout => {
+  const count = Math.max(0, Math.min(4, Math.floor(subplotCount)));
+  const normalized = normalizePaneRatios(ratios, count);
+  const topInset = intraday ? 48 : mainIndicatorVisible ? 108 : 84;
+  const bottomInset = intraday ? 28 : 34;
+  const gap = 8;
+  const minHeights = [compact ? 200 : 240, ...Array.from({ length: count }, () => compact ? 72 : 80)];
+  const minimumHeight = topInset + bottomInset + count * gap + minHeights.reduce((sum, value) => sum + value, 0);
+  const chartHeight = Math.max(Number.isFinite(requestedHeight) ? requestedHeight : 560, minimumHeight);
+  const availableHeight = chartHeight - topInset - bottomInset - count * gap;
+  const heights = allocatePaneHeights(normalized, availableHeight, minHeights);
+  const tops = heights.map((_, index) => index === 0 ? topInset : 0);
+  for (let index = 1; index < tops.length; index += 1) tops[index] = tops[index - 1] + heights[index - 1] + gap;
+  return {
+    chartHeight,
+    topInset,
+    bottomInset,
+    gap,
+    heights,
+    minHeights,
+    tops,
+    separators: heights.slice(0, -1).map((height, index) => tops[index] + height + gap / 2),
+    ratios: heights.map((height) => height / availableHeight),
+  };
+};
+
+export const resizeAdjacentPanes = (heights: number[], separatorIndex: number, delta: number, minHeights: number[]) => {
+  if (separatorIndex < 0 || separatorIndex >= heights.length - 1 || heights.length !== minHeights.length) {
+    return normalizePaneRatios(heights, Math.max(0, heights.length - 1));
+  }
+  const next = [...heights];
+  const upper = heights[separatorIndex], lower = heights[separatorIndex + 1];
+  const minimumDelta = minHeights[separatorIndex] - upper;
+  const maximumDelta = lower - minHeights[separatorIndex + 1];
+  const applied = Math.max(minimumDelta, Math.min(maximumDelta, delta));
+  next[separatorIndex] = upper + applied;
+  next[separatorIndex + 1] = lower - applied;
+  const total = next.reduce((sum, value) => sum + value, 0);
+  return next.map((value) => value / total);
+};
+
 export const buildAxes = (context: ChartBuildContext) => {
   const data = context.data;
   const bars = context.bars || data.bars || [];
   const dates = bars.map((bar) => bar.trade_date);
   const dark = context.theme !== "light";
   const intraday = data.timeframe === "1";
-  if (intraday) {
-    return {
-      grid: [{ left: 64, right: 18, top: 18, bottom: 36 }],
-      xAxis: [{ type: "category", data: dates, boundaryGap: false, axisLine: { lineStyle: { color: dark ? "#44505b" : "#bdc7ce" } }, axisLabel: { color: dark ? "#8998a5" : "#60707b", hideOverlap: true, interval: 0, formatter: (value: string) => value.endsWith("09:30:00") || value.endsWith("11:30:00") || value.endsWith("15:00:00") ? value.slice(11, 16) : "" } }],
-      yAxis: [{ type: "value", scale: true, splitLine: { lineStyle: { color: dark ? "#28343e" : "#e7ecef" } }, axisLabel: { color: dark ? "#8998a5" : "#60707b", formatter: (value: number) => formatPrice(value) } }],
-      axisCount: { x: 1, y: 1 },
-      subplotAxisIndices: {} as Record<number, number>,
-    };
-  }
   const indicators = context.subplotIndicators || ["volume", "macd", "macd", "macd"];
-  const slots = subplotSlots((context.subplotVisible || []).slice(0, 4));
+  const slots = subplotSlots((context.subplotVisible || (intraday ? [true, true] : [])).slice(0, 4));
   const count = slots.length;
-  const mainHeight = count === 0 ? "78%" : count === 1 ? "58%" : count === 2 ? "43%" : count === 3 ? "32%" : "24%";
-  const grid: Record<string, any>[] = [{ left: 64, right: 18, top: 76, height: mainHeight }];
-  const xAxis: Record<string, any>[] = [{ type: "category", data: dates, boundaryGap: true, axisLine: { lineStyle: { color: dark ? "#44505b" : "#bdc7ce" } }, axisLabel: { color: dark ? "#8998a5" : "#60707b", hideOverlap: true } }];
+  const layout = buildChartPaneLayout({ requestedHeight: context.chartHeight || 560, subplotCount: count, ratios: context.paneRatios, intraday, mainIndicatorVisible: context.mainIndicator?.mode !== "none", compact: context.compactLayout });
+  const grid: Record<string, any>[] = [{ left: 64, right: 18, top: layout.tops[0], height: layout.heights[0] }];
+  const clockLabel = (value: string) => value.endsWith("09:30:00") || value.endsWith("11:30:00") || value.endsWith("15:00:00") ? value.slice(11, 16) : "";
+  const xAxis: Record<string, any>[] = [{ type: "category", data: dates, boundaryGap: !intraday, axisLine: { lineStyle: { color: dark ? "#44505b" : "#bdc7ce" } }, axisLabel: { show: count === 0, color: dark ? "#8998a5" : "#60707b", hideOverlap: true, ...(intraday ? { interval: 0, formatter: clockLabel } : {}) } }];
   const yAxis: Record<string, any>[] = [{ type: "value", scale: true, splitLine: { lineStyle: { color: dark ? "#28343e" : "#e7ecef" } }, axisLabel: { color: dark ? "#8998a5" : "#60707b", formatter: (value: number) => formatPrice(value) } }];
   const subplotAxisIndices: Record<number, number> = {};
   slots.forEach((slot, position) => {
     const axis = position + 1;
-    const top = count === 1 ? 64 : count === 2 ? 61 + position * 19 : count === 3 ? 48 + position * 16 : 40 + position * 14;
-    grid.push({ left: 64, right: 18, top: `${top}%`, height: count === 1 ? "25%" : "11%" });
-    xAxis.push({ type: "category", gridIndex: axis, data: dates, axisLabel: { show: position === count - 1, color: dark ? "#8998a5" : "#60707b", hideOverlap: true }, axisLine: { lineStyle: { color: dark ? "#44505b" : "#bdc7ce" } } });
+    grid.push({ left: 64, right: 18, top: layout.tops[axis], height: layout.heights[axis] });
+    xAxis.push({ type: "category", gridIndex: axis, data: dates, boundaryGap: !intraday, axisLabel: { show: position === count - 1, color: dark ? "#8998a5" : "#60707b", hideOverlap: true, ...(intraday ? { interval: 0, formatter: clockLabel } : {}) }, axisLine: { lineStyle: { color: dark ? "#44505b" : "#bdc7ce" } } });
     yAxis.push({ type: "value", gridIndex: axis, scale: true, splitNumber: 2, splitLine: { show: false }, axisLabel: { color: dark ? "#8998a5" : "#60707b", formatter: (value: number) => indicators[slot] === "volume" ? formatVolume(value) : indicators[slot] === "amount" ? formatCompactNumber(value) : formatIndicatorValue(value) } });
     subplotAxisIndices[slot] = axis;
   });
-  return { grid, xAxis, yAxis, axisCount: { x: xAxis.length, y: yAxis.length }, subplotAxisIndices };
+  return { grid, xAxis, yAxis, axisCount: { x: xAxis.length, y: yAxis.length }, subplotAxisIndices, paneLayout: layout };
 };
 
 export const buildPriceSeries = (context: ChartBuildContext, centerAreas: any[] = []) => {
@@ -458,7 +568,7 @@ export const buildPriceSeries = (context: ChartBuildContext, centerAreas: any[] 
 export const buildIndicatorSeries = (context: ChartBuildContext, axes = buildAxes(context)) => {
   const data = context.data;
   const bars = context.bars || data.bars || [];
-  if (!bars.length || data.timeframe === "1") return [];
+  if (!bars.length) return [];
   const dates = bars.map((bar) => bar.trade_date);
   const main = context.mainIndicator || { mode: "pen_center" as const, maPeriods: [5, 10, 20, 60], bollPeriod: 20, bollMultiplier: 2 };
   const maByDate = new Map((data.indicators?.ma || []).map((item: any) => [item.trade_date, item]));
@@ -657,7 +767,7 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
   const dates = bars.map((bar) => bar.trade_date);
   const issues: ChartBuildIssue[] = [];
   const axes = buildAxes({ ...context, bars });
-  const { axisCount, subplotAxisIndices, ...axesOption } = axes;
+  const { axisCount, subplotAxisIndices, paneLayout: _paneLayout, ...axesOption } = axes;
   const centers = buildCenterAreas({ ...context, bars }, dates, issues);
   const movement = buildMovementSeries({ ...context, bars }, dates, issues);
   const series = [
@@ -696,7 +806,7 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
         return `${item.marker || ""}${item.seriesName}：${formatted}`;
       }).join("<br/>");
     } },
-    dataZoom: data.timeframe === "1" ? [{ type: "inside", xAxisIndex: [0], start: context.zoomStart ?? 0, end: context.zoomEnd ?? 100 }] : [{ type: "inside", xAxisIndex: axes.xAxis.map((_, index) => index), start: context.zoomStart ?? 0, end: context.zoomEnd ?? 100 }, { type: "slider", xAxisIndex: axes.xAxis.map((_, index) => index), bottom: 5, height: 18, start: context.zoomStart ?? 0, end: context.zoomEnd ?? 100, borderColor: dark ? "#34424c" : "#bfd2df", backgroundColor: dark ? "#17232c" : "#edf5fa", fillerColor: dark ? "#3f92bd2e" : "#75a8c936" }],
+    dataZoom: [{ type: "inside", xAxisIndex: axes.xAxis.map((_, index) => index), start: context.zoomStart ?? 0, end: context.zoomEnd ?? 100 }, ...(data.timeframe === "1" ? [] : [{ type: "slider", xAxisIndex: axes.xAxis.map((_, index) => index), bottom: 5, height: 18, start: context.zoomStart ?? 0, end: context.zoomEnd ?? 100, borderColor: dark ? "#34424c" : "#bfd2df", backgroundColor: dark ? "#17232c" : "#edf5fa", fillerColor: dark ? "#3f92bd2e" : "#75a8c936" }])],
     series: checked.valid,
   };
   if (!valueIsValid(option)) {

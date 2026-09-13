@@ -54,6 +54,22 @@ AI_API_STYLE=responses
 
 ## 启动
 
+推荐使用项目自带脚本后台运行：
+
+```bash
+bash start.sh
+```
+
+停止服务：
+
+```bash
+bash stop.sh
+```
+
+服务日志写入 `logs/chant_agent.log`，进程号写入 `logs/chant_agent.pid`。如需修改监听地址或端口，可在启动前设置 `CHANT_AGENT_HOST` 和 `CHANT_AGENT_PORT`。
+
+也可以前台启动并在终端按 `Ctrl+C` 停止：
+
 ```bash
 uv run --with-requirements requirements.txt --with uvicorn \
   python -m uvicorn app.main:app \
@@ -63,8 +79,6 @@ uv run --with-requirements requirements.txt --with uvicorn \
 浏览器打开：
 
 <http://127.0.0.1:8765/>
-
-停止服务：在终端按 `Ctrl+C`。
 
 ## 首次使用
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-DEFINITION_VERSION = "chan-period-center-hierarchy-same-level-color-v12"
+DEFINITION_VERSION = "chan-period-center-hierarchy-cache-fingerprint-v13"
 PERIOD_DEFINITION_VERSION = DEFINITION_VERSION
 REQUIRED_RUNTIME_RULES = {
     "RAW-5M-001", "INC-001", "FX-001", "PEN-NEW-001", "PEN-NEW-002",

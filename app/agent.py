@@ -56,7 +56,7 @@ async def run_agent(rows, symbol: str, question: str | None = None,
     result["as_of"] = datetime.now(timezone.utc).isoformat()
     result["status"] = "paper_only"
     result["signals"] = []
-    # v12 persists same-level evidence centers alongside hierarchy centers so
+    # v13 persists same-level evidence centers alongside hierarchy centers so
     # every movement reference remains resolvable.  The explanation prompt is
     # intentionally limited to confirmed L1 hierarchy centers and must not
     # present decomposition-only evidence as a user-facing L1 structure.

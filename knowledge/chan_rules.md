@@ -1,6 +1,6 @@
 # 各周期笔与方向性 L1 中枢规则
 
-正式版本：`chan-period-center-hierarchy-same-level-color-v12`。
+正式版本：`chan-period-center-hierarchy-cache-fingerprint-v13`。
 
 ## 运行链路
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only audit for active v12 structure snapshots."""
+"""Read-only audit for active structure snapshots."""
 
 from __future__ import annotations
 
@@ -20,12 +20,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.period_structure import calculate_calculator_fingerprint
+from app.rules import PERIOD_DEFINITION_VERSION
+
 # Compatibility fallback for databases created before the stock-pool table.
 # Production audits resolve the scope from the current enabled pool.
 DEFAULT_SYMBOLS = ("1A0001", "399673", "1A0688", "300308")
 TIMEFRAMES = ("5", "30", "d", "w", "m")
 ADJUSTFLAG = "2"
-EXPECTED_VERSION = "chan-period-center-hierarchy-same-level-color-v12"
+EXPECTED_VERSION = PERIOD_DEFINITION_VERSION
+EXPECTED_FINGERPRINT = calculate_calculator_fingerprint(ROOT)
 DOUBLE_RANGE_PREFIX = re.compile(r"R\d+-R\d+-")
 ALLOWED_CENTER_RELATIONS = {
     "extension", "newborn_up", "newborn_down",
@@ -130,6 +134,10 @@ def _strict_overlap_bounds(items: list[dict]) -> tuple[float, float] | None:
 def audit_api_payload(payload: dict, requested_level: int) -> list[str]:
     """Validate the strict level contract of one chart-data response."""
     problems: list[str] = []
+    if payload.get("definition_version") != EXPECTED_VERSION:
+        problems.append("API definition_version 不是当前版本")
+    if payload.get("calculator_fingerprint") != EXPECTED_FINGERPRINT:
+        problems.append("API calculator_fingerprint 与当前代码不一致")
     try:
         active = int(payload.get("active_structure_level", 0))
         max_available = int(payload.get("max_available_center_level", 0))
@@ -211,7 +219,10 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
     result["run_id"] = run["id"]
     result["definition_version"] = run["definition_version"]
     if run["definition_version"] != EXPECTED_VERSION:
-        result["problems"].append(f"活动版本不是 v12: {run['definition_version']}")
+        result["problems"].append(f"活动版本不是当前版本: {run['definition_version']}")
+    result["calculator_fingerprint"] = str(run.get("calculator_fingerprint") or "")
+    if result["calculator_fingerprint"] != EXPECTED_FINGERPRINT:
+        result["problems"].append("活动快照 calculator_fingerprint 与当前代码不一致")
     if run["status"] != "success":
         result["problems"].append(f"活动快照状态不是 success: {run['status']}")
     movement_hash = str(run.get("movement_input_hash") or "")
@@ -431,7 +442,7 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
             ):
                 problems.append(f"{owner} provisional 至少需要一个候选中枢")
 
-    # Center lifecycle fields are part of the v12 contract.  Keep the fixed
+    # Center lifecycle fields are part of the persisted contract. Keep the fixed
     # core immutable in the snapshot and ensure provisional upgrade candidates
     # have the advertised 2/3 progress.
     for center in centers:
@@ -596,7 +607,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, default=ROOT / "data" / "chant_agent.db")
     parser.add_argument("--report", type=Path,
-                        default=ROOT / "logs" / "v12-structure-audit.json")
+                        default=ROOT / "logs" / "structure-audit.json")
     parser.add_argument(
         "--symbols", nargs="+", default=None,
         help="显式审计指定标的；缺省按 stock_pool.enabled 解析生产范围",
@@ -629,6 +640,7 @@ def main() -> int:
                 item["status"] = "failed"
     payload = {
         "mode": "read-only-audit", "expected_version": EXPECTED_VERSION,
+        "expected_calculator_fingerprint": EXPECTED_FINGERPRINT,
         "symbols": list(symbols),
         "matrix_count": len(items),
         "success_count": sum(item["status"] == "ok" for item in items),

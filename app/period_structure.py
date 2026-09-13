@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib, json
 from dataclasses import asdict
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from typing import Any
 
@@ -20,10 +21,52 @@ _DISPLAY_PERIOD_CHAINS = {
     "m": ("m",),
 }
 
-# Only these independent market periods participate in the v12 hierarchy.
+# Only these independent market periods participate in the v13 hierarchy.
 # Other supported quote periods remain available to the chart but deliberately
 # do not create or reuse Chan structure snapshots.
 STRUCTURE_TIMEFRAMES = ("5", "30", "d", "w", "m")
+CALCULATOR_SOURCE_FILES = (
+    "app/coverage.py",
+    "app/engine.py",
+    "app/hierarchy.py",
+    "app/models.py",
+    "app/period_structure.py",
+    "app/rules.py",
+    "knowledge/chan_rules.yaml",
+)
+
+
+def calculate_calculator_fingerprint(root: Path | None = None) -> str:
+    """Fingerprint every source that can change persisted Chan structures."""
+    project_root = root or Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for relative_path in CALCULATOR_SOURCE_FILES:
+        source = project_root / relative_path
+        try:
+            content = source.read_bytes()
+        except OSError as exc:
+            raise RuntimeError(f"无法读取结构计算源文件: {relative_path}: {exc}") from exc
+        digest.update(relative_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _structure_version(payload: dict[str, Any]) -> str:
+    versioned = {
+        "definition_version": payload["definition_version"],
+        "calculator_fingerprint": payload["calculator_fingerprint"],
+        "structure": {
+            key: payload[key]
+            for key in (
+                "processed_bars", "fractals", "pens", "centers",
+                "center_relations", "movements", "decomposition",
+            )
+        },
+    }
+    raw = json.dumps(versioned, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()[:20]
 
 
 def color_period_for_level(chart_timeframe: str, level: int) -> dict[str, str]:
@@ -226,7 +269,11 @@ def build_pen_centers(pens: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return centers
 
 
-def analyze_period(rows: list[dict[str, Any]], symbol: str, timeframe: str) -> dict[str, Any]:
+def analyze_period(
+    rows: list[dict[str, Any]], symbol: str, timeframe: str,
+    calculator_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    fingerprint = calculator_fingerprint or calculate_calculator_fingerprint()
     bars = normalize_bars(rows, symbol)
     processed = process_inclusions(bars)
     fractals = find_fractals(processed)
@@ -235,6 +282,7 @@ def analyze_period(rows: list[dict[str, Any]], symbol: str, timeframe: str) -> d
     centers = build_pen_centers(pens)
     hierarchy = build_hierarchy(pens, centers)
     payload = {"symbol": symbol, "timeframe": timeframe, "definition_version": PERIOD_DEFINITION_VERSION,
+               "calculator_fingerprint": fingerprint,
                "bars": [b.json() | {"amount": getattr(b, "amount", 0)} for b in bars],
                "processed_bars": [asdict(x) for x in processed], "fractals": [asdict(x) for x in fractals],
                "pens": pens, "pen_centers": hierarchy["centers"], "centers": hierarchy["centers"],
@@ -244,13 +292,14 @@ def analyze_period(rows: list[dict[str, Any]], symbol: str, timeframe: str) -> d
                "movement_input_hash": hierarchy["movement_input_hash"],
                "max_confirmed_center_level": hierarchy["max_confirmed_center_level"],
                "max_available_center_level": hierarchy["max_available_center_level"]}
-    raw = json.dumps({k: payload[k] for k in ("processed_bars", "fractals", "pens", "centers", "center_relations", "movements", "decomposition")}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    payload["structure_version"] = hashlib.sha256(raw.encode()).hexdigest()[:20]
+    payload["structure_version"] = _structure_version(payload)
     return payload
 
 
 def analyze_period_ranges(rows: list[dict[str, Any]], symbol: str, timeframe: str,
-                          ranges: list[dict[str, Any]]) -> dict[str, Any]:
+                          ranges: list[dict[str, Any]],
+                          calculator_fingerprint: str | None = None) -> dict[str, Any]:
+    fingerprint = calculator_fingerprint or calculate_calculator_fingerprint()
     merged = {key: [] for key in ("bars", "processed_bars", "fractals", "pens", "pen_centers")}
     for range_index, period in enumerate(ranges):
         subset = [row for row in rows
@@ -303,20 +352,25 @@ def analyze_period_ranges(rows: list[dict[str, Any]], symbol: str, timeframe: st
     for level_ordinal, item in enumerate(sorted(merged["pen_centers"], key=lambda value: value["start_date"])):
         item["level_ordinal"] = level_ordinal
     payload = {"symbol": symbol, "timeframe": timeframe,
-               "definition_version": PERIOD_DEFINITION_VERSION, **merged,
+               "definition_version": PERIOD_DEFINITION_VERSION,
+               "calculator_fingerprint": fingerprint, **merged,
                "decomposition": hierarchy["decompositions"],
                "hierarchy_input_hash": hierarchy["hierarchy_input_hash"],
                "movement_input_hash": hierarchy["movement_input_hash"],
                "max_confirmed_center_level": hierarchy["max_confirmed_center_level"],
                "max_available_center_level": hierarchy["max_available_center_level"]}
-    raw = json.dumps({k: payload[k] for k in ("processed_bars", "fractals", "pens", "centers", "center_relations", "movements", "decomposition")},
-                     ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    payload["structure_version"] = hashlib.sha256(raw.encode()).hexdigest()[:20]
+    payload["structure_version"] = _structure_version(payload)
     return payload
 
 
 class PeriodStructureService:
-    def __init__(self, store): self.store = store
+    def __init__(self, store, calculator_fingerprint: str | None = None):
+        self.store = store
+        self.calculator_fingerprint = (
+            calculator_fingerprint or calculate_calculator_fingerprint()
+        )
+        if not self.calculator_fingerprint:
+            raise RuntimeError("结构计算器指纹不能为空")
 
     @staticmethod
     def market_version(rows):
@@ -340,7 +394,9 @@ class PeriodStructureService:
         rows = self.store.market_bars(symbol, timeframe, adjustflag, "0000-01-01")
         if timeframe not in STRUCTURE_TIMEFRAMES:
             return {"symbol": symbol, "timeframe": timeframe, "available": bool(rows),
-                    "definition_version": PERIOD_DEFINITION_VERSION, "coverage": self.coverage(symbol, timeframe, adjustflag),
+                    "definition_version": PERIOD_DEFINITION_VERSION,
+                    "calculator_fingerprint": self.calculator_fingerprint,
+                    "coverage": self.coverage(symbol, timeframe, adjustflag),
                     "pens": [], "centers": [], "pen_centers": [], "center_relations": [], "movements": [],
                     "processed_bars": [], "fractals": [], "max_confirmed_center_level": 0,
                     "max_available_center_level": 0, "movement_input_hash": "", "decomposition": {}}
@@ -349,15 +405,27 @@ class PeriodStructureService:
         meta = self.store.save_market_coverage(symbol, timeframe, adjustflag, coverage)
         coverage["coverage_version"] = meta["coverage_version"]
         active = self.store.active_period_structure_run(symbol, timeframe, adjustflag)
-        if active and active["definition_version"] == PERIOD_DEFINITION_VERSION and active["market_version"] == market_version and active["coverage_version"] == meta["coverage_version"] and not force:
+        if (
+            active
+            and active["definition_version"] == PERIOD_DEFINITION_VERSION
+            and active.get("calculator_fingerprint", "") == self.calculator_fingerprint
+            and active["market_version"] == market_version
+            and active["coverage_version"] == meta["coverage_version"]
+            and not force
+        ):
             return self.load(symbol, timeframe, adjustflag)
         if not rows or not coverage["continuous_ranges"]:
             return {"symbol": symbol, "timeframe": timeframe, "available": False,
-                    "definition_version": PERIOD_DEFINITION_VERSION, "coverage": coverage,
+                    "definition_version": PERIOD_DEFINITION_VERSION,
+                    "calculator_fingerprint": self.calculator_fingerprint,
+                    "coverage": coverage,
                     "pens": [], "centers": [], "pen_centers": [], "center_relations": [], "movements": [],
                     "max_confirmed_center_level": 0, "max_available_center_level": 0,
                     "movement_input_hash": "", "decomposition": {}}
-        result = analyze_period_ranges(rows, symbol, timeframe, coverage["continuous_ranges"])
+        result = analyze_period_ranges(
+            rows, symbol, timeframe, coverage["continuous_ranges"],
+            calculator_fingerprint=self.calculator_fingerprint,
+        )
         run = self.store.replace_period_structure(symbol, timeframe, adjustflag, PERIOD_DEFINITION_VERSION, result, market_version, meta["coverage_version"])
         result.update({"available": True, "market_version": market_version,
                        "coverage_version": meta["coverage_version"], "run_id": run["id"],
@@ -367,7 +435,10 @@ class PeriodStructureService:
     def load(self, symbol, timeframe, adjustflag="2"):
         active = self.store.active_period_structure_run(symbol, timeframe, adjustflag)
         if not active: return self.ensure(symbol,timeframe,adjustflag,True)
-        if active["definition_version"] != PERIOD_DEFINITION_VERSION:
+        if (
+            active["definition_version"] != PERIOD_DEFINITION_VERSION
+            or active.get("calculator_fingerprint", "") != self.calculator_fingerprint
+        ):
             return self.ensure(symbol, timeframe, adjustflag, True)
         rows = self.store.market_bars(symbol,timeframe,adjustflag,"0000-01-01")
         mv = self.market_version(rows); cov = self.store.market_coverage(symbol,timeframe,adjustflag)
@@ -379,6 +450,7 @@ class PeriodStructureService:
         centers = self.store.period_rows("period_pen_centers", run_id)
         return {"symbol": symbol, "timeframe": timeframe, "available": True,
                 "definition_version": active["definition_version"], "market_version": mv,
+                "calculator_fingerprint": active.get("calculator_fingerprint", ""),
                 "coverage_version": active["coverage_version"],
                 "structure_version": active["structure_version"], "run_id": run_id,
                 "coverage": cov["payload"] if cov else {},
@@ -430,7 +502,7 @@ class PeriodStructureService:
                             "low": latest["low"], "volume": latest["volume"], "amount": latest["amount"],
                             "amplitude_pct": (latest["high"] - latest["low"]) / previous_close * 100 if previous_close else None,
                             "market_status": status}
-        out.update({k: data.get(k) for k in ("available", "definition_version", "market_version",
+        out.update({k: data.get(k) for k in ("available", "definition_version", "calculator_fingerprint", "market_version",
                    "coverage_version", "structure_version", "coverage", "run_id", "stale_reason")})
         out.update({k: data.get(k) for k in ("system_structure_version", "effective_structure_version", "override_version", "overrides", "override_conflicts", "drawings", "center_level_counts", "movement_level_counts", "max_confirmed_center_level", "max_available_center_level")})
         out["movement_input_hash"] = data.get("movement_input_hash", "")

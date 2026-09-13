@@ -158,6 +158,7 @@ def index():
 def health():
     max_level = store.highest_active_center_level(PERIOD_DEFINITION_VERSION)
     return {"ok": True, "mode": "paper_only", "definition_version": PERIOD_DEFINITION_VERSION,
+            "calculator_fingerprint": period_structure_service.calculator_fingerprint,
             "timeframes": list(TIMEFRAMES), "legacy_modes_enabled": False,
             "max_center_level": max_level, "same_level_decomposition": True,
             "movement_mode": "same_period_center_driven"}

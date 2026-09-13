@@ -1,4 +1,4 @@
-version: chan-period-center-hierarchy-same-level-color-v12
+version: chan-period-center-hierarchy-cache-fingerprint-v13
 source:
   title: 读缠论108课札记
   file: ../读缠论108课札记.pdf
@@ -34,4 +34,4 @@ rules:
   - {id: SEG-001, section: reference_only, runtime: false, assertion: "原文线段规则仅作知识参考，当前产品不计算线段。", source_lessons: [65, 67, 77, 78], source_pages: [412, 418, 486, 489]}
   - {id: RECURSION-001, section: hierarchy, runtime: true, assertion: "每个行情周期内独立递归中枢级别，不把行情周期直接映射为结构级别，递归上限L8。", source_lessons: [17, 18, 20, 83], source_pages: [102, 109, 119, 527]}
   - {id: CONFIRM-001, section: confirmation, assertion: "所有结构保存confirmed或provisional；确认时间取完成规则所需最后事件时间，禁止未来函数。", source_lessons: [65, 67, 77, 78], source_pages: [411, 418, 482, 489]}
-  - {id: LEGACY-RECURSIVE, section: legacy, runtime: false, assertion: "v10单层L1走势仅保留为旧快照审计；v12启用周期内层级递归、独立同级别分解和级别显示颜色映射。"}
+  - {id: LEGACY-RECURSIVE, section: legacy, runtime: false, assertion: "v10单层L1走势仅保留为旧快照审计；v13启用周期内层级递归、独立同级别分解、级别显示颜色映射和计算器指纹快照失效。"}

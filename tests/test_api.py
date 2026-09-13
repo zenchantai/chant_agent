@@ -25,13 +25,14 @@ def rows(days=12):
     return result
 
 
-def test_period_api_exposes_v12_hierarchy_and_keeps_legacy_routes_removed(tmp_path, monkeypatch):
+def test_period_api_exposes_v13_hierarchy_and_keeps_legacy_routes_removed(tmp_path, monkeypatch):
     store=Store(str(tmp_path/"api.db")); service=PeriodStructureService(store)
     seed(store,"000001",rows()); service.ensure("000001","5",force=True)
     monkeypatch.setattr(main_module,"store",store); monkeypatch.setattr(main_module,"period_structure_service",service)
     client=TestClient(main_module.app)
     health=client.get("/api/health").json()
-    assert health["definition_version"]=="chan-period-center-hierarchy-same-level-color-v12" and health["legacy_modes_enabled"] is False
+    assert health["definition_version"]=="chan-period-center-hierarchy-cache-fingerprint-v13" and health["legacy_modes_enabled"] is False
+    assert len(health["calculator_fingerprint"]) == 64
     assert health["max_center_level"] >= 1
     assert health["same_level_decomposition"] is True
     assert health["movement_mode"] == "same_period_center_driven"
@@ -40,7 +41,9 @@ def test_period_api_exposes_v12_hierarchy_and_keeps_legacy_routes_removed(tmp_pa
     assert chart.status_code==200 and all(key in payload for key in (
         "pens", "centers", "pen_centers", "center_relations", "movements",
         "center_levels", "movement_levels", "active_structure_level", "decomposition",
+        "calculator_fingerprint",
     ))
+    assert payload["calculator_fingerprint"] == service.calculator_fingerprint
     assert all(key not in payload for key in ("segments","edges","levels","structure_level","effective_center_ids"))
     assert payload["centers"] == payload["pen_centers"]
     assert payload["active_structure_level"] == 1
