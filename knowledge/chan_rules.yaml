@@ -1,4 +1,4 @@
-version: chan-period-center-hierarchy-same-level-color-v12
+version: chan-period-standard-pen-right-extreme-v19
 source:
   title: 读缠论108课札记
   file: ../读缠论108课札记.pdf
@@ -9,7 +9,7 @@ rules:
   - {id: INC-001, section: inclusion, assertion: "包含关系从左向右处理；向上取高高低高，向下取低低高低，开头方向待首个非包含关系确定。", source_lessons: [62, 65], source_pages: [394, 396, 409, 410, 411]}
   - {id: FX-001, section: fractals, assertion: "顶分型中间K线高低点均严格高于左右K线，底分型反之，并在右侧K线完成时确认。", source_lessons: [62, 65, 77], source_pages: [394, 396, 411, 482]}
   - {id: PEN-NEW-001, section: pens, assertion: "新笔由交替顶底分型构成；分型不共享K线，中间至少一根独立处理后K线。", formula: "abs(right.middle_index-left.middle_index) >= 4", source_lessons: [77, 81], source_pages: [482, 520]}
-  - {id: PEN-NEW-002, section: pens, assertion: "标准笔在交替分型、独立K线和基本方向成立后确认；有包含处理上下文时顶分型中间K线的高低点均高于底分型中间K线，同类分型保留更极端者，相等保留较早者。", source_lessons: [77], source_pages: [482, 483, 484, 485]}
+  - {id: PEN-NEW-002, section: pens, priority: product_override, assertion: "标准笔要求交替分型、中间索引差至少4、顶分型中间K线高低点均高于底分型中间K线；向上终点high严格突破起点右侧确认K线high，向下终点low严格跌破起点右侧确认K线low；不比较两组三K线整体极值。普通笔失败后尝试既有特殊笔例外，均失败则保留起点继续扫描；同类分型保留能维持有效连接的更极端者，同价保留较早者。", source: "用户确认计划 2026-09-15-redesign-standard-pen-rules.md"}
   - {id: PEN-SPECIAL-001, section: pens, assertion: "特殊次高次低笔：快速行情中标准笔不足5根时，四根K线条件衡量前一端点到先出现的实际最高/最低极值，后续次高/次低分型仅作为较弱端点，且其相对极值的回撤不超过前一波幅50%。", runtime: true, source: "8月半年课第二课 笔的定义", source_pages: [2]}
   - {id: PEN-SPECIAL-002, section: pens, assertion: "跳空成笔：日线缺口不直接成笔；指数5分钟缺口超过1%、个股超过2.5%，且连续3根K线不回补时允许成笔。", runtime: true, source: "8月半年课第二课 笔的定义", source_pages: [3]}
   - {id: PEN-SPECIAL-003, section: pens, assertion: "打横笔仅在标准笔成立且次级别对称横盘时启用；收盘有效突破前高低则取消。", runtime: true, source: "8月半年课第二课 笔的定义", source_pages: [2]}
@@ -21,17 +21,14 @@ rules:
   - {id: CENTER-L1-REENTRY-001, section: centers, priority: product_override, assertion: "首条不重合笔仅为暂时离开；独立新中枢确认前重新进入固定核心时，外围笔并入原L1外围范围，原核心保持不变。"}
   - {id: MOVEMENT-BASE-001, section: movements, priority: product_override, assertion: "同周期走势至少包含一个已确认方向性L1笔中枢；单中枢走势分类为盘整，方向取首中枢进入方向。"}
   - {id: MOVEMENT-TREND-001, section: movements, priority: product_override, assertion: "两个以上严格同向分离的L1中枢构成同一个趋势走势；上升要求ZD(next)>ZG(previous)，下降要求ZG(next)<ZD(previous)，接触不算趋势。"}
-  - {id: MOVEMENT-BOUNDARY-001, section: movements, priority: product_override, assertion: "反向独立中枢确认前一走势完成；实际边界回溯到两中枢间当前方向的最早同价极值笔端点，确认时间取反向中枢confirmed_at。"}
-  - {id: MOVEMENT-DECOMP-001, section: movements, priority: product_override, assertion: "同级别分解在每个连续行情区间内独立进行；相邻走势方向交替并只共享一个转折端点，不共享整笔，不跨行情缺口。"}
+  - {id: MOVEMENT-BOUNDARY-001, section: movements, priority: product_override, assertion: "同级、同连续区间的已确认中枢进入方向相反且核心严格分离时，确认前一走势完成；真实极值端点与反向中枢confirmed_at分开保存。"}
   - {id: MOVEMENT-STATUS-001, section: movements, priority: product_override, assertion: "最右侧未获反向中枢确认的走势保持provisional；首中枢前的笔记为unassigned，不伪造窗口左边界。"}
-  - {id: CENTER-RELATION-HIERARCHY-001, section: hierarchy, priority: product_override, assertion: "同级中枢独立判定延伸、新生和扩张；关系不替代同级别走势分解。"}
-  - {id: CENTER-UPGRADE-EXTENSION-001, section: hierarchy, priority: product_override, assertion: "九个连续低一级运动按3+3+3形成三个完成走势且严格重叠时确认高一级中枢；六段只生成2/3候选。"}
+  - {id: CENTER-RELATION-HIERARCHY-001, section: hierarchy, priority: product_override, assertion: "正式层级中枢独立判定延伸、新生和扩张；关系用于组织正式层级递归。"}
+  - {id: CENTER-UPGRADE-EXTENSION-001, section: hierarchy, priority: product_override, assertion: "extension_3x3 仅为构成恰好三单位的特例标签；每个低级走势必须具备反向独立中枢确认依据，不按笔数自动升级。"}
   - {id: CENTER-UPGRADE-EXPANSION-001, section: hierarchy, priority: product_override, assertion: "两个同级中枢核心分离但外围重叠时启动扩张候选，等待第三个连续已完成同级走势严格重叠后确认。"}
   - {id: CENTER-PARENT-CHILD-001, section: hierarchy, priority: product_override, assertion: "高级中枢只新增父结构，低级中枢、走势和源笔永久保留。"}
-  - {id: SAME-LEVEL-CENTER-THREE-001, section: decomposition, priority: product_override, assertion: "当前级别从左到右非重叠消费三个方向交替的低一级运动，严格重叠则形成一个盘整单元。"}
-  - {id: SAME-LEVEL-DECOMPOSITION-001, section: decomposition, priority: product_override, assertion: "同级别分解不用延伸或扩张改变边界，每三个单元完成后继续向右分解，允许盘整连接。"}
-  - {id: MOVEMENT-SHARED-ENDPOINT-001, section: decomposition, priority: product_override, assertion: "相邻走势只共享一个真实高低端点，不共享低级运动；实际边界与确认时间分开保存。"}
-  - {id: SEG-001, section: reference_only, runtime: false, assertion: "原文线段规则仅作知识参考，当前产品不计算线段。", source_lessons: [65, 67, 77, 78], source_pages: [412, 418, 486, 489]}
+  - {id: MOVEMENT-SHARED-ENDPOINT-001, section: movements, priority: product_override, assertion: "相邻正式走势只共享一个真实高低端点，不共享低级运动；实际边界与确认时间分开保存。"}
   - {id: RECURSION-001, section: hierarchy, runtime: true, assertion: "每个行情周期内独立递归中枢级别，不把行情周期直接映射为结构级别，递归上限L8。", source_lessons: [17, 18, 20, 83], source_pages: [102, 109, 119, 527]}
   - {id: CONFIRM-001, section: confirmation, assertion: "所有结构保存confirmed或provisional；确认时间取完成规则所需最后事件时间，禁止未来函数。", source_lessons: [65, 67, 77, 78], source_pages: [411, 418, 482, 489]}
-  - {id: LEGACY-RECURSIVE, section: legacy, runtime: false, assertion: "v10单层L1走势仅保留为旧快照审计；v12启用周期内层级递归、独立同级别分解和级别显示颜色映射。"}
+  - {id: LEGACY-RECURSIVE, section: legacy, runtime: false, assertion: "旧版单层走势仅保留为历史快照审计；当前版本启用正式层级递归、级别显示颜色映射和计算器指纹快照失效。"}
+  - {id: CENTER-HIERARCHY-THREE-001, section: hierarchy, priority: product_override, assertion: "三个连续交替且具备反向完成证据的低级正式走势严格重叠确认父级；两个为2/3候选；一般路径recursive_three，最高L8。"}

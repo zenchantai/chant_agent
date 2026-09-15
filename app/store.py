@@ -106,7 +106,11 @@ class Store:
                 adjustflag TEXT NOT NULL, definition_version TEXT NOT NULL, started_at TEXT NOT NULL,
                 finished_at TEXT, status TEXT NOT NULL, market_version TEXT NOT NULL,
                 coverage_version TEXT NOT NULL DEFAULT '', structure_version TEXT NOT NULL DEFAULT '',
-                error TEXT NOT NULL DEFAULT '')""")
+                calculator_fingerprint TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '', movement_count INTEGER NOT NULL DEFAULT 0,
+                center_level_counts TEXT NOT NULL DEFAULT '{}', movement_level_counts TEXT NOT NULL DEFAULT '{}',
+                max_confirmed_center_level INTEGER NOT NULL DEFAULT 0,
+                max_available_center_level INTEGER NOT NULL DEFAULT 0)""")
             self.db.execute("CREATE INDEX IF NOT EXISTS idx_period_runs_lookup ON period_structure_runs(symbol,timeframe,adjustflag,id DESC)")
             for table in ("period_processed_bars", "period_fractals", "period_pens", "period_pen_centers", "period_center_relations", "period_movements"):
                 self.db.execute(f"""CREATE TABLE IF NOT EXISTS {table} (
@@ -116,18 +120,16 @@ class Store:
                     PRIMARY KEY(run_id,ordinal))""")
                 self.db.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_range ON {table}(run_id,start_date,end_date)")
             run_columns = {row[1] for row in self.db.execute("PRAGMA table_info(period_structure_runs)")}
+            if "structure_metadata" not in run_columns:
+                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN structure_metadata TEXT NOT NULL DEFAULT '{}'")
+            if "calculator_fingerprint" not in run_columns:
+                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN calculator_fingerprint TEXT NOT NULL DEFAULT ''")
             if "movement_count" not in run_columns:
                 self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN movement_count INTEGER NOT NULL DEFAULT 0")
-            if "movement_input_hash" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN movement_input_hash TEXT NOT NULL DEFAULT ''")
             if "center_level_counts" not in run_columns:
                 self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN center_level_counts TEXT NOT NULL DEFAULT '{}'")
             if "movement_level_counts" not in run_columns:
                 self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN movement_level_counts TEXT NOT NULL DEFAULT '{}'")
-            if "hierarchy_input_hash" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN hierarchy_input_hash TEXT NOT NULL DEFAULT ''")
-            if "decomposition_meta" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN decomposition_meta TEXT NOT NULL DEFAULT '{}'")
             if "max_confirmed_center_level" not in run_columns:
                 self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN max_confirmed_center_level INTEGER NOT NULL DEFAULT 0")
             if "max_available_center_level" not in run_columns:
@@ -681,21 +683,39 @@ class Store:
         centers = result.get("centers", result.get("pen_centers", []))
         center_level_counts: dict[str, int] = {}
         for center in centers:
+            if center.get("role") not in {None, "hierarchy"}:
+                raise ValueError("period_pen_centers 只允许正式 hierarchy")
             key = str(center.get("level", 1))
             center_level_counts[key] = center_level_counts.get(key, 0) + 1
+        from .hierarchy import movement_confirmation_errors
+
+        json.dumps(centers)
+        center_by_id = {center["id"]: center for center in centers if center.get("id")}
+        for movement in result.get("movements", []):
+            errors = movement_confirmation_errors(movement, center_by_id)
+            if errors:
+                raise ValueError(f"走势确认不合法: {movement.get('id')}: {errors}")
         movement_count = len(result.get("movements", []))
         movement_level_counts: dict[str, int] = {}
         for movement in result.get("movements", []):
-            key = f"L{movement.get('level', 1)}:{movement.get('role', 'same_level_decomposition')}"
+            if movement.get("role") not in {None, "hierarchy_component"}:
+                raise ValueError("period_movements 只允许正式 hierarchy_component")
+            key = f"L{movement.get('level', 1)}:hierarchy_component"
             movement_level_counts[key] = movement_level_counts.get(key, 0) + 1
-        decomposition = result.get("decomposition", {})
         with self._lock:
             try:
                 self.db.execute("BEGIN IMMEDIATE")
                 cur = self.db.execute("""INSERT INTO period_structure_runs
-                    (symbol,timeframe,adjustflag,definition_version,started_at,status,market_version,coverage_version)
-                    VALUES(?,?,?,?,?,'running',?,?)""", (symbol,timeframe,adjustflag,definition_version,now,market_version,coverage_version))
+                    (symbol,timeframe,adjustflag,definition_version,started_at,status,market_version,coverage_version,calculator_fingerprint)
+                    VALUES(?,?,?,?,?,'running',?,?,?)""", (
+                        symbol, timeframe, adjustflag, definition_version, now,
+                        market_version, coverage_version,
+                        result.get("calculator_fingerprint", ""),
+                    ))
                 run_id = cur.lastrowid
+                self.db.execute("UPDATE period_structure_runs SET structure_metadata=? WHERE id=?", (
+                    json.dumps({key: result.get(key, {}) if key == "unassigned_by_level" else result.get(key, [])
+                                for key in ("unassigned_by_level", "hierarchy_issues", "pen_diagnostics")}, ensure_ascii=False), run_id))
                 for table, key in mapping:
                     values = []
                     for ordinal, item in enumerate(result.get(key, [])):
@@ -705,15 +725,11 @@ class Store:
                     if values:
                         self.db.executemany(f"INSERT INTO {table}(run_id,symbol,timeframe,adjustflag,definition_version,ordinal,start_date,end_date,payload) VALUES(?,?,?,?,?,?,?,?,?)", values)
                 self.db.execute("""UPDATE period_structure_runs SET finished_at=?,status='success',
-                    structure_version=?,center_level_counts=?,movement_count=?,movement_input_hash=?,
-                    movement_level_counts=?,hierarchy_input_hash=?,decomposition_meta=?,
+                    structure_version=?,center_level_counts=?,movement_count=?,movement_level_counts=?,
                     max_confirmed_center_level=?,max_available_center_level=? WHERE id=?""",
                     (datetime.now(timezone.utc).isoformat(), result.get("structure_version", ""),
                      json.dumps(center_level_counts, sort_keys=True), movement_count,
-                     result.get("movement_input_hash", ""),
                      json.dumps(movement_level_counts, sort_keys=True),
-                     result.get("hierarchy_input_hash", ""),
-                     json.dumps(decomposition, ensure_ascii=False, sort_keys=True),
                      int(result.get("max_confirmed_center_level", 0)),
                      int(result.get("max_available_center_level", 0)), run_id))
                 self.db.execute("""INSERT INTO active_period_structure_runs(symbol,timeframe,adjustflag,run_id,activated_at)

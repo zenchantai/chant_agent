@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Recalculate the approved v12 structure matrix from existing market bars.
+"""Recalculate the current structure matrix from existing market bars.
 
 The command is deliberately dry-run by default.  Pass ``--execute`` only after
 the service has been stopped and a database/WAL/SHM backup has been verified.
@@ -25,12 +25,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.period_structure import calculate_calculator_fingerprint
+from app.rules import PERIOD_DEFINITION_VERSION
+
 # Kept only as a compatibility fallback for a pre-stock-pool database.  A
 # production run resolves its scope from ``stock_pool.enabled`` below.
 DEFAULT_SYMBOLS = ("1A0001", "399673", "1A0688", "300308")
 TIMEFRAMES = ("5", "30", "d", "w", "m")
 ADJUSTFLAG = "2"
-EXPECTED_VERSION = "chan-period-center-hierarchy-same-level-color-v12"
+EXPECTED_VERSION = PERIOD_DEFINITION_VERSION
+EXPECTED_FINGERPRINT = calculate_calculator_fingerprint(ROOT)
 
 
 def _ro_connect(path: Path) -> sqlite3.Connection:
@@ -95,12 +99,13 @@ def _summarize_result(result: dict) -> dict:
     movements = result.get("movements", []) or []
     center_counts = Counter(str(item.get("level", 1)) for item in centers)
     movement_counts = Counter(
-        f"L{item.get('level', 1)}:{item.get('role', 'same_level_decomposition')}"
+        f"L{item.get('level', 1)}:{item.get('role', 'hierarchy_component')}"
         for item in movements
     )
     return {
         "run_id": result.get("run_id"),
         "definition_version": result.get("definition_version"),
+        "calculator_fingerprint": result.get("calculator_fingerprint"),
         "center_count": len(centers),
         "movement_count": len(movements),
         "center_level_counts": dict(sorted(center_counts.items())),
@@ -126,11 +131,13 @@ def _dry_run(db: Path, requested_symbols: tuple[str, ...] | None = None) -> dict
                     "bars": _bar_count(connection, symbol, timeframe),
                     "active_run_id": active.get("id") if active else None,
                     "active_definition_version": active.get("definition_version") if active else None,
+                    "active_calculator_fingerprint": active.get("calculator_fingerprint") if active else None,
                     "active_status": active.get("status") if active else None,
                 })
         return {
             "mode": "dry-run",
             "expected_version": EXPECTED_VERSION,
+            "expected_calculator_fingerprint": EXPECTED_FINGERPRINT,
             "symbols": list(symbols),
             "matrix_count": len(items),
             "items": items,
@@ -143,7 +150,6 @@ def _execute(db: Path, requested_symbols: tuple[str, ...] | None = None) -> dict
     # Import only in execute mode: a dry-run must not initialize Store or touch
     # SQLite journal state.
     from app.period_structure import PeriodStructureService
-    from app.rules import PERIOD_DEFINITION_VERSION
     from app.store import Store
 
     if PERIOD_DEFINITION_VERSION != EXPECTED_VERSION:
@@ -182,12 +188,15 @@ def _execute(db: Path, requested_symbols: tuple[str, ...] | None = None) -> dict
                 item["new_run_id"] = active.get("id") if active else None
                 item["active_status"] = active.get("status") if active else None
                 item["active_definition_version"] = active.get("definition_version") if active else None
+                item["active_calculator_fingerprint"] = active.get("calculator_fingerprint") if active else None
                 if not result.get("available"):
                     raise RuntimeError("行情为空或没有可用 continuous_ranges")
                 if not active or active.get("status") != "success":
                     raise RuntimeError("新结构快照未成功激活")
                 if active.get("definition_version") != EXPECTED_VERSION:
-                    raise RuntimeError("活动快照版本不是 v12")
+                    raise RuntimeError("活动快照版本不是当前版本")
+                if active.get("calculator_fingerprint") != EXPECTED_FINGERPRINT:
+                    raise RuntimeError("活动快照指纹与当前代码不一致")
                 item["status"] = "success"
             except Exception as exc:  # continue with the remaining matrix items
                 try:
@@ -199,6 +208,19 @@ def _execute(db: Path, requested_symbols: tuple[str, ...] | None = None) -> dict
                 item["traceback"] = traceback.format_exc(limit=12)
             item["finished_at"] = datetime.now(timezone.utc).isoformat()
             items.append(item)
+    retired_active_runs = []
+    if all(item.get("status") == "success" for item in items):
+        for symbol in symbols:
+            stale = store.db.execute("""SELECT a.timeframe,a.run_id FROM active_period_structure_runs a
+                JOIN period_structure_runs r ON r.id=a.run_id
+                WHERE a.symbol=? AND a.adjustflag=? AND r.definition_version!=?""",
+                (symbol, ADJUSTFLAG, EXPECTED_VERSION)).fetchall()
+            for timeframe, run_id in stale:
+                if timeframe not in TIMEFRAMES:
+                    store.db.execute("DELETE FROM active_period_structure_runs WHERE symbol=? AND timeframe=? AND adjustflag=? AND run_id=?",
+                                     (symbol, timeframe, ADJUSTFLAG, run_id))
+                    retired_active_runs.append({"symbol": symbol, "timeframe": timeframe, "run_id": run_id})
+        store.db.commit()
     try:
         store.db.close()
     except Exception:
@@ -206,11 +228,13 @@ def _execute(db: Path, requested_symbols: tuple[str, ...] | None = None) -> dict
     return {
         "mode": "execute",
         "expected_version": EXPECTED_VERSION,
+        "expected_calculator_fingerprint": EXPECTED_FINGERPRINT,
         "symbols": list(symbols),
         "matrix_count": len(items),
         "success_count": sum(item.get("status") == "success" for item in items),
         "failure_count": sum(item.get("status") == "failed" for item in items),
         "items": items,
+        "retired_active_runs": retired_active_runs,
     }
 
 
@@ -225,9 +249,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, default=ROOT / "data" / "chant_agent.db")
     parser.add_argument("--report", type=Path,
-                        default=ROOT / "logs" / "v12-structure-recalc-plan.json")
+                        default=ROOT / "logs" / "structure-recalc-plan.json")
     parser.add_argument("--execute", action="store_true",
-                        help="执行重算；缺省只读检查 20 项矩阵")
+                        help="执行重算；缺省只读检查 enabled 标的的五周期矩阵")
     parser.add_argument("--symbols", nargs="+", default=None,
                         help="显式处理指定标的；缺省使用 stock_pool.enabled")
     args = parser.parse_args()

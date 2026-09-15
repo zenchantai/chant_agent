@@ -163,6 +163,7 @@ def _repair_previous_endpoint(endpoints: list[StrictFractal], fractals: list[Str
         if previous.index < item.index < current.index
         and item.kind == previous.kind
         and _valid_pen_edge(item, current, processed, fractals)
+        and (len(endpoints) < 3 or _valid_pen_edge(endpoints[-3], item, processed, fractals))
     ]
     if not candidates:
         return
@@ -175,12 +176,52 @@ def _repair_previous_endpoint(endpoints: list[StrictFractal], fractals: list[Str
 
 def _valid_pen(a: StrictFractal, b: StrictFractal,
                processed: list[ProcessedBar] | None = None) -> bool:
-    if a.kind == b.kind or abs(b.index - a.index) < 4: return False
+    return _standard_pen_failure(a, b, processed) is None
+
+
+def _standard_pen_failure(a: StrictFractal, b: StrictFractal,
+                          processed: list[ProcessedBar] | None = None) -> str | None:
+    if a.kind == b.kind:
+        return "same_kind_fractal"
+    if b.index - a.index < 4:
+        return "insufficient_distance"
     top, bottom = (a, b) if a.kind == "top" else (b, a)
-    if processed is None or top.index >= len(processed) or bottom.index >= len(processed):
-        return top.price > bottom.price
+    if processed is None:
+        return None if top.price > bottom.price else "invalid_direction"
+    if not all(0 <= index < len(processed) for index in (a.index, b.index, a.right_index)):
+        return "missing_processed_context"
     top_bar, bottom_bar = processed[top.index], processed[bottom.index]
-    return top_bar.high > bottom_bar.high and top_bar.low > bottom_bar.low
+    if not (top_bar.high > bottom_bar.high and top_bar.low > bottom_bar.low):
+        return "invalid_direction"
+    right_bar = processed[a.right_index]
+    broken = top_bar.high > right_bar.high if a.kind == "bottom" else bottom_bar.low < right_bar.low
+    return None if broken else "reverse_extreme_not_broken"
+
+
+def _record_pen_candidate(diagnostics: list[dict[str, Any]] | None,
+                          start: StrictFractal, end: StrictFractal,
+                          processed: list[ProcessedBar] | None,
+                          fractals: list[StrictFractal], stage: str = "scan") -> None:
+    if diagnostics is None:
+        return
+    reason = _standard_pen_failure(start, end, processed)
+    if reason is None:
+        return
+    right = processed[start.right_index] if processed is not None and 0 <= start.right_index < len(processed) else None
+    candidate = processed[end.index] if processed is not None and 0 <= end.index < len(processed) else None
+    direction = "up" if start.kind == "bottom" else "down"
+    secondary = processed is not None and _special_secondary_pen(start, end, fractals, processed)
+    diagnostics.append({
+        "stage": stage, "start_date": start.trade_date, "end_date": end.trade_date,
+        "evaluated_at": max(start.confirmed_at, end.confirmed_at), "direction": direction,
+        "start_fractal": {"index": start.index, "date": start.trade_date, "price": start.price, "kind": start.kind},
+        "end_fractal": {"index": end.index, "date": end.trade_date, "price": end.price, "kind": end.kind},
+        "start_right": {"index": start.right_index, "date": right.source_end_date if right else None,
+                        "extreme": (right.high if direction == "up" else right.low) if right else None},
+        "candidate_extreme": (candidate.high if direction == "up" else candidate.low) if candidate else end.price,
+        "reason": reason, "secondary_reason": None if secondary or start.kind == end.kind else "secondary_rule_not_satisfied",
+        "outcome": "accepted_secondary" if secondary else "rejected",
+    })
 
 
 def _special_secondary_pen(a: StrictFractal, b: StrictFractal,
@@ -248,25 +289,44 @@ def _special_gap_pens(fractals: list[StrictFractal], gaps: list[GapEvent], symbo
 
 def build_pens(fractals: list[StrictFractal], processed: list[ProcessedBar] | None = None,
                gaps: list[GapEvent] | None = None, symbol: str = "", raw_bars: list[Bar] | None = None,
-               timeframe: str = "5") -> list[Pen]:
+               timeframe: str = "5", diagnostics: list[dict[str, Any]] | None = None) -> list[Pen]:
     endpoints: list[StrictFractal] = []
+    confirmed_at: list[str] = []
+    seen: list[StrictFractal] = []
     for fractal in fractals:
-        if not endpoints: endpoints.append(fractal)
+        seen.append(fractal)
+        if not endpoints:
+            endpoints.append(fractal)
+            confirmed_at.append(fractal.confirmed_at)
         elif fractal.kind == endpoints[-1].kind:
             if _more_extreme(endpoints[-1], fractal):
-                endpoints[-1] = fractal
-                _repair_previous_endpoint(endpoints, fractals, processed)
-        elif _valid_pen_edge(endpoints[-1], fractal, processed, fractals):
-            endpoints.append(fractal)
+                trial = endpoints[:-1] + [fractal]
+                _repair_previous_endpoint(trial, seen, processed)
+                tail = trial[-3:]
+                if all(_valid_pen_edge(left, right, processed, seen)
+                       for left, right in zip(tail, tail[1:])):
+                    if len(trial) > 1 and trial[-2] != endpoints[-2]:
+                        confirmed_at[-2] = max(confirmed_at[-2], fractal.confirmed_at)
+                    endpoints = trial
+                    confirmed_at[-1] = fractal.confirmed_at
+                elif len(trial) > 1:
+                    _record_pen_candidate(diagnostics, trial[-2], fractal, processed, seen, "repair")
+            else:
+                _record_pen_candidate(diagnostics, endpoints[-1], fractal, processed, seen)
+        else:
+            _record_pen_candidate(diagnostics, endpoints[-1], fractal, processed, seen)
+            if _valid_pen_edge(endpoints[-1], fractal, processed, seen):
+                endpoints.append(fractal)
+                confirmed_at.append(fractal.confirmed_at)
     pens = []
-    for a, b in zip(endpoints, endpoints[1:]):
+    for position, (a, b) in enumerate(zip(endpoints, endpoints[1:])):
         if not _valid_pen_edge(a, b, processed, fractals):
-            continue
+            raise ValueError("修正后的笔端点不满足成笔条件")
         kind = "standard" if _valid_pen(a, b, processed) else "secondary"
         pens.append(Pen(f"pen-{len(pens)}-{a.trade_date}-{b.trade_date}", len(pens),
                         a.source_start, b.source_end, a.trade_date, b.trade_date,
                         "up" if a.kind == "bottom" else "down", a.price, b.price,
-                        b.confirmed_at, kind=kind))
+                        max(confirmed_at[position], confirmed_at[position + 1]), kind=kind))
     if processed is None:
         return pens
     extras = [gap for gap in _special_gap_pens(fractals, gaps or [], symbol, raw_bars, timeframe)

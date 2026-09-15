@@ -1,9 +1,18 @@
 import json
+import sqlite3
 from datetime import date, timedelta
 
+import pytest
+
 from app.coverage import EXPECTED_5M_TIMES, validate_5m_coverage
-from app.period_structure import PeriodStructureService, build_pen_centers, color_period_for_level
-from app.rules import load_rulebook
+from app.period_structure import (
+    CALCULATOR_SOURCE_FILES,
+    PeriodStructureService,
+    build_pen_centers,
+    calculate_calculator_fingerprint,
+    color_period_for_level,
+)
+from app.rules import PERIOD_DEFINITION_VERSION, load_rulebook
 from app.store import Store
 
 
@@ -31,13 +40,108 @@ def seed(store, symbol, rows, timeframe="5"):
     store.upsert_bars(symbol, timeframe, "2", rows)
 
 
+def test_calculator_fingerprint_is_deterministic_and_fails_closed(tmp_path):
+    for relative_path in CALCULATOR_SOURCE_FILES:
+        source = tmp_path / relative_path
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(f"source:{relative_path}\n".encode())
+
+    first = calculate_calculator_fingerprint(tmp_path)
+    second = calculate_calculator_fingerprint(tmp_path)
+    assert first == second
+    assert len(first) == 64
+
+    changed = tmp_path / CALCULATOR_SOURCE_FILES[0]
+    changed.write_bytes(changed.read_bytes() + b"changed\n")
+    assert calculate_calculator_fingerprint(tmp_path) != first
+
+    changed.unlink()
+    with pytest.raises(RuntimeError, match="无法读取结构计算源文件"):
+        calculate_calculator_fingerprint(tmp_path)
+
+
+def test_calculator_fingerprint_invalidates_cached_snapshot(tmp_path):
+    store = Store(str(tmp_path / "fingerprint.db"))
+    seed(store, "000001", session_rows())
+
+    first = PeriodStructureService(store, calculator_fingerprint="fingerprint-a").ensure(
+        "000001", "5", force=True
+    )
+    reused = PeriodStructureService(store, calculator_fingerprint="fingerprint-a").ensure(
+        "000001", "5"
+    )
+    assert reused["run_id"] == first["run_id"]
+    assert reused["structure_version"] == first["structure_version"]
+
+    changed = PeriodStructureService(store, calculator_fingerprint="fingerprint-b").ensure(
+        "000001", "5"
+    )
+    assert changed["run_id"] != first["run_id"]
+    assert changed["structure_version"] != first["structure_version"]
+    assert changed["calculator_fingerprint"] == "fingerprint-b"
+    active = store.active_period_structure_run("000001", "5")
+    assert active["calculator_fingerprint"] == "fingerprint-b"
+
+    store.db.execute(
+        "UPDATE period_structure_runs SET calculator_fingerprint='' WHERE id=?",
+        (active["id"],),
+    )
+    store.db.commit()
+    rebuilt = PeriodStructureService(store, calculator_fingerprint="fingerprint-b").ensure(
+        "000001", "5"
+    )
+    assert rebuilt["run_id"] != active["id"]
+
+
+def test_failed_snapshot_write_does_not_switch_active_run(tmp_path):
+    store = Store(str(tmp_path / "transaction.db"))
+    seed(store, "000001", session_rows())
+    result = PeriodStructureService(store, calculator_fingerprint="fingerprint-a").ensure(
+        "000001", "5", force=True
+    )
+    active_before = store.active_period_structure_run("000001", "5")
+    broken = dict(result)
+    broken["centers"] = [{"start_date": "2026-01-01", "not_json": object()}]
+
+    with pytest.raises(TypeError):
+        store.replace_period_structure(
+            "000001", "5", "2", result["definition_version"], broken,
+            result["market_version"], result["coverage_version"],
+        )
+
+    active_after = store.active_period_structure_run("000001", "5")
+    assert active_after["id"] == active_before["id"]
+    assert store.db.execute(
+        "SELECT COUNT(*) FROM period_structure_runs WHERE status='running'"
+    ).fetchone()[0] == 0
+
+
+def test_store_migrates_legacy_period_runs_with_empty_fingerprint(tmp_path):
+    path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(path)
+    connection.execute("""CREATE TABLE period_structure_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL,
+        timeframe TEXT NOT NULL, adjustflag TEXT NOT NULL,
+        definition_version TEXT NOT NULL, started_at TEXT NOT NULL,
+        finished_at TEXT, status TEXT NOT NULL, market_version TEXT NOT NULL,
+        coverage_version TEXT NOT NULL DEFAULT '',
+        structure_version TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT ''
+    )""")
+    connection.commit()
+    connection.close()
+
+    store = Store(str(path))
+    columns = {row[1] for row in store.db.execute("PRAGMA table_info(period_structure_runs)")}
+    assert "calculator_fingerprint" in columns
+
+
 def pen(i, start, end):
     return {"id": f"p{i}", "ordinal": i, "start_date": f"{i:04d}", "end_date": f"{i+1:04d}",
             "start_price": start, "end_price": end, "confirmed_at": f"{i+2:04d}", "status": "confirmed"}
 
 
 def test_rulebook_version_and_coverage_gate():
-    assert load_rulebook()["version"] == "chan-period-center-hierarchy-same-level-color-v12"
+    assert load_rulebook()["version"] == PERIOD_DEFINITION_VERSION
     rows = session_rows(1)
     dates = sorted({x["trade_date"][:10] for x in rows})
     assert validate_5m_coverage(rows, expected_trading_dates=dates)["complete"] is True
@@ -56,11 +160,11 @@ def test_period_snapshot_is_persisted_and_reproducible(tmp_path):
         assert first[key] == second[key]
     active = first_store.active_period_structure_run("000001", "5")
     assert active["structure_version"] == first["structure_version"]
+    assert active["calculator_fingerprint"] == first["calculator_fingerprint"]
     assert first["max_available_center_level"] >= 1
     assert first["center_relations"] == second["center_relations"]
     assert first_store.period_rows("period_movements", active["id"]) == first["movements"]
     assert active["movement_count"] == len(first["movements"])
-    assert active["hierarchy_input_hash"] == first["hierarchy_input_hash"]
     assert first_store.period_rows("period_center_relations", active["id"]) == first["center_relations"]
     assert json.loads(active["center_level_counts"]) == {
         str(level): sum(item["level"] == level for item in first["centers"])
@@ -127,12 +231,11 @@ def test_chart_pagination_uses_same_period_structures(tmp_path):
         page = service.chart_page("000001", "5", "2", before, 300); pages.extend(page["bars"])
         assert "segments" not in page
         assert all(key in page for key in ("center_relations", "center_levels", "movement_levels",
-                                            "movements", "decomposition"))
-        assert page["active_structure_level"] == 1
+                                            "movements"))
         assert page["centers"] == page["pen_centers"]
-        assert all(center["level"] == 1 for center in page["centers"])
         assert all(center.get("role") == "hierarchy" for center in page["centers"])
-        assert all(center["display_period"] == "5" and center["color_key"] == "period-5"
+        assert all(center["level"] in page["center_levels"] for center in page["centers"])
+        assert all(center["display_period"] == "5" and center["color_key"].startswith("period-5")
                    for center in page["centers"])
         returned_pen_ids = {item["id"] for item in page["pens"]}
         assert all(set(center["source_pen_ids"]) <= returned_pen_ids for center in page["pen_centers"])
@@ -173,7 +276,7 @@ def test_chart_macd_is_stable_across_page_sizes(tmp_path):
     assert all(item == large_by_date[item["trade_date"]] for item in small)
 
 
-def test_active_manual_override_rebuilds_effective_movements(tmp_path):
+def test_active_manual_override_is_preserved_but_ignored(tmp_path):
     store = Store(str(tmp_path / "manual-movement.db")); rows = session_rows()
     seed(store, "000001", rows); service = PeriodStructureService(store)
     system = service.ensure("000001", "5", force=True)
@@ -187,8 +290,10 @@ def test_active_manual_override_rebuilds_effective_movements(tmp_path):
     }, base)
     effective = service.effective_structure("000001", "5", "2")
     assert effective["movements"]
-    assert all(item["origin"] == "manual-derived" for item in effective["movements"])
-    assert effective["decomposition"]["movement_input_hash"] != ""
+    assert effective["movements"] == system["movements"]
+    assert effective["pens"] == system["pens"]
+    assert effective["structure_overrides_enabled"] is False
+    assert len(effective["overrides"]) == 1
 
 
 def test_directional_pen_center_uses_entry_plus_three_core_pens():
