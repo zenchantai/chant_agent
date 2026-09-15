@@ -32,6 +32,8 @@ CALCULATOR_SOURCE_FILES = (
     "app/models.py",
     "app/period_structure.py",
     "app/rules.py",
+    "app/store.py",
+    "knowledge/chan_rules.md",
     "knowledge/chan_rules.yaml",
 )
 
@@ -61,7 +63,7 @@ def _structure_version(payload: dict[str, Any]) -> str:
             key: payload[key]
             for key in (
                 "processed_bars", "fractals", "pens", "centers",
-                "center_relations", "movements", "decomposition",
+                "center_relations", "movements",
             )
         },
     }
@@ -278,18 +280,17 @@ def analyze_period(
     processed = process_inclusions(bars)
     fractals = find_fractals(processed)
     gaps = find_gaps(bars) if timeframe in INTRADAY_TIMEFRAMES - {"1"} else []
-    pens = [asdict(p) for p in build_pens(fractals, processed, gaps, symbol, bars, timeframe=timeframe)]
+    pen_diagnostics: list[dict[str, Any]] = []
+    pens = [asdict(p) for p in build_pens(fractals, processed, gaps, symbol, bars, timeframe=timeframe, diagnostics=pen_diagnostics)]
     centers = build_pen_centers(pens)
     hierarchy = build_hierarchy(pens, centers)
     payload = {"symbol": symbol, "timeframe": timeframe, "definition_version": PERIOD_DEFINITION_VERSION,
                "calculator_fingerprint": fingerprint,
                "bars": [b.json() | {"amount": getattr(b, "amount", 0)} for b in bars],
                "processed_bars": [asdict(x) for x in processed], "fractals": [asdict(x) for x in fractals],
-               "pens": pens, "pen_centers": hierarchy["centers"], "centers": hierarchy["centers"],
+               "pens": pens, "pen_diagnostics": pen_diagnostics,
+               "pen_centers": hierarchy["centers"], "centers": hierarchy["centers"],
                "center_relations": hierarchy["center_relations"], "movements": hierarchy["movements"],
-               "decomposition": hierarchy["decompositions"],
-               "hierarchy_input_hash": hierarchy["hierarchy_input_hash"],
-               "movement_input_hash": hierarchy["movement_input_hash"],
                "max_confirmed_center_level": hierarchy["max_confirmed_center_level"],
                "max_available_center_level": hierarchy["max_available_center_level"]}
     payload["structure_version"] = _structure_version(payload)
@@ -300,7 +301,7 @@ def analyze_period_ranges(rows: list[dict[str, Any]], symbol: str, timeframe: st
                           ranges: list[dict[str, Any]],
                           calculator_fingerprint: str | None = None) -> dict[str, Any]:
     fingerprint = calculator_fingerprint or calculate_calculator_fingerprint()
-    merged = {key: [] for key in ("bars", "processed_bars", "fractals", "pens", "pen_centers")}
+    merged = {key: [] for key in ("bars", "processed_bars", "fractals", "pens", "pen_centers", "pen_diagnostics")}
     for range_index, period in enumerate(ranges):
         subset = [row for row in rows
                   if period["start_date"] <= row["trade_date"][:10] <= period["end_date"]]
@@ -312,10 +313,13 @@ def analyze_period_ranges(rows: list[dict[str, Any]], symbol: str, timeframe: st
         processed_part = process_inclusions(bars_part)
         fractals_part = find_fractals(processed_part)
         gaps_part = find_gaps(bars_part) if timeframe in INTRADAY_TIMEFRAMES - {"1"} else []
-        pens_part = [asdict(p) for p in build_pens(fractals_part, processed_part, gaps_part, symbol, bars_part, timeframe=timeframe)]
+        pen_diagnostics: list[dict[str, Any]] = []
+        pens_part = [asdict(p) for p in build_pens(fractals_part, processed_part, gaps_part, symbol, bars_part, timeframe=timeframe, diagnostics=pen_diagnostics)]
+        for diagnostic in pen_diagnostics:
+            diagnostic["range_index"] = range_index
         part = {"bars": [b.json() | {"amount": getattr(b, "amount", 0)} for b in bars_part],
                 "processed_bars": [asdict(x) for x in processed_part], "fractals": [asdict(x) for x in fractals_part],
-                "pens": pens_part, "pen_centers": build_pen_centers(pens_part)}
+                "pens": pens_part, "pen_centers": build_pen_centers(pens_part), "pen_diagnostics": pen_diagnostics}
         pen_ids: dict[str, str] = {}
         for pen in part["pens"]:
             old_id = pen["id"]
@@ -353,10 +357,10 @@ def analyze_period_ranges(rows: list[dict[str, Any]], symbol: str, timeframe: st
         item["level_ordinal"] = level_ordinal
     payload = {"symbol": symbol, "timeframe": timeframe,
                "definition_version": PERIOD_DEFINITION_VERSION,
-               "calculator_fingerprint": fingerprint, **merged,
-               "decomposition": hierarchy["decompositions"],
-               "hierarchy_input_hash": hierarchy["hierarchy_input_hash"],
-               "movement_input_hash": hierarchy["movement_input_hash"],
+               "calculator_fingerprint": fingerprint,
+               **merged,
+               "unassigned_by_level": hierarchy["unassigned_by_level"],
+               "hierarchy_issues": hierarchy["hierarchy_issues"],
                "max_confirmed_center_level": hierarchy["max_confirmed_center_level"],
                "max_available_center_level": hierarchy["max_available_center_level"]}
     payload["structure_version"] = _structure_version(payload)
@@ -399,7 +403,7 @@ class PeriodStructureService:
                     "coverage": self.coverage(symbol, timeframe, adjustflag),
                     "pens": [], "centers": [], "pen_centers": [], "center_relations": [], "movements": [],
                     "processed_bars": [], "fractals": [], "max_confirmed_center_level": 0,
-                    "max_available_center_level": 0, "movement_input_hash": "", "decomposition": {}}
+                    "max_available_center_level": 0}
         market_version = self.market_version(rows)
         coverage = self.coverage(symbol, timeframe, adjustflag)
         meta = self.store.save_market_coverage(symbol, timeframe, adjustflag, coverage)
@@ -420,8 +424,7 @@ class PeriodStructureService:
                     "calculator_fingerprint": self.calculator_fingerprint,
                     "coverage": coverage,
                     "pens": [], "centers": [], "pen_centers": [], "center_relations": [], "movements": [],
-                    "max_confirmed_center_level": 0, "max_available_center_level": 0,
-                    "movement_input_hash": "", "decomposition": {}}
+                    "max_confirmed_center_level": 0, "max_available_center_level": 0}
         result = analyze_period_ranges(
             rows, symbol, timeframe, coverage["continuous_ranges"],
             calculator_fingerprint=self.calculator_fingerprint,
@@ -442,16 +445,16 @@ class PeriodStructureService:
             return self.ensure(symbol, timeframe, adjustflag, True)
         rows = self.store.market_bars(symbol,timeframe,adjustflag,"0000-01-01")
         mv = self.market_version(rows); cov = self.store.market_coverage(symbol,timeframe,adjustflag)
-        if mv != active["market_version"]: return {"symbol":symbol,"timeframe":timeframe,"available":False,"definition_version":PERIOD_DEFINITION_VERSION,"stale_reason":"行情版本与结构快照不一致","market_version":mv,"structure_version":active["structure_version"],"movement_input_hash":active.get("movement_input_hash", "")}
+        if mv != active["market_version"]: return {"symbol":symbol,"timeframe":timeframe,"available":False,"definition_version":PERIOD_DEFINITION_VERSION,"stale_reason":"行情版本与结构快照不一致","market_version":mv,"structure_version":active["structure_version"]}
         current_cov = cov["coverage_version"] if cov else ""
         if current_cov != active.get("coverage_version", ""):
-            return {"symbol":symbol,"timeframe":timeframe,"available":False,"definition_version":PERIOD_DEFINITION_VERSION,"stale_reason":"行情覆盖版本与结构快照不一致","market_version":mv,"coverage_version":current_cov,"structure_version":active["structure_version"],"movement_input_hash":active.get("movement_input_hash", ""),"coverage":cov["payload"] if cov else {}}
+            return {"symbol":symbol,"timeframe":timeframe,"available":False,"definition_version":PERIOD_DEFINITION_VERSION,"stale_reason":"行情覆盖版本与结构快照不一致","market_version":mv,"coverage_version":current_cov,"structure_version":active["structure_version"],"coverage":cov["payload"] if cov else {}}
         run_id = active["id"]
         centers = self.store.period_rows("period_pen_centers", run_id)
         return {"symbol": symbol, "timeframe": timeframe, "available": True,
                 "definition_version": active["definition_version"], "market_version": mv,
                 "calculator_fingerprint": active.get("calculator_fingerprint", ""),
-                "coverage_version": active["coverage_version"],
+                                "coverage_version": active["coverage_version"],
                 "structure_version": active["structure_version"], "run_id": run_id,
                 "coverage": cov["payload"] if cov else {},
                 "processed_bars": self.store.period_rows("period_processed_bars", run_id),
@@ -460,29 +463,29 @@ class PeriodStructureService:
                 "centers": centers, "pen_centers": centers,
                 "center_relations": self.store.period_rows("period_center_relations", run_id),
                 "movements": self.store.period_rows("period_movements", run_id),
-                "movement_input_hash": active.get("movement_input_hash", ""),
+                **json.loads(active.get("structure_metadata", "{}") or "{}"),
                 "max_confirmed_center_level": int(active.get("max_confirmed_center_level", 0)),
                 "max_available_center_level": int(active.get("max_available_center_level", 0)),
                 "center_level_counts": json.loads(active.get("center_level_counts", "{}") or "{}"),
-                "movement_level_counts": json.loads(active.get("movement_level_counts", "{}") or "{}"),
-                "decomposition": json.loads(active.get("decomposition_meta", "{}") or "{}")}
+                "movement_level_counts": json.loads(active.get("movement_level_counts", "{}") or "{}")}
 
-    def chart_page(self, symbol, timeframe, adjustflag, before, limit, ma_periods=(5, 10, 20, 60), boll_period=20, boll_multiplier=2.0, structure_level=1):
-        page, has_more = self.store.market_page(symbol,timeframe,adjustflag,before,limit)
+    def chart_page(self, symbol, timeframe, adjustflag, before, limit, ma_periods=(5, 10, 20, 60), boll_period=20, boll_multiplier=2.0):
+        page, has_more = self.store.market_page(symbol, timeframe, adjustflag, before, limit)
         data = self.effective_structure(symbol, timeframe, adjustflag)
         coverage = data.get("coverage", {})
         all_rows = self.store.market_bars(symbol, timeframe, adjustflag, "0000-01-01")
-        macd_by_date = {item["trade_date"]: item for item in calculate_macd(
-            all_rows, coverage.get("continuous_ranges", [])
-        )}
+        macd_by_date = {item["trade_date"]: item for item in calculate_macd(all_rows, coverage.get("continuous_ranges", []))}
         ma_by_date = {item["trade_date"]: item for item in calculate_moving_averages(all_rows, tuple(ma_periods))}
         boll_by_date = {item["trade_date"]: item for item in calculate_bollinger(all_rows, boll_period, boll_multiplier)}
-        out = {"symbol":symbol,"timeframe":timeframe,"adjustflag":adjustflag,"bars":page,
-               "indicators":{"macd":[macd_by_date[item["trade_date"]] for item in page
-                                      if item["trade_date"] in macd_by_date],
-                             "ma":[{"trade_date": ma_by_date[item["trade_date"]]["trade_date"], "values": {str(period): ma_by_date[item["trade_date"]].get(f"ma{period}") for period in ma_periods}, **{f"ma{period}": ma_by_date[item["trade_date"]].get(f"ma{period}") for period in ma_periods}} for item in page if item["trade_date"] in ma_by_date],
-                             "boll":[boll_by_date[item["trade_date"]] for item in page if item["trade_date"] in boll_by_date]},
-               "has_more":has_more,"next_before":page[0]["trade_date"] if page else None}
+        out = {
+            "symbol": symbol, "timeframe": timeframe, "adjustflag": adjustflag, "bars": page,
+            "indicators": {
+                "macd": [macd_by_date[item["trade_date"]] for item in page if item["trade_date"] in macd_by_date],
+                "ma": [{"trade_date": item["trade_date"], "values": {str(period): ma_by_date[item["trade_date"]].get(f"ma{period}") for period in ma_periods}, **{f"ma{period}": ma_by_date[item["trade_date"]].get(f"ma{period}") for period in ma_periods}} for item in page if item["trade_date"] in ma_by_date],
+                "boll": [boll_by_date[item["trade_date"]] for item in page if item["trade_date"] in boll_by_date],
+            },
+            "has_more": has_more, "next_before": page[0]["trade_date"] if page else None,
+        }
         if timeframe == "1" and page:
             daily_rows = self.store.market_bars(symbol, "d", adjustflag, "0000-01-01", page[0]["trade_date"][:10])
             previous = [row for row in daily_rows if row["trade_date"][:10] < page[0]["trade_date"][:10]]
@@ -493,77 +496,51 @@ class PeriodStructureService:
             previous_close = daily_rows[-2]["close"] if len(daily_rows) > 1 else latest["open"]
             now = datetime.now(ZoneInfo("Asia/Shanghai"))
             latest_day = latest["trade_date"][:10]
-            today = now.date().isoformat()
-            status = market_status(now, latest_day, bool(self.store.trading_dates(today, today)))
+            status = market_status(now, latest_day, bool(self.store.trading_dates(now.date().isoformat(), now.date().isoformat())))
             change = latest["close"] - previous_close
-            out["quote"] = {"trade_date": latest["trade_date"], "latest": latest["close"],
-                            "change": change, "change_pct": change / previous_close * 100 if previous_close else None,
-                            "previous_close": previous_close, "open": latest["open"], "high": latest["high"],
-                            "low": latest["low"], "volume": latest["volume"], "amount": latest["amount"],
-                            "amplitude_pct": (latest["high"] - latest["low"]) / previous_close * 100 if previous_close else None,
-                            "market_status": status}
-        out.update({k: data.get(k) for k in ("available", "definition_version", "calculator_fingerprint", "market_version",
-                   "coverage_version", "structure_version", "coverage", "run_id", "stale_reason")})
-        out.update({k: data.get(k) for k in ("system_structure_version", "effective_structure_version", "override_version", "overrides", "override_conflicts", "drawings", "center_level_counts", "movement_level_counts", "max_confirmed_center_level", "max_available_center_level")})
-        out["movement_input_hash"] = data.get("movement_input_hash", "")
-        max_level = max(1, int(data.get("max_available_center_level", 1) or 1))
-        active_level = min(max(1, int(structure_level)), max_level)
-        out.update({
-            "active_structure_level": active_level,
-            "center_levels": sorted({
-                int(item.get("level", 1))
-                for item in data.get("centers", data.get("pen_centers", []))
-                if item.get("role", "hierarchy") == "hierarchy"
-            }),
-            "movement_levels": sorted({int(item.get("level", 1)) for item in data.get("movements", []) if item.get("role") == "same_level_decomposition"}),
-        })
+            out["quote"] = {
+                "trade_date": latest["trade_date"], "latest": latest["close"],
+                "change": change, "change_pct": change / previous_close * 100 if previous_close else None,
+                "previous_close": previous_close, "open": latest["open"], "high": latest["high"],
+                "low": latest["low"], "volume": latest["volume"], "amount": latest["amount"],
+                "amplitude_pct": ((latest["high"] - latest["low"]) / previous_close * 100) if previous_close else None,
+                "market_status": status,
+            }
+        out.update({key: data.get(key) for key in (
+            "available", "definition_version", "calculator_fingerprint",
+            "market_version", "coverage_version", "structure_version", "coverage", "run_id",
+            "system_structure_version", "effective_structure_version", "override_version",
+            "overrides", "override_conflicts", "drawings", "drawings_version",
+            "structure_overrides_enabled", "movement_confirmation_mode",
+            "unassigned_by_level", "hierarchy_issues", "pen_diagnostics",
+            "center_level_counts", "movement_level_counts", "max_confirmed_center_level",
+            "max_available_center_level",
+        )})
+        out["center_levels"] = sorted({int(item.get("level", 1)) for item in data.get("centers", [])})
+        out["movement_levels"] = sorted({int(item.get("level", 1)) for item in data.get("movements", [])})
         if not data.get("available"):
-            return out | {"pens": [], "centers": [], "pen_centers": [], "center_relations": [], "movements": [], "decomposition": {}}
-        start,end = (page[0]["trade_date"],page[-1]["trade_date"]) if page else ("","9999")
-        intersects=lambda x:x.get("end_date",x.get("trade_date",""))>=start and x.get("start_date",x.get("trade_date",""))<=end
-        all_centers = data.get("centers", data.get("pen_centers", []))
-        level_appearance = color_period_for_level(timeframe, active_level)
-        centers = [
-            {**x, **level_appearance}
-            for x in all_centers
-            if x.get("role", "hierarchy") == "hierarchy"
-            and int(x.get("level", 1)) == active_level
-            and intersects(x)
-        ]
-        context_pen_ids = {
-            pen_id
-            for item in centers
-            for pen_id in item.get("source_pen_ids", item.get("pen_ids", []))
-        }
-        for center in centers:
-            context_pen_ids.update(center.get("formation_pen_ids", []))
-            context_pen_ids.update(center.get("core_pen_ids", []))
-            context_pen_ids.update(center.get("extension_pen_ids", []))
-            context_pen_ids.update(center.get("peripheral_pen_ids", []))
-            context_pen_ids.update(center.get("departure_pen_ids", []))
-            if center.get("entry_pen_id"):
-                context_pen_ids.add(center["entry_pen_id"])
-        pens = [x for x in data["pens"] if intersects(x) or x["id"] in context_pen_ids]
-        movement_rows = []
+            return out | {"pens": [], "centers": [], "pen_centers": [], "center_relations": [], "movements": [], "pen_diagnostics": []}
+        start, end = (page[0]["trade_date"], page[-1]["trade_date"]) if page else ("", "9999")
+        intersects = lambda item: max(item.get("end_date", item.get("trade_date", "")), item.get("tail_end_date", "")) >= start and item.get("start_date", item.get("trade_date", "")) <= end
+        out["pen_diagnostics"] = [item for item in data.get("pen_diagnostics", []) if intersects(item)]
+        centers = [{**item, **color_period_for_level(timeframe, int(item.get("level", 1)))} for item in data.get("centers", []) if item.get("role", "hierarchy") == "hierarchy" and intersects(item)]
+        context_pen_ids = {pen_id for center in centers for pen_id in center.get("source_pen_ids", center.get("pen_ids", []))}
+        pens = [item for item in data["pens"] if intersects(item) or item["id"] in context_pen_ids]
+        movements = []
         for movement in data.get("movements", []):
-            if movement.get("role") != "same_level_decomposition" or int(movement.get("level", 1)) != active_level:
-                continue
-            if not intersects(movement):
+            if movement.get("role") != "hierarchy_component" or not intersects(movement):
                 continue
             item = dict(movement)
-            item["path_points"] = self._clip_path_points(
-                movement.get("path_points", []), page, all_rows
-            )
-            movement_rows.append(item)
+            item["path_points"] = self._clip_path_points(movement.get("path_points", []), page, all_rows)
+            movements.append(item)
+        out["center_levels"] = sorted({int(item.get("level", 1)) for item in centers})
+        out["movement_levels"] = sorted({int(item.get("level", 1)) for item in movements})
         visible_center_ids = {item["id"] for item in centers}
-        relations = [item for item in data.get("center_relations", []) if (
-            item.get("previous_center_id") in visible_center_ids or item.get("current_center_id") in visible_center_ids
-        ) and intersects(item)]
-        decomposition = data.get("decomposition", {}).get(str(active_level), {})
-        return out | {"pens": pens, "centers": centers, "pen_centers": centers,
-                      "center_relations": relations, "movements": movement_rows,
-                      "decomposition": decomposition}
-
+        relations = [item for item in data.get("center_relations", []) if (item.get("previous_center_id") in visible_center_ids or item.get("current_center_id") in visible_center_ids) and intersects(item)]
+        pens = [item for item in data["pens"] if intersects(item) or item["id"] in context_pen_ids]
+        context_ids = {center_id for movement in movements for center_id in [*movement.get("center_ids", []), movement.get("confirmation_center_id")] if center_id}
+        context_centers = [center for center in data.get("centers", []) if center["id"] in context_ids - visible_center_ids]
+        return out | {"pens": pens, "centers": centers, "pen_centers": centers, "center_relations": relations, "movements": movements, "context_centers": context_centers}
     @staticmethod
     def _clip_path_points(path_points, page, all_rows):
         if not path_points or not page:
@@ -593,86 +570,16 @@ class PeriodStructureService:
         return list({point["trade_date"]: point for point in inside}.values())
 
     def effective_structure(self, symbol: str, timeframe: str, adjustflag: str = "2"):
-        """Compose read-only system snapshot with active manual overrides."""
+        """Return the system snapshot; historical overrides remain read-only."""
         data = self.ensure(symbol, timeframe, adjustflag)
-        system_pens = [dict(x, origin="system", system_id=x.get("id"), base_run_id=data.get("run_id")) for x in data.get("pens", [])]
-        system_centers = [dict(x, origin="system", system_id=x.get("id"), base_run_id=data.get("run_id")) for x in data.get("centers", data.get("pen_centers", []))]
-        overrides = self.store.structure_overrides(symbol, timeframe, adjustflag)
-        by_target = {}
-        creates = []
-        conflicts = []
-        for item in overrides:
-            payload = item.get("payload") or {}
-            target = item.get("target_id")
-            collection = system_pens if item.get("structure_type") == "pen" else system_centers
-            if target and not any(x.get("id") == target for x in collection):
-                if item.get("status") != "conflicted":
-                    self.store.set_structure_override_status(item["id"], "conflicted", item.get("operation", "update"))
-                item = dict(item, status="conflicted")
-                payload = dict(payload, conflict_reason="系统结构已不存在或锚点失效")
-                conflicts.append(item)
-                continue
-            if item.get("operation") == "create" and item.get("status") == "active":
-                creates.append((item, payload, collection)); continue
-            if target and item.get("status") == "active":
-                by_target[(item.get("structure_type"), target)] = (item, payload)
-        def apply(items, typ):
-            result = []
-            for node in items:
-                current = dict(node)
-                entry = by_target.get((typ, node.get("id")))
-                if entry:
-                    override, payload = entry
-                    if override.get("operation") == "delete":
-                        continue
-                    current.update(payload)
-                    current.update(origin="manual", override_id=override["id"], manual_status="active")
-                result.append(current)
-            return result
-        pens = apply(system_pens, "pen")
-        centers = apply(system_centers, "pen_center")
-        for override, payload, collection in creates:
-            obj = dict(payload)
-            obj.setdefault("id", f"manual-{override['id']}")
-            obj.update(origin="manual", override_id=override["id"], manual_status="active", base_run_id=override.get("base_run_id"))
-            (pens if collection is system_pens else centers).append(obj)
-        active_override_ids = [x["id"] for x in overrides if x.get("status") == "active"]
-        if active_override_ids:
-            l1_centers = [
-                item for item in centers
-                if item.get("role", "hierarchy") == "hierarchy"
-                and int(item.get("level", 1)) == 1
-            ]
-            derived = build_hierarchy(pens, l1_centers, origin="manual-derived")
-            centers = derived["centers"]
-            movements = derived["movements"]
-            decomposition = derived["decompositions"]
-            if isinstance(decomposition, dict):
-                decomposition = dict(decomposition)
-                decomposition.setdefault("movement_input_hash", derived.get("movement_input_hash", ""))
-            center_relations = derived["center_relations"]
-            max_confirmed = derived["max_confirmed_center_level"]
-            max_available = derived["max_available_center_level"]
-            movement_input_hash = derived.get("movement_input_hash", "")
-        else:
-            movements = data.get("movements", [])
-            decomposition = data.get("decomposition", {})
-            center_relations = data.get("center_relations", [])
-            max_confirmed = data.get("max_confirmed_center_level", 0)
-            max_available = data.get("max_available_center_level", 0)
-            movement_input_hash = data.get("movement_input_hash", "")
-        effective_payload = {"pens": pens, "centers": centers, "center_relations": center_relations,
-                             "movements": movements, "override_ids": active_override_ids}
-        effective_version = hashlib.sha256(json.dumps(effective_payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:20]
-        data.update({"pens": pens, "centers": centers, "pen_centers": centers,
-                     "center_relations": center_relations, "movements": movements,
-                     "decomposition": decomposition,
-                     "movement_input_hash": movement_input_hash,
-                     "max_confirmed_center_level": max_confirmed,
-                     "max_available_center_level": max_available,
-                     "overrides": overrides, "override_conflicts": conflicts,
-                     "drawings": self.store.drawings(symbol, timeframe),
-                     "drawings_version": self.store.drawings_version(symbol, timeframe),
-                     "system_structure_version": data.get("structure_version", ""),
-                     "effective_structure_version": effective_version, "override_version": effective_version})
+        data.update({
+            "overrides": self.store.structure_overrides(symbol, timeframe, adjustflag),
+            "override_conflicts": [], "structure_overrides_enabled": False,
+            "movement_confirmation_mode": "reverse_independent_center",
+            "drawings": self.store.drawings(symbol, timeframe),
+            "drawings_version": self.store.drawings_version(symbol, timeframe),
+            "system_structure_version": data.get("structure_version", ""),
+            "effective_structure_version": data.get("structure_version", ""),
+            "override_version": "disabled",
+        })
         return data

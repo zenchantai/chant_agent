@@ -159,9 +159,10 @@ def health():
     max_level = store.highest_active_center_level(PERIOD_DEFINITION_VERSION)
     return {"ok": True, "mode": "paper_only", "definition_version": PERIOD_DEFINITION_VERSION,
             "calculator_fingerprint": period_structure_service.calculator_fingerprint,
-            "timeframes": list(TIMEFRAMES), "legacy_modes_enabled": False,
-            "max_center_level": max_level, "same_level_decomposition": True,
-            "movement_mode": "same_period_center_driven"}
+            "timeframes": list(TIMEFRAMES), "structure_mode": "formal_hierarchy",
+            "movement_confirmation_mode": "reverse_independent_center",
+            "max_center_level": max_level,
+            "movement_mode": "hierarchy_component"}
 
 
 @app.post("/api/analyze")
@@ -405,7 +406,8 @@ def chart_data(symbol: str, timeframe: str = "d", adjustflag: str = "2", before:
         raise HTTPException(status_code=400, detail=f"不支持的周期: {timeframe}")
     periods = tuple(sorted({int(item) for item in ma_periods.split(",") if item.strip()})) or (5, 10, 20, 60)
     periods = tuple(item for item in periods if 1 <= item <= 1000)[:10] or (5, 10, 20, 60)
-    result = period_structure_service.chart_page(symbol, timeframe, adjustflag, before, min(max(limit, 1), 300), periods, max(1, min(boll_period, 1000)), max(0.01, boll_multiplier), structure_level)
+    result = period_structure_service.chart_page(symbol, timeframe, adjustflag, before, min(max(limit, 1), 300), periods, max(1, min(boll_period, 1000)), max(0.01, boll_multiplier))
+    result["active_structure_level"] = 1
     result["coverage_required"] = True
     result["coverage_timeframe"] = timeframe
     stored = store.market_coverage(symbol, timeframe, adjustflag)
@@ -416,6 +418,7 @@ def chart_data(symbol: str, timeframe: str = "d", adjustflag: str = "2", before:
         result["sampling_coverage"] = stored["payload"]
         result["sampling_coverage_version"] = stored["coverage_version"]
     return result
+
 
 def _structure_base(symbol: str, timeframe: str, adjustflag: str, run_id: int, version: str):
     run = store.active_period_structure_run(symbol, timeframe, adjustflag)
@@ -479,69 +482,33 @@ def list_structure_overrides(symbol: str, timeframe: str = "d", adjustflag: str 
 
 @app.post("/api/structure-overrides/{symbol}")
 def create_structure_override(symbol: str, request: StructureOverrideRequest):
-    if request.timeframe not in TIMEFRAMES or request.structure_type not in {"pen", "pen_center"} or request.operation not in {"create", "update", "delete"}:
-        raise HTTPException(status_code=400, detail="结构修订参数不合法")
-    run = _structure_base(symbol, request.timeframe, request.adjustflag, request.base_run_id, request.base_structure_version)
-    _validate_structure_override_target(
-        run, request.structure_type, request.operation, request.target_id, request.payload
-    )
-    item = request.model_dump(); item["symbol"] = symbol
-    try: return store.create_structure_override(item, run)
-    except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+    raise HTTPException(status_code=409, detail="严格走势确认模式暂时关闭人工结构修订；历史记录保留且不参与计算")
 
 
 @app.post("/api/structure-overrides/{symbol}/batch")
 def batch_structure_overrides(symbol: str, request: StructureOverrideBatchRequest):
-    if request.timeframe not in TIMEFRAMES:
-        raise HTTPException(status_code=400, detail="不支持的周期")
-    run = _structure_base(symbol, request.timeframe, request.adjustflag,
-                          request.base_run_id, request.base_structure_version)
-    for operation in request.operations:
-        structure_type = operation.get("structure_type")
-        action = operation.get("operation")
-        if structure_type not in {"pen", "pen_center"} or action not in {"create", "update", "delete"}:
-            raise HTTPException(status_code=400, detail="批量结构修订参数不合法")
-        _validate_structure_override_target(
-            run, structure_type, action, operation.get("target_id"), operation.get("payload")
-        )
-    try:
-        return store.batch_structure_overrides(symbol, request.model_dump(), run)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    raise HTTPException(status_code=409, detail="严格走势确认模式暂时关闭人工结构修订；历史记录保留且不参与计算")
+
 
 @app.patch("/api/structure-overrides/{symbol}/{override_id}")
 def patch_structure_override(symbol: str, override_id: int, request: StructureOverridePatch):
-    current = store.structure_override(override_id)
-    if not current or current["symbol"] != symbol: raise HTTPException(status_code=404, detail="结构修订不存在")
-    run = _structure_base(symbol, current["timeframe"], current["adjustflag"], request.base_run_id, request.base_structure_version)
-    _validate_structure_override_target(
-        run, current["structure_type"], "update", current.get("target_id"), request.payload
-    )
-    try: return store.update_structure_override(override_id, request.payload, run)
-    except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+    raise HTTPException(status_code=409, detail="严格走势确认模式暂时关闭人工结构修订；历史记录保留且不参与计算")
+
 
 @app.delete("/api/structure-overrides/{symbol}/{override_id}")
 def delete_structure_override(symbol: str, override_id: int):
-    current = store.structure_override(override_id)
-    if not current or current["symbol"] != symbol: raise HTTPException(status_code=404, detail="结构修订不存在")
-    run = store.active_period_structure_run(symbol, current["timeframe"], current["adjustflag"])
-    if not run:
-        raise HTTPException(status_code=409, detail="结构快照不存在或已失效")
-    _validate_structure_override_target(
-        run, current["structure_type"], "delete", current.get("target_id"), current.get("payload")
-    )
-    return store.set_structure_override_status(override_id, "active", "delete")
+    raise HTTPException(status_code=409, detail="严格走势确认模式暂时关闭人工结构修订；历史记录保留且不参与计算")
+
 
 @app.post("/api/structure-overrides/{symbol}/{override_id}/restore")
 def restore_structure_override(symbol: str, override_id: int):
-    current = store.structure_override(override_id)
-    if not current or current["symbol"] != symbol: raise HTTPException(status_code=404, detail="结构修订不存在")
-    return store.restore_structure_overrides(symbol, current["timeframe"], current["adjustflag"], override_id) or {"ok": True}
+    raise HTTPException(status_code=409, detail="严格走势确认模式暂时关闭人工结构修订；历史记录保留且不参与计算")
+
 
 @app.post("/api/structure-overrides/{symbol}/restore-all")
 def restore_all_structure_overrides(symbol: str, timeframe: str = "d", adjustflag: str = "2"):
-    store.restore_structure_overrides(symbol, timeframe, adjustflag)
-    return {"ok": True}
+    raise HTTPException(status_code=409, detail="严格走势确认模式暂时关闭人工结构修订；历史记录保留且不参与计算")
+
 
 def _validate_drawing(symbol: str, request: DrawingRequest):
     if request.timeframe not in TIMEFRAMES or request.object_type not in {"segment", "line", "rectangle"}:

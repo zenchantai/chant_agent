@@ -99,7 +99,7 @@ def _summarize_result(result: dict) -> dict:
     movements = result.get("movements", []) or []
     center_counts = Counter(str(item.get("level", 1)) for item in centers)
     movement_counts = Counter(
-        f"L{item.get('level', 1)}:{item.get('role', 'same_level_decomposition')}"
+        f"L{item.get('level', 1)}:{item.get('role', 'hierarchy_component')}"
         for item in movements
     )
     return {
@@ -208,6 +208,19 @@ def _execute(db: Path, requested_symbols: tuple[str, ...] | None = None) -> dict
                 item["traceback"] = traceback.format_exc(limit=12)
             item["finished_at"] = datetime.now(timezone.utc).isoformat()
             items.append(item)
+    retired_active_runs = []
+    if all(item.get("status") == "success" for item in items):
+        for symbol in symbols:
+            stale = store.db.execute("""SELECT a.timeframe,a.run_id FROM active_period_structure_runs a
+                JOIN period_structure_runs r ON r.id=a.run_id
+                WHERE a.symbol=? AND a.adjustflag=? AND r.definition_version!=?""",
+                (symbol, ADJUSTFLAG, EXPECTED_VERSION)).fetchall()
+            for timeframe, run_id in stale:
+                if timeframe not in TIMEFRAMES:
+                    store.db.execute("DELETE FROM active_period_structure_runs WHERE symbol=? AND timeframe=? AND adjustflag=? AND run_id=?",
+                                     (symbol, timeframe, ADJUSTFLAG, run_id))
+                    retired_active_runs.append({"symbol": symbol, "timeframe": timeframe, "run_id": run_id})
+        store.db.commit()
     try:
         store.db.close()
     except Exception:
@@ -221,6 +234,7 @@ def _execute(db: Path, requested_symbols: tuple[str, ...] | None = None) -> dict
         "success_count": sum(item.get("status") == "success" for item in items),
         "failure_count": sum(item.get("status") == "failed" for item in items),
         "items": items,
+        "retired_active_runs": retired_active_runs,
     }
 
 

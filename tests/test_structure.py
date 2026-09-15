@@ -12,7 +12,7 @@ from app.period_structure import (
     calculate_calculator_fingerprint,
     color_period_for_level,
 )
-from app.rules import load_rulebook
+from app.rules import PERIOD_DEFINITION_VERSION, load_rulebook
 from app.store import Store
 
 
@@ -141,7 +141,7 @@ def pen(i, start, end):
 
 
 def test_rulebook_version_and_coverage_gate():
-    assert load_rulebook()["version"] == "chan-period-center-hierarchy-cache-fingerprint-v13"
+    assert load_rulebook()["version"] == PERIOD_DEFINITION_VERSION
     rows = session_rows(1)
     dates = sorted({x["trade_date"][:10] for x in rows})
     assert validate_5m_coverage(rows, expected_trading_dates=dates)["complete"] is True
@@ -165,7 +165,6 @@ def test_period_snapshot_is_persisted_and_reproducible(tmp_path):
     assert first["center_relations"] == second["center_relations"]
     assert first_store.period_rows("period_movements", active["id"]) == first["movements"]
     assert active["movement_count"] == len(first["movements"])
-    assert active["hierarchy_input_hash"] == first["hierarchy_input_hash"]
     assert first_store.period_rows("period_center_relations", active["id"]) == first["center_relations"]
     assert json.loads(active["center_level_counts"]) == {
         str(level): sum(item["level"] == level for item in first["centers"])
@@ -232,12 +231,11 @@ def test_chart_pagination_uses_same_period_structures(tmp_path):
         page = service.chart_page("000001", "5", "2", before, 300); pages.extend(page["bars"])
         assert "segments" not in page
         assert all(key in page for key in ("center_relations", "center_levels", "movement_levels",
-                                            "movements", "decomposition"))
-        assert page["active_structure_level"] == 1
+                                            "movements"))
         assert page["centers"] == page["pen_centers"]
-        assert all(center["level"] == 1 for center in page["centers"])
         assert all(center.get("role") == "hierarchy" for center in page["centers"])
-        assert all(center["display_period"] == "5" and center["color_key"] == "period-5"
+        assert all(center["level"] in page["center_levels"] for center in page["centers"])
+        assert all(center["display_period"] == "5" and center["color_key"].startswith("period-5")
                    for center in page["centers"])
         returned_pen_ids = {item["id"] for item in page["pens"]}
         assert all(set(center["source_pen_ids"]) <= returned_pen_ids for center in page["pen_centers"])
@@ -278,7 +276,7 @@ def test_chart_macd_is_stable_across_page_sizes(tmp_path):
     assert all(item == large_by_date[item["trade_date"]] for item in small)
 
 
-def test_active_manual_override_rebuilds_effective_movements(tmp_path):
+def test_active_manual_override_is_preserved_but_ignored(tmp_path):
     store = Store(str(tmp_path / "manual-movement.db")); rows = session_rows()
     seed(store, "000001", rows); service = PeriodStructureService(store)
     system = service.ensure("000001", "5", force=True)
@@ -292,8 +290,10 @@ def test_active_manual_override_rebuilds_effective_movements(tmp_path):
     }, base)
     effective = service.effective_structure("000001", "5", "2")
     assert effective["movements"]
-    assert all(item["origin"] == "manual-derived" for item in effective["movements"])
-    assert effective["decomposition"]["movement_input_hash"] != ""
+    assert effective["movements"] == system["movements"]
+    assert effective["pens"] == system["pens"]
+    assert effective["structure_overrides_enabled"] is False
+    assert len(effective["overrides"]) == 1
 
 
 def test_directional_pen_center_uses_entry_plus_three_core_pens():

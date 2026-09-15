@@ -106,20 +106,22 @@ describe("走势 tooltip", () => {
       start_date:"2026-01-01", end_date:"2026-02-01", start_price:10, end_price:20,
       center_count:2, confirmed_at:"2026-02-10",
     });
+    expect(html).toContain("结束原因：尚未确认");
     expect(html).toContain("趋势 · 向上");
     expect(html).toContain("实际边界：2026-01-01 → 2026-02-01");
     expect(html).toContain("确认时间：2026-02-10");
   });
 
-  it("展示独立计算来源和走势的跨周期语义对应", () => {
+  it("展示正式层级走势来源和级别语义", () => {
     const html = formatMovementTooltip({
-      id:"m1", ordinal:0, level:1, role:"same_level_decomposition", kind:"movement", direction:"up", classification:"trend", status:"confirmed",
+      id:"m1", ordinal:0, level:1, role:"hierarchy_component", kind:"movement", direction:"up", classification:"trend", status:"confirmed",
       start_date:"2026-01-01", end_date:"2026-02-01", start_price:10, end_price:20,
       center_count:2, confirmed_at:"2026-02-10",
     }, "d");
     expect(html).toContain("结构级别：L1");
     expect(html).toContain("计算来源：日线独立结构");
-    expect(html).toContain("语义对应：简化的周线一笔");
+    expect(html).toContain("语义对应：日线内部 L1 走势（反向独立中枢确认结束）");
+    expect(html).not.toContain("简化的周线一笔");
   });
 });
 
@@ -135,10 +137,10 @@ describe("中枢级别显示", () => {
     expect(centersForStructureLevel(centers, 2).map((center) => center.id)).toEqual(["l2"]);
   });
 
-  it("不把同级分解的证据中枢当作层级中枢绘制", () => {
+  it("不把未知角色中枢当作层级中枢绘制", () => {
     expect(centersForStructureLevel([
       ...centers,
-      { id:"evidence", ordinal:3, level:1, role:"same_level", kind:"center", status:"confirmed", start_date:"2026-01-13", end_date:"2026-01-14", zd:10, zg:11 },
+      { id:"evidence", ordinal:3, level:1, role:"legacy", kind:"center", status:"confirmed", start_date:"2026-01-13", end_date:"2026-01-14", zd:10, zg:11 },
     ] as any, 1).map((center) => center.id)).toEqual(["l1"]);
   });
 
@@ -150,9 +152,9 @@ describe("中枢级别显示", () => {
       confirmed_at:"2026-01-09",
     }, "d");
     expect(html).toContain("L2 中枢");
-    expect(html).toContain("显示对应周期：周线");
+    expect(html).toContain("配色参考（非结构周期）：周线");
     expect(html).toContain("计算来源：日线独立结构");
-    expect(html).toContain("语义对应：周线级别中枢");
+    expect(html).toContain("语义对应：日线内部 L2 中枢（非跨周期递归）");
     expect(html).toContain("颜色标识：period-w");
     expect(html).toContain("实际边界：2026-01-04 → 2026-01-08");
   });
@@ -188,10 +190,10 @@ describe("走势端点", () => {
     ]);
   });
 
-  it("保持红涨绿跌，并让 provisional 使用紫色虚线", () => {
-    expect(movementVisualStyle("dark", movements[0])).toEqual({ color:"#ef6a65", lineType:"solid" });
-    expect(movementVisualStyle("light", movements[1])).toEqual({ color:"#177a50", lineType:"solid" });
-    expect(movementVisualStyle("dark", movements[2])).toEqual({ color:"#b59cff", lineType:"dashed" });
+  it("按级别着色，并让 provisional 使用虚线", () => {
+    expect(movementVisualStyle("dark", movements[0], "d")).toEqual({ color:"#F2C14E", lineType:"solid" });
+    expect(movementVisualStyle("light", movements[1], "d")).toEqual({ color:"#A87800", lineType:"solid" });
+    expect(movementVisualStyle("dark", movements[2], "d")).toEqual({ color:"#F2C14E", lineType:"dashed" });
   });
 });
 

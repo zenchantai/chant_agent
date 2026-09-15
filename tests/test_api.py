@@ -8,6 +8,7 @@ from app import main as main_module
 from app.coverage import EXPECTED_5M_TIMES
 from app.store import Store
 from app.period_structure import PeriodStructureService
+from app.rules import PERIOD_DEFINITION_VERSION
 from tests.test_structure import seed
 from app.securities import SecurityCatalogService
 
@@ -25,43 +26,40 @@ def rows(days=12):
     return result
 
 
-def test_period_api_exposes_v13_hierarchy_and_keeps_legacy_routes_removed(tmp_path, monkeypatch):
+def test_period_api_exposes_formal_hierarchy_without_segments(tmp_path, monkeypatch):
     store=Store(str(tmp_path/"api.db")); service=PeriodStructureService(store)
     seed(store,"000001",rows()); service.ensure("000001","5",force=True)
     monkeypatch.setattr(main_module,"store",store); monkeypatch.setattr(main_module,"period_structure_service",service)
     client=TestClient(main_module.app)
     health=client.get("/api/health").json()
-    assert health["definition_version"]=="chan-period-center-hierarchy-cache-fingerprint-v13" and health["legacy_modes_enabled"] is False
+    assert health["definition_version"]==PERIOD_DEFINITION_VERSION
+    assert "segment_algorithm_version" not in health
     assert len(health["calculator_fingerprint"]) == 64
-    assert health["max_center_level"] >= 1
-    assert health["same_level_decomposition"] is True
-    assert health["movement_mode"] == "same_period_center_driven"
+    assert health["max_center_level"] >= 0
+    assert health["structure_mode"] == "formal_hierarchy"
+    assert health["movement_confirmation_mode"] == "reverse_independent_center"
     chart=client.get("/api/chart-data/000001",params={"timeframe":"5", "structure_level": 1})
     payload = chart.json()
     assert chart.status_code==200 and all(key in payload for key in (
         "pens", "centers", "pen_centers", "center_relations", "movements",
-        "center_levels", "movement_levels", "active_structure_level", "decomposition",
+        "center_levels", "movement_levels",
         "calculator_fingerprint",
     ))
     assert payload["calculator_fingerprint"] == service.calculator_fingerprint
-    assert all(key not in payload for key in ("segments","edges","levels","structure_level","effective_center_ids"))
-    assert payload["centers"] == payload["pen_centers"]
     assert payload["active_structure_level"] == 1
-    assert all(center["level"] == 1 for center in payload["centers"])
-    assert all(center["display_period"] == "5" and center["color_key"] == "period-5"
+    assert all(key not in payload for key in ("segments", "segment_count", "segment_algorithm_version"))
+    assert all(key not in payload for key in ("edges","levels","structure_level","effective_center_ids"))
+    assert payload["centers"] == payload["pen_centers"]
+    assert {center["level"] for center in payload["centers"]} <= set(payload["center_levels"])
+    assert all(center["display_period"] == "5" and center["color_key"].startswith("period-5")
                for center in payload["centers"])
-    assert all(movement["level"] == 1 and movement["role"] == "same_level_decomposition"
+    assert all(movement["level"] in payload["movement_levels"] and movement["role"] == "hierarchy_component"
                for movement in payload["movements"])
-    if 2 in payload["center_levels"]:
-        level_two = client.get("/api/chart-data/000001", params={"timeframe": "5", "structure_level": 2}).json()
-        assert level_two["active_structure_level"] == 2
-        assert level_two["centers"]
-        assert all(center["level"] == 2 for center in level_two["centers"])
-        assert all(center["display_period"] == "5" and center["color_key"] == "period-5-level-L2"
-                   for center in level_two["centers"])
+    level_two = client.get("/api/chart-data/000001", params={"timeframe": "5", "structure_level": 2}).json()
+    assert [item["id"] for item in level_two["centers"]] == [item["id"] for item in payload["centers"]]
+    assert [item["id"] for item in level_two["movements"]] == [item["id"] for item in payload["movements"]]
     levels=client.get("/api/recursive-structure/000001/levels")
     assert levels.status_code==404
-    assert client.put("/api/decomposition/000001/anchor",json={"anchor_date":None}).status_code==404
     coverage = client.get("/api/market-coverage/000001", params={"timeframe":"5"})
     assert coverage.status_code == 200
     assert client.get("/api/chart-data/000001", params={"timeframe":"5"}).json()["available"] is True
@@ -69,54 +67,47 @@ def test_period_api_exposes_v13_hierarchy_and_keeps_legacy_routes_removed(tmp_pa
     assert "movement_level" not in analyze_schema["properties"]
 
 
-def test_structure_override_api_rejects_evidence_and_higher_level_centers(tmp_path, monkeypatch):
-    store = Store(str(tmp_path / "override-levels.db"))
+def test_v2_chart_api_is_removed(tmp_path, monkeypatch):
+    store = Store(str(tmp_path / "v2.db"))
     service = PeriodStructureService(store)
     seed(store, "000001", rows())
-    result = service.ensure("000001", "5", force=True)
+    service.ensure("000001", "5", force=True)
+    monkeypatch.setattr(main_module, "store", store)
+    monkeypatch.setattr(main_module, "period_structure_service", service)
+    client = TestClient(main_module.app)
+
+    assert client.get("/api/v2/chart-data/000001", params={"timeframe": "5"}).status_code == 404
+    payload = client.get("/api/chart-data/000001", params={"timeframe": "5"}).json()
+    assert "decomposition" not in payload
+    assert all(item.get("role") == "hierarchy" for item in payload["centers"])
+    assert all(item.get("role") == "hierarchy_component" for item in payload["movements"])
+
+
+def test_structure_override_api_blocks_all_mutations_without_writing(tmp_path, monkeypatch):
+    store = Store(str(tmp_path / "overrides-disabled.db"))
+    service = PeriodStructureService(store)
+    seed(store, "000001", rows())
+    service.ensure("000001", "5", force=True)
     run = store.active_period_structure_run("000001", "5", "2")
-    evidence = next(center for center in result["centers"] if center.get("role") == "same_level")
     monkeypatch.setattr(main_module, "store", store)
     monkeypatch.setattr(main_module, "period_structure_service", service)
     client = TestClient(main_module.app)
     base = {"timeframe": "5", "adjustflag": "2", "base_run_id": run["id"],
             "base_structure_version": run["structure_version"]}
-
-    rejected = client.post(
-        "/api/structure-overrides/000001",
-        json={**base, "structure_type": "pen_center", "operation": "update",
-              "target_id": evidence["id"], "payload": {"zd": 1}},
-    )
-    assert rejected.status_code == 400
-
-    rejected_batch = client.post(
-        "/api/structure-overrides/000001/batch",
-        json={**base, "operations": [{"structure_type": "pen_center", "operation": "delete",
-                                        "target_id": evidence["id"], "payload": {}}]},
-    )
-    assert rejected_batch.status_code == 400
-
-    rejected_create = client.post(
-        "/api/structure-overrides/000001",
-        json={**base, "structure_type": "pen_center", "operation": "create",
-              "payload": {"level": 2, "role": "hierarchy"}},
-    )
-    assert rejected_create.status_code == 400
-
-    # Simulate a legacy row written before the endpoint guard.  Update/delete
-    # must still reject it when the row is replayed through the API.
-    legacy = store.create_structure_override({
-        "symbol": "000001", "timeframe": "5", "adjustflag": "2",
-        "structure_type": "pen_center", "operation": "update", "target_id": evidence["id"],
-        "payload": {}, "base_run_id": run["id"], "base_structure_version": run["structure_version"],
-    }, run)
-    rejected_patch = client.patch(
-        f"/api/structure-overrides/000001/{legacy['id']}",
-        json={"payload": {"zd": 2}, "base_run_id": run["id"],
-              "base_structure_version": run["structure_version"]},
-    )
-    assert rejected_patch.status_code == 400
-    assert client.delete(f"/api/structure-overrides/000001/{legacy['id']}").status_code == 400
+    requests = [
+        ("post", "/api/structure-overrides/000001", {**base, "structure_type": "pen", "operation": "create", "payload": {}}),
+        ("post", "/api/structure-overrides/000001/batch", {**base, "operations": []}),
+        ("patch", "/api/structure-overrides/000001/999", {"payload": {}, "base_run_id": run["id"], "base_structure_version": run["structure_version"]}),
+        ("delete", "/api/structure-overrides/000001/999", None),
+        ("post", "/api/structure-overrides/000001/999/restore", None),
+        ("post", "/api/structure-overrides/000001/restore-all", None),
+    ]
+    before = store.structure_overrides("000001", "5", "2")
+    for method, path, payload in requests:
+        response = client.request(method, path, **({"json": payload} if payload is not None else {}))
+        assert response.status_code == 409
+        assert "暂时关闭" in response.json()["detail"]
+    assert store.structure_overrides("000001", "5", "2") == before
 
 
 def test_chart_data_includes_quote_and_full_history_moving_averages(tmp_path):

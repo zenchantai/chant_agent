@@ -56,10 +56,8 @@ async def run_agent(rows, symbol: str, question: str | None = None,
     result["as_of"] = datetime.now(timezone.utc).isoformat()
     result["status"] = "paper_only"
     result["signals"] = []
-    # v13 persists same-level evidence centers alongside hierarchy centers so
-    # every movement reference remains resolvable.  The explanation prompt is
-    # intentionally limited to confirmed L1 hierarchy centers and must not
-    # present decomposition-only evidence as a user-facing L1 structure.
+    # Keep explanations grounded in confirmed formal L1 centers and computed
+    # hierarchy movements.
     centers = [
         center for center in result.get("pen_centers", [])
         if center.get("role", "hierarchy") == "hierarchy"
@@ -74,7 +72,6 @@ async def run_agent(rows, symbol: str, question: str | None = None,
         "pens": result.get("pens", [])[-8:],
         "pen_centers": centers,
         "movements": movements,
-        "decomposition": result.get("decomposition", {}),
-        "notice": "只能解释本周期笔、已确认的L1层级中枢及规则引擎已确认或标记为provisional的走势。分解证据中心不作为独立用户结构；模型不能修改结构、升级递归级别或产生买卖点。",
+        "notice": "只能解释本周期笔、已确认的L1正式中枢及规则引擎已确认或标记为provisional的正式走势。模型不能修改结构、升级递归级别或产生买卖点。",
     }, question)
     return result

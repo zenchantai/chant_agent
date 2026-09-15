@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 
 from app.period_structure import calculate_calculator_fingerprint
 from app.rules import PERIOD_DEFINITION_VERSION
+from app.hierarchy import movement_confirmation_errors
 
 # Compatibility fallback for databases created before the stock-pool table.
 # Production audits resolve the scope from the current enabled pool.
@@ -104,8 +105,8 @@ def _group(item: dict) -> tuple[int, int]:
 
 def _center_relation_is_strict(previous: dict, current: dict, direction: str) -> bool:
     try:
-        previous_dd, previous_gg = float(previous["dd"]), float(previous["gg"])
-        current_dd, current_gg = float(current["dd"]), float(current["gg"])
+        previous_dd, previous_gg = float(previous["zd"]), float(previous["zg"])
+        current_dd, current_gg = float(current["zd"]), float(current["zg"])
     except (KeyError, TypeError, ValueError):
         return False
     if direction == "up":
@@ -132,7 +133,7 @@ def _strict_overlap_bounds(items: list[dict]) -> tuple[float, float] | None:
 
 
 def audit_api_payload(payload: dict, requested_level: int) -> list[str]:
-    """Validate the strict level contract of one chart-data response."""
+    """Validate the all-level chart-data contract; requested_level is legacy."""
     problems: list[str] = []
     if payload.get("definition_version") != EXPECTED_VERSION:
         problems.append("API definition_version 不是当前版本")
@@ -143,8 +144,7 @@ def audit_api_payload(payload: dict, requested_level: int) -> list[str]:
         max_available = int(payload.get("max_available_center_level", 0))
     except (TypeError, ValueError):
         return ["API active/max level 不是整数"]
-    expected_active = min(max(1, int(requested_level)), max_available or 1)
-    if active != expected_active:
+    if active != 1:
         problems.append(f"API active_structure_level 错误: 请求 L{requested_level} 得到 L{active}")
     advertised = payload.get("center_levels") or []
     if any(not isinstance(value, int) or value < 1 or value > max_available for value in advertised):
@@ -154,13 +154,17 @@ def audit_api_payload(payload: dict, requested_level: int) -> list[str]:
     except (TypeError, ValueError):
         counted_levels = set()
         problems.append("API center_level_counts 含非法级别")
-    if sorted(set(advertised)) != sorted(counted_levels):
-        problems.append("API center_levels 与 center_level_counts 不一致")
+    # level_counts describe the complete snapshot, while this paged response
+    # advertises only levels that intersect the current page.
     centers = payload.get("centers") or []
     legacy_centers = payload.get("pen_centers") or []
     if centers != legacy_centers:
         problems.append("API centers 与 pen_centers 不一致")
     timeframe = str(payload.get("timeframe", ""))
+    context_centers = centers + (payload.get("context_centers") or [])
+    center_by_id = {center["id"]: center for center in context_centers if center.get("id")}
+    for movement in payload.get("movements") or []:
+        problems.extend(f"API movement:{movement.get('id')}: {error}" for error in movement_confirmation_errors(movement, center_by_id))
 
     def expected_metadata(level: int) -> tuple[str, str]:
         if timeframe == "d" and level <= 3:
@@ -176,16 +180,17 @@ def audit_api_payload(payload: dict, requested_level: int) -> list[str]:
         return "higher", f"structure-higher-L{level}"
 
     for center in centers:
-        if int(center.get("level", 0) or 0) != active:
-            problems.append(f"API centers 混入非当前级别: {center.get('id')}")
+        level = int(center.get("level", 0) or 0)
+        if level < 1 or level > max_available:
+            problems.append(f"API centers 级别非法: {center.get('id')}")
         if not center.get("display_period") or not center.get("color_key"):
             problems.append(f"API center 缺少 display_period/color_key: {center.get('id')}")
         else:
-            display_period, color_key = expected_metadata(active)
+            display_period, color_key = expected_metadata(level)
             if (center.get("display_period"), center.get("color_key")) != (display_period, color_key):
                 problems.append(f"API center 颜色映射错误: {center.get('id')}")
     for movement in payload.get("movements") or []:
-        if int(movement.get("level", 0) or 0) != active or movement.get("role") != "same_level_decomposition":
+        if int(movement.get("level", 0) or 0) < 1 or movement.get("role") != "hierarchy_component":
             problems.append(f"API movements 混入非当前级别/角色: {movement.get('id')}")
     advertised_movements = payload.get("movement_levels") or []
     if any(not isinstance(value, int) or value < 1 or value > max_available for value in advertised_movements):
@@ -225,21 +230,18 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
         result["problems"].append("活动快照 calculator_fingerprint 与当前代码不一致")
     if run["status"] != "success":
         result["problems"].append(f"活动快照状态不是 success: {run['status']}")
-    movement_hash = str(run.get("movement_input_hash") or "")
-    hierarchy_hash = str(run.get("hierarchy_input_hash") or "")
-    if not movement_hash:
-        result["problems"].append("活动快照缺少 movement_input_hash")
-    if movement_hash and hierarchy_hash and movement_hash == hierarchy_hash:
-        result["problems"].append("movement_input_hash 不应与 hierarchy_input_hash 相同")
 
     pens = payloads(connection, "period_pens", run["id"])
     centers = payloads(connection, "period_pen_centers", run["id"])
     relations = payloads(connection, "period_center_relations", run["id"])
     movements = payloads(connection, "period_movements", run["id"])
     pen_ids, center_ids, movement_ids = ids(pens), ids(centers), ids(movements)
+    pen_by_id = {item["id"]: item for item in pens if item.get("id")}
     center_by_id = {item["id"]: item for item in centers if item.get("id")}
     movement_by_id = {item["id"]: item for item in movements if item.get("id")}
     problems: list[str] = result["problems"]
+    for movement in movements:
+        problems.extend(f"movement:{movement.get('id')}: {error}" for error in movement_confirmation_errors(movement, center_by_id))
 
     def require_ids(owner: str, field: str, values: object, allowed: set[str]) -> None:
         if not isinstance(values, list):
@@ -400,9 +402,7 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
                 problems.append(f"{owner} 与同级走势重复消费低级单元: {sorted(duplicate)[:3]}")
             consumed.update(source)
             if previous is not None:
-                if previous.get("end_date") != item.get("start_date") and role == "same_level_decomposition":
-                    problems.append(f"{owner} 与前一同级走势未共享日期端点")
-                elif previous.get("end_date", "") > item.get("start_date", ""):
+                if previous.get("end_date", "") > item.get("start_date", ""):
                     problems.append(f"{owner} 与前一走势时间重叠")
                 if previous.get("end_date") == item.get("start_date"):
                     try:
@@ -413,7 +413,7 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
                 # 盘整 + 盘整可以同向；只有两个同向趋势相邻时，才说明
                 # 本应组织成一个趋势却被错误切开。
                 if (
-                    role == "same_level_decomposition"
+                    role == "hierarchy_component"
                     and previous.get("classification") == item.get("classification") == "trend"
                     and previous.get("direction") == item.get("direction")
                 ):
@@ -432,9 +432,9 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
             elif (
                 item.get("classification") == "consolidation"
                 and item.get("status") == "confirmed"
-                and len(item.get("center_ids", [])) != 1
+                and not item.get("center_ids")
             ):
-                problems.append(f"{owner} consolidation 中枢数量不是 1")
+                problems.append(f"{owner} consolidation 至少需要一个中枢")
             elif (
                 item.get("classification") == "consolidation"
                 and item.get("status") == "provisional"
@@ -483,8 +483,7 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
             problems.append(f"{owner} 高级中枢 confirmed_at 早于实际边界")
 
         # Canonical L1 centers must retain the P0 + P1/P2/P3 contract.  The
-        # checks below deliberately ignore same-level evidence centers, which
-        # are generated by the operation-view decomposition.
+        # The checks below validate only formal hierarchy centers.
         if level == 1 and center.get("role", "hierarchy") == "hierarchy":
             formation = center.get("formation_pen_ids") or [
                 center.get("entry_pen_id"), *(center.get("core_pen_ids") or [])
@@ -542,7 +541,11 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
                 problems.append(f"{owner} 高级中枢子走势未严格重叠")
             if children and any(left.get("direction") == right.get("direction") for left, right in zip(children, children[1:])):
                 problems.append(f"{owner} 高级中枢子走势方向未交替")
-            if center.get("upgrade_kind") not in {"extension_3x3", "expansion"}:
+            if any(child.get("status") != "confirmed" for child in children):
+                problems.append(f"{owner} 高级中枢消费未完成走势")
+            if any(left.get("end_date") != right.get("start_date") or abs(float(left["end_price"]) - float(right["start_price"])) > 1e-9 for left, right in zip(children, children[1:])):
+                problems.append(f"{owner} 高级中枢子走势不连续")
+            if center.get("upgrade_kind") not in {"extension_3x3", "expansion", "recursive_three"}:
                 problems.append(f"{owner} 高级中枢升级路径非法")
             elif center.get("upgrade_kind") == "extension_3x3" and children:
                 # The extension path is specifically 3+3 (+3 on
@@ -586,7 +589,7 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
                 problems.append(f"{owner} child_center_ids 不是相邻低一级中枢")
 
     center_counts = Counter(str(item.get("level", 1)) for item in centers)
-    movement_counts = Counter(f"L{item.get('level', 1)}:{item.get('role', 'same_level_decomposition')}" for item in movements)
+    movement_counts = Counter(f"L{item.get('level', 1)}:{item.get('role', 'hierarchy_component')}" for item in movements)
     stored_centers = json.loads(run.get("center_level_counts") or "{}")
     stored_movements = json.loads(run.get("movement_level_counts") or "{}")
     if dict(center_counts) != dict(stored_centers):
@@ -597,7 +600,6 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
         "center_count": len(centers), "movement_count": len(movements),
         "relation_count": len(relations), "center_level_counts": dict(center_counts),
         "movement_level_counts": dict(movement_counts), "problems": problems,
-        "movement_input_hash": movement_hash, "hierarchy_input_hash": hierarchy_hash,
     })
     result["status"] = "failed" if problems else "ok"
     return result

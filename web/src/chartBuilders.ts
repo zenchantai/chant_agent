@@ -14,7 +14,13 @@ export type ChartBuildContext = {
   data: ChartData;
   bars?: Bar[];
   theme?: string;
-  visible?: { pens?: boolean; centers?: boolean; movements?: boolean };
+  visible?: {
+    pens?: boolean;
+    centers?: boolean;
+    movements?: boolean;
+    centerLevels?: Record<string, boolean>;
+    movementLevels?: Record<string, boolean>;
+  };
   subplotIndicators?: SubplotIndicator[];
   subplotVisible?: boolean[];
   mainIndicator?: MainIndicator;
@@ -25,6 +31,7 @@ export type ChartBuildContext = {
   chartHeight?: number;
   paneRatios?: number[];
   compactLayout?: boolean;
+  selectedStructureId?: string | null;
   formatKlineTooltip?: (bar?: Bar, previousClose?: number) => string;
   formatCenterTooltip?: (center: Node, chartTimeframe: string) => string;
   formatMovementTooltip?: (movement: Node, chartTimeframe?: string) => string;
@@ -154,12 +161,7 @@ export const normalizeChartData = (input: ChartData | null): ChartData | null =>
   if (!isObject(input)) return null;
   const raw = input as Record<string, any>;
   const bars = normalizeBars(raw.bars);
-  // Prefer the canonical field, but fall back to the legacy alias when an
-  // older response sends an empty `centers` array rather than omitting it.
-  const canonicalCenters = Array.isArray(raw.centers) ? raw.centers : [];
-  const legacyCenters = Array.isArray(raw.pen_centers) ? raw.pen_centers : [];
-  const centerInput = canonicalCenters.length ? canonicalCenters : legacyCenters;
-  const centers = centerInput.map(normalizeNode).filter((item): item is Node => Boolean(item));
+  const centers = (Array.isArray(raw.centers) ? raw.centers : (Array.isArray(raw.pen_centers) ? raw.pen_centers : [])).map(normalizeNode).filter((item): item is Node => Boolean(item));
   const pens = (Array.isArray(raw.pens) ? raw.pens : []).map(normalizeNode).filter((item): item is Node => Boolean(item));
   const movements = (Array.isArray(raw.movements) ? raw.movements : []).map(normalizeNode).filter((item): item is Node => Boolean(item));
   const relationRows = (Array.isArray(raw.center_relations) ? raw.center_relations : []).filter(isObject).map((item) => ({ ...item }));
@@ -169,19 +171,6 @@ export const normalizeChartData = (input: ChartData | null): ChartData | null =>
   const boll = uniqueBy((Array.isArray(indicators.boll) ? indicators.boll : []).map(normalizeIndicator).filter(Boolean) as Record<string, any>[], (item) => item.trade_date);
   const centerLevels = Array.from(new Set((Array.isArray(raw.center_levels) ? raw.center_levels : centers.map((item) => item.level)).map(Number).filter((level) => Number.isInteger(level) && level >= 1))).sort((a, b) => a - b);
   const movementLevels = Array.from(new Set((Array.isArray(raw.movement_levels) ? raw.movement_levels : movements.map((item) => item.level)).map(Number).filter((level) => Number.isInteger(level) && level >= 1))).sort((a, b) => a - b);
-  const requestedActive = Number(raw.active_structure_level);
-  const advertisedMax = Number(raw.max_available_center_level);
-  const maxAvailable = Math.max(1, Number.isInteger(advertisedMax) && advertisedMax >= 1 ? advertisedMax : (centerLevels[centerLevels.length - 1] || 1));
-  // L1 is the product default even when a malformed/partial response only
-  // advertises a higher level. The server may still clamp an explicit request
-  // to the highest available level.
-  const activeLevel = Math.min(maxAvailable, Number.isInteger(requestedActive) && requestedActive >= 1 ? requestedActive : 1);
-  const rawDecomposition = raw.decomposition;
-  const decomposition = isObject(rawDecomposition)
-    ? (rawDecomposition.status || rawDecomposition.algorithm_version || rawDecomposition.issues || rawDecomposition.unassigned_unit_ids
-      ? rawDecomposition
-      : (isObject(rawDecomposition[String(activeLevel)]) ? rawDecomposition[String(activeLevel)] : {}))
-    : {};
   return {
     ...raw,
     bars,
@@ -193,14 +182,9 @@ export const normalizeChartData = (input: ChartData | null): ChartData | null =>
     indicators: { macd, ma, boll },
     center_levels: centerLevels,
     movement_levels: movementLevels,
-    active_structure_level: activeLevel,
-    max_confirmed_center_level: Number.isInteger(Number(raw.max_confirmed_center_level)) ? Math.max(0, Number(raw.max_confirmed_center_level)) : (centerLevels[centerLevels.length - 1] || 0),
-    max_available_center_level: maxAvailable,
-    decomposition,
     has_more: Boolean(raw.has_more),
-  } as ChartData;
+  } as unknown as ChartData;
 };
-
 export const nodeLevel = (node: Node) => Number.isFinite(Number(node.level)) ? Math.max(1, Math.floor(Number(node.level))) : 1;
 export const isProvisionalStatus = (status?: string) => status === "provisional" || status === "candidate" || status === "pending";
 export const centerZd = (center: Node) => Number(center.zd ?? center.fixed_zd);
@@ -212,6 +196,8 @@ export const centersForStructureLevel = (centers: Node[], activeLevel: number) =
   && Number.isInteger(Number(center.level))
   && Number(center.level) === activeLevel,
 );
+const levelIsVisible = (levels: Record<string, boolean> | undefined, level: number) =>
+  !levels || levels[String(level)] !== false;
 
 /** Map an arbitrary structural timestamp to the nearest visible category, never to an unrelated right edge. */
 export const nearestDate = (dates: string[], stamp: string) => {
@@ -319,14 +305,10 @@ export const movementLineEndpoints = (movement: Node, dateMapper: (stamp: string
   if (!boundary) return [];
   return [{ value: [dateMapper(boundary.startDate), boundary.startPrice], movementId: movement.id }, { value: [dateMapper(boundary.endDate), boundary.endPrice], movementId: movement.id }];
 };
-export const movementVisualStyle = (theme: string, movement: Node) => {
-  const boundary = nodeBoundary(movement);
-  const up = movement.direction === "up" || (movement.direction !== "down" && Boolean(boundary && boundary.endPrice >= boundary.startPrice));
-  return {
-    color: isProvisionalStatus(movement.status) ? (theme === "light" ? "#6d43b5" : "#b59cff") : up ? (theme === "light" ? "#c73531" : "#ef6a65") : (theme === "light" ? "#177a50" : "#39b87f"),
-    lineType: isProvisionalStatus(movement.status) ? "dashed" as const : "solid" as const,
-  };
-};
+export const movementVisualStyle = (theme: string, movement: Node, timeframe = "d") => ({
+  color: levelStructureColor(theme === "light" ? "light" : "dark", timeframe, nodeLevel(movement)),
+  lineType: isProvisionalStatus(movement.status) ? "dashed" as const : "solid" as const,
+});
 
 const safeColor = (theme: string, timeframe: string, level: number) => levelStructureColor(theme === "light" ? "light" : "dark", timeframe, level);
 const withAlpha = (color: string, alpha: string) => {
@@ -386,9 +368,10 @@ export const buildCenterAreas = (context: ChartBuildContext, dates: string[], is
     issues.push({ code: "center_dates_empty" });
     return { areas: [] as any[], visibleCenters: [] as Node[] };
   }
-  const activeLevel = Math.max(1, Number(data.active_structure_level || 1));
-  const all = centerCollection(data);
-  const visible = centersForStructureLevel(all, activeLevel).filter((center) => {
+  if (context.visible?.centers === false) return { areas: [] as any[], visibleCenters: [] as Node[] };
+  const visible = centerCollection(data).filter((center) => {
+    const level = nodeLevel(center);
+    if (!Number.isInteger(Number(center.level)) || (center.role !== undefined && center.role !== "hierarchy") || !levelIsVisible(context.visible?.centerLevels, level)) return false;
     const zd = centerZd(center), zg = centerZg(center);
     if (!Number.isFinite(zd) || !Number.isFinite(zg) || zd >= zg || !validRange(center.start_date, center.end_date)) {
       issues.push({ code: "center_invalid_range", id: center.id }); return false;
@@ -613,29 +596,49 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
     const boundary = clippedBoundary(pen, dates);
     if (!boundary) return null;
     if (!Number.isFinite(boundary.startPrice) || !Number.isFinite(boundary.endPrice)) { issues.push({ code: "pen_invalid_boundary", id: pen.id }); return null; }
-    return { id: pen.id, name: `笔 ${(Number(pen.ordinal) || 0) + 1}`, type: "line", data: [[boundary.startDate, boundary.startPrice], [boundary.endDate, boundary.endPrice]], showSymbol: true, symbolSize: 5, lineStyle: { width: 1.8, type: "solid", color }, itemStyle: { color }, z: 5 };
+    const selected = context.selectedStructureId === pen.id;
+    return { id: pen.id, name: `笔 ${(Number(pen.ordinal) || 0) + 1}`, type: "line", data: [[boundary.startDate, boundary.startPrice], [boundary.endDate, boundary.endPrice]], showSymbol: true, symbolSize: selected ? 8 : 5, lineStyle: { width: selected ? 3.4 : 1.8, type: "solid", color, opacity: selected ? 1 : 0.88 }, itemStyle: { color }, z: 5 };
   }).filter(Boolean) as Record<string, any>[];
 };
 
-export const buildMovementSeries = (context: ChartBuildContext, dates: string[], issues: ChartBuildIssue[] = []) => {
+const buildStructureHitSeries = (context: ChartBuildContext, dates: string[], centers: Node[], movements: Node[], pens: Node[]) => {
+  if (context.data.timeframe === "1") return [] as Record<string, any>[];
+  const hitStyle = { color: "#000", opacity: 0 };
+  const lineHit = (node: Node, kind: "pen" | "movement", width: number) => {
+    const boundary = clippedBoundary(node, dates);
+    if (!boundary) return null;
+    const key = `${kind}Id`;
+    return { id: `${kind}-hit-${node.id}`, name: `${kind}-hit`, type: "line", data: [{ value: [boundary.startDate, boundary.startPrice], [key]: node.id }, { value: [boundary.endDate, boundary.endPrice], [key]: node.id }], showSymbol: false, lineStyle: { ...hitStyle, width }, silent: false, tooltip: { show: false }, z: kind === "movement" ? 9 : 11 };
+  };
+  const centerHits = centers.map((center) => {
+    const zd = centerZd(center), zg = centerZg(center);
+    if (!Number.isFinite(zd) || !Number.isFinite(zg)) return null;
+    const start = nearestDate(dates, center.start_date), end = nearestDate(dates, center.end_date);
+    return { id: `center-hit-${center.id}`, name: "center-hit", type: "line", data: [[start, zd], [end, zd], [end, zg], [start, zg], [start, zd]].map((value) => ({ value, centerId: center.id })), showSymbol: false, lineStyle: { ...hitStyle, width: 18 }, areaStyle: { color: "#000", opacity: 0 }, markArea: { silent: false, itemStyle: { color: "#000", opacity: 0 }, data: [[{ coord: [start, zd], centerId: center.id }, { coord: [end, zg], centerId: center.id }]] }, silent: false, tooltip: { show: false }, z: 12 };
+  }).filter(Boolean) as Record<string, any>[];
+  return [...pens.map((node) => lineHit(node, "pen", 14)), ...movements.map((node) => lineHit(node, "movement", 18)), ...centerHits].filter(Boolean) as Record<string, any>[];
+};
+
+const buildMovementSeriesForRole = (context: ChartBuildContext, dates: string[], issues: ChartBuildIssue[], role: "hierarchy_component") => {
   if (context.data.timeframe === "1" || context.visible?.movements === false || context.movementsStale) return { series: [] as Record<string, any>[], visibleMovements: [] as Node[], endpointMarkers: [] as MovementEndpointMarker[] };
-  const active = Math.max(1, Number(context.data.active_structure_level || 1));
-  const visible = (context.data.movements || []).filter((movement) => Number.isInteger(Number(movement.level)) && Number(movement.level) === active && movement.role === "same_level_decomposition").map((movement) => ({ movement, boundary: clippedBoundary(movement, dates) })).filter((item): item is { movement: Node; boundary: Boundary } => {
+  const visible = (context.data.movements || []).filter((movement) => Number.isInteger(Number(movement.level)) && movement.role === role && levelIsVisible(context.visible?.movementLevels, nodeLevel(movement))).map((movement) => ({ movement, boundary: clippedBoundary(movement, dates) })).filter((item): item is { movement: Node; boundary: Boundary } => {
     if (!item.boundary) return false;
     if (!Number.isFinite(item.boundary.startPrice) || !Number.isFinite(item.boundary.endPrice)) { issues.push({ code: "movement_invalid_boundary", id: item.movement.id }); return false; }
     return true;
   });
   const lines = visible.map(({ movement, boundary }) => {
-    const style = movementVisualStyle(context.theme === "light" ? "light" : "dark", movement);
+    const style = movementVisualStyle(context.theme === "light" ? "light" : "dark", movement, context.data.timeframe);
     return { id: movement.id, name: `${movement.classification === "trend" ? "趋势" : "盘整"} ${(Number(movement.ordinal) || 0) + 1}`, type: "line", data: [{ value: [boundary.startDate, boundary.startPrice], movementId: movement.id }, { value: [boundary.endDate, boundary.endPrice], movementId: movement.id }], showSymbol: false, lineStyle: { width: 4.4, type: style.lineType, color: style.color, opacity: 0.72 }, itemStyle: { color: style.color }, tooltip: { trigger: "item", formatter: () => context.formatMovementTooltip?.(movement, context.data.timeframe) || "" }, z: 4 };
   });
   const rendered = visible.map(({ movement, boundary }) => ({ ...movement, start_date: boundary.startDate, end_date: boundary.endDate, start_price: boundary.startPrice, end_price: boundary.endPrice }));
   const markers = movementEndpointMarkers(rendered, dates);
   const endpointSeries = markers.length ? [{ id: "movement-boundaries", name: "走势端点", type: "scatter", data: markers.map((marker) => ({ value: [marker.trade_date, marker.price], movementId: marker.movementId, name: marker.label, label: { show: true, formatter: marker.label, position: marker.kind === "high" ? "top" : "bottom", color: safeColor(context.theme || "dark", context.data.timeframe, marker.level), fontWeight: 600 }, itemStyle: { color: context.theme === "light" ? "#25313a" : "#f3f5f7", borderColor: safeColor(context.theme || "dark", context.data.timeframe, marker.level), borderWidth: 2 } })), symbolSize: 8, tooltip: { trigger: "item", formatter: (params: any) => { const movement = visible.find((item) => item.movement.id === params?.data?.movementId)?.movement; return movement ? context.formatMovementTooltip?.(movement, context.data.timeframe) || "" : ""; } }, z: 7 }] : [];
-  const arrowSeries = rendered.length ? [{ id: "movement-arrow-heads", name: "走势箭头", type: "scatter", data: rendered.map((movement) => { const style = movementVisualStyle(context.theme === "light" ? "light" : "dark", movement); const dx = Date.parse(movement.end_date) - Date.parse(movement.start_date) || 1; const dy = -(Number(movement.end_price) - Number(movement.start_price)); return { value: [movement.end_date, movement.end_price], movementId: movement.id, symbol: "path://M0,0 L12,6 L0,12 Z", symbolRotate: Math.atan2(dy, dx) * 180 / Math.PI, symbolSize: 11, itemStyle: { color: style.color, opacity: 0.9 } }; }), tooltip: { trigger: "item", formatter: (params: any) => { const movement = visible.find((item) => item.movement.id === params?.data?.movementId)?.movement; return movement ? context.formatMovementTooltip?.(movement, context.data.timeframe) || "" : ""; } }, z: 6 }] : [];
+  const arrowSeries = rendered.length ? [{ id: "movement-arrow-heads", name: "走势箭头", type: "scatter", data: rendered.map((movement) => { const style = movementVisualStyle(context.theme === "light" ? "light" : "dark", movement, context.data.timeframe); const dx = Date.parse(movement.end_date) - Date.parse(movement.start_date) || 1; const dy = -(Number(movement.end_price) - Number(movement.start_price)); return { value: [movement.end_date, movement.end_price], movementId: movement.id, symbol: "path://M0,0 L12,6 L0,12 Z", symbolRotate: Math.atan2(dy, dx) * 180 / Math.PI, symbolSize: 11, itemStyle: { color: style.color, opacity: 0.9 } }; }), tooltip: { trigger: "item", formatter: (params: any) => { const movement = visible.find((item) => item.movement.id === params?.data?.movementId)?.movement; return movement ? context.formatMovementTooltip?.(movement, context.data.timeframe) || "" : ""; } }, z: 6 }] : [];
   return { series: [...lines, ...arrowSeries, ...endpointSeries], visibleMovements: rendered, endpointMarkers: markers };
 };
 
+export const buildMovementSeries = (context: ChartBuildContext, dates: string[], issues: ChartBuildIssue[] = []) =>
+  buildMovementSeriesForRole(context, dates, issues, "hierarchy_component");
 const styleDefaults = (drawing: Drawing, theme: string): DrawingStyle => {
   const color = periodStructureColor(theme === "light" ? "light" : "dark", drawing.timeframe);
   return { color, width: 1.5, line_type: "solid", opacity: 0.9, ...(drawing.object_type === "rectangle" ? { fill_color: color, fill_opacity: theme === "light" ? 0.1 : 0.14 } : {}) };
@@ -770,11 +773,13 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
   const { axisCount, subplotAxisIndices, paneLayout: _paneLayout, ...axesOption } = axes;
   const centers = buildCenterAreas({ ...context, bars }, dates, issues);
   const movement = buildMovementSeries({ ...context, bars }, dates, issues);
+  const hitSeries = buildStructureHitSeries({ ...context, bars }, dates, centers.visibleCenters, movement.visibleMovements, (data.pens || []).filter((pen) => pen.status === "confirmed"));
   const series = [
     ...buildPriceSeries({ ...context, bars }, centers.areas),
     ...buildIndicatorSeries({ ...context, bars }, axes),
     ...buildPenSeries({ ...context, bars }, dates, issues),
     ...movement.series,
+    ...hitSeries,
     ...buildDrawingSeries({ ...context, bars }, dates, issues),
   ];
   const checked = validateSeries(series, axes.axisCount);

@@ -34,6 +34,37 @@ def test_standard_pen_requires_independent_bar_and_basic_direction():
     assert len(build_pens([bottom, fx(5, "top", 1.8, 2, 1.2)])) == 1
 
 
+def processed_context(values):
+    return [ProcessedBar(i, str(i), 0, high, low, 0, 0, 0, i, i,
+                          str(i), str(i), str(i), str(i), None)
+            for i, (high, low) in enumerate(values)]
+
+
+def test_standard_pen_requires_directional_reverse_extreme_breakout():
+    processed = processed_context([(4, 2), (6, 3), (5, 3), (5, 3), (5, 3), (5, 2), (5, 2)])
+    bottom = fx(0, "bottom", 2, 6, 2)
+    candidate_top = fx(4, "top", 5, 5, 3)
+    diagnostics = []
+    assert build_pens([bottom, candidate_top], processed=processed, gaps=[], diagnostics=diagnostics) == []
+    assert diagnostics[-1]["reason"] == "reverse_extreme_not_broken"
+
+
+def test_standard_pen_continues_to_later_stronger_endpoint():
+    processed = processed_context([(4, 2), (6, 3), (5, 3), (5, 3), (5, 3), (5, 2), (12, 8), (11, 7)])
+    bottom = fx(0, "bottom", 2, 6, 2)
+    weak_top = fx(4, "top", 5, 5, 3)
+    strong_top = fx(6, "top", 12, 12, 8)
+    pens = build_pens([bottom, weak_top, strong_top], processed=processed, gaps=[])
+    assert [(item.start_date, item.end_date) for item in pens] == [(bottom.trade_date, strong_top.trade_date)]
+
+
+def test_standard_pen_downward_breaks_start_right_low():
+    processed = processed_context([(10, 8), (9, 7), (8, 6), (8, 6), (7, 7.5), (7, 6)])
+    top = fx(0, "top", 10, 10, 8)
+    candidate_bottom = fx(4, "bottom", 7.5, 7, 7.5)
+    assert build_pens([top, candidate_bottom], processed=processed, gaps=[]) == []
+
+
 def test_secondary_extreme_pen_uses_four_bars_and_retracement_ratio():
     processed = [ProcessedBar(i, str(i), 0, 10 if i == 3 else 2,
                               0 if i == 5 else 1, 0, 0, 0, i, i,
@@ -87,11 +118,11 @@ def test_secondary_low_pen_is_symmetric_and_must_be_weaker_than_first_low():
 
 
 def test_repaired_tail_recovers_skipped_more_extreme_fractal():
-    processed = process_inclusions(normalize_bars(raw([
-        (11, 9), (12, 10), (13, 11), (14, 12), (15, 13),
-        (20, 10), (18, 9), (17, 8), (16, 7), (19, 14),
-        (22, 15), (18, 12), (17, 10), (16, 8), (15, 5),
-    ])))
+    processed = processed_context([
+        (5, 4), (6, 3), (6, 3), (6, 3), (6, 3),
+        (20, 10), (19, 9), (18, 8), (7, 2), (10, 5),
+        (22, 15), (21, 14), (20, 13), (8, 4), (5, 1),
+    ])
     start = fx(0, "bottom", 5, 6, 4)
     first_top = fx(5, "top", 20, 20, 10)
     provisional_bottom = fx(8, "bottom", 7, 16, 7)

@@ -3,8 +3,7 @@ from app.hierarchy import (
     build_hierarchy,
     build_center_relations,
     classify_center_relation,
-    decompose_hierarchy_level,
-    decompose_same_level,
+    build_hierarchy_components,
     _center_unit_span,
     _movement_from_centers,
 )
@@ -36,13 +35,6 @@ def test_center_relations_distinguish_newborn_and_expansion():
     assert classify_center_relation(a, b) == "expansion_up"
 
 
-def test_same_level_consumes_three_units_and_keeps_tail_unassigned():
-    units = [unit(i, a, b) for i, (a, b) in enumerate([(1, 6), (6, 2), (2, 5), (5, 1)])]
-    result = decompose_same_level(units, 1)
-    assert result["centers"] and result["centers"][0]["core_unit_ids"] == ["u0", "u1", "u2"]
-    assert result["meta"]["unassigned_unit_ids"] == ["u3"]
-
-
 def test_hierarchy_preserves_l1_and_adds_parent_only_when_three_children_complete():
     units = [unit(i, a, b) for i, (a, b) in enumerate([(1, 6), (6, 2), (2, 7), (7, 3), (3, 8), (8, 2), (2, 7), (7, 3), (3, 8)])]
     l1 = [center("c1", 1, 3, 6, 1, 8)]
@@ -60,7 +52,7 @@ def test_hierarchy_persists_every_referenced_center_and_movement():
     center_ids = {item["id"] for item in result["centers"]}
     movement_ids = {item["id"] for item in result["movements"]}
 
-    assert any(item["role"] == "same_level" for item in result["centers"])
+    assert all(item.get("role", "hierarchy") == "hierarchy" for item in result["centers"])
     for movement in result["movements"]:
         assert set(movement.get("center_ids", [])) <= center_ids
         assert set(movement.get("child_movement_ids", [])) <= movement_ids
@@ -112,64 +104,21 @@ def test_hierarchy_component_movements_use_raw_l1_centers_for_parent_links():
     parents = [item for item in result["centers"] if item.get("role") == "hierarchy" and item["level"] == 2]
     assert parents
     assert all(set(item.get("child_center_ids", [])) <= raw_ids for item in parents)
-    assert all(not child_id.startswith("same-level-center-")
-               for item in parents for child_id in item.get("child_center_ids", []))
-
-
-def test_same_level_split_direction_uses_first_unconsumed_unit():
-    # The second mechanical center starts with u3, but the first movement's
-    # extreme boundary consumes u3.  The new movement therefore starts at u4
-    # and must be labelled down, not copied from the center's u3 direction.
-    units = [unit(i, a, b) for i, (a, b) in enumerate([
-        (1, 6), (6, 2), (2, 5), (5, 8), (8, 6.5), (6.5, 9.5),
-    ])]
-    result = decompose_same_level(units, 1)
-    movements = result["movements"]
-    assert len(movements) == 2
-    assert movements[0]["direction"] == "up"
-    # The provisional arrow follows the visible tail endpoint; its structural
-    # reversal hint remains separately available for later confirmation.
-    assert movements[1]["direction"] == "up"
-    assert movements[1]["candidate_direction"] == "down"
-    assert movements[1]["end_date"] == movements[1]["tail_end_date"]
-    assert movements[1]["candidate_extreme_date"] <= movements[1]["tail_end_date"]
-    assert movements[0]["end_date"] == movements[1]["start_date"]
 
 
 def test_expansion_upgrade_keeps_kind_for_candidate_and_confirmation():
-    # The first two child centers have separated cores but overlapping
-    # envelopes, which is the expansion path rather than a 3x3 extension.
-    child_centers = [
-        {"id": "c1", "level": 1, "status": "confirmed", "zd": 2, "zg": 4,
-         "dd": 1, "gg": 6, "start_date": "0000", "end_date": "0003",
-         "confirmed_at": "0004"},
-        {"id": "c2", "level": 1, "status": "confirmed", "zd": 5, "zg": 7,
-         "dd": 3, "gg": 8, "start_date": "0004", "end_date": "0007",
-         "confirmed_at": "0008"},
-    ]
-    movements = [
-        {"id": "m1", "level": 1, "status": "confirmed", "direction": "up",
-         "start_date": "0000", "end_date": "0003", "start_price": 1, "end_price": 5,
-         "low": 1, "high": 6, "center_ids": ["c1"], "source_pen_ids": ["p1"]},
-        {"id": "m2", "level": 1, "status": "confirmed", "direction": "down",
-         "start_date": "0004", "end_date": "0007", "start_price": 6, "end_price": 2,
-         "low": 2, "high": 8, "center_ids": ["c2"], "source_pen_ids": ["p2"]},
-        {"id": "m3", "level": 1, "status": "confirmed", "direction": "up",
-         "start_date": "0008", "end_date": "0011", "start_price": 2, "end_price": 6,
-         "low": 2, "high": 7, "center_ids": ["c1"], "source_pen_ids": ["p3"]},
-    ]
-    from app.hierarchy import _parent_centers
-    candidate = _parent_centers(movements[:2], 2, "system", child_centers)[0]
-    confirmed = _parent_centers(movements, 2, "system", child_centers)[0]
-    assert candidate["status"] == "provisional"
-    assert candidate["progress"] == "2/3"
-    assert candidate["upgrade_kind"] == "expansion"
-    assert confirmed["status"] == "confirmed"
-    assert confirmed["upgrade_kind"] == "expansion"
+    from tests.test_strict_movements import structural_stream
+    units, centers = structural_stream(4)
+    movements = build_hierarchy_components(units, centers, 1)["movements"]
+    candidate = _parent_centers(movements[:2], 2, "system", centers)[0]
+    confirmed = _parent_centers(movements[:3], 2, "system", centers)[0]
+    assert candidate["status"] == "provisional" and candidate["progress"] == "2/3"
+    assert confirmed["status"] == "confirmed" and confirmed["progress"] == "3/3"
     assert candidate["id"] == confirmed["id"]
+    assert candidate["upgrade_kind"] == confirmed["upgrade_kind"] == "expansion"
 
 
-def test_hierarchy_component_does_not_call_expansion_a_trend():
+def test_same_direction_separated_cores_continue_trend_despite_envelope_overlap():
     """An expansion starts another consolidation instead of a trend."""
     values = [
         (1, 6), (6, 2), (2, 7), (7, 3),
@@ -196,13 +145,13 @@ def test_hierarchy_component_does_not_call_expansion_a_trend():
         raw_center("c1", 0, 3, 6, 1, 8),
         raw_center("c2", 4, 7, 9, 4, 10),
     ]
-    result = decompose_hierarchy_level(units, centers, 1)
+    result = build_hierarchy_components(units, centers, 1)
     completed = [item for item in result["movements"] if item["status"] == "confirmed"]
     provisional = [item for item in result["movements"] if item["status"] == "provisional"]
-    assert completed
+    assert completed == []
     assert provisional
-    assert all(item["classification"] == "consolidation" for item in result["movements"])
-    assert all(item["center_count"] == 1 for item in result["movements"])
+    assert all(item["classification"] == "trend" for item in result["movements"])
+    assert [item["center_count"] for item in result["movements"]] == [2]
 
 
 def test_hierarchy_component_tail_stays_inside_sequence_group():
@@ -232,7 +181,7 @@ def test_hierarchy_component_tail_stays_inside_sequence_group():
         }
 
     centers = [raw_center("c1", 0, "up", 0), raw_center("c2", 4, "down", 1)]
-    result = decompose_hierarchy_level(units, centers, 1)
+    result = build_hierarchy_components(units, centers, 1)
     assert len(result["movements"]) == 2
     for movement in result["movements"]:
         source = [item for item in units if item["id"] in movement["source_unit_ids"]]
@@ -282,7 +231,7 @@ def test_touching_center_is_not_persisted_as_a_relation():
     assert build_center_relations([left, right]) == []
 
 
-def test_extension_3x3_candidate_and_confirmation_require_three_unit_children():
+def test_three_unit_children_without_reverse_evidence_cannot_upgrade():
     def movement(index, direction, source_count=3):
         start = index * 3
         return {
@@ -300,12 +249,8 @@ def test_extension_3x3_candidate_and_confirmation_require_three_unit_children():
         }
 
     children = [movement(0, "up"), movement(1, "down"), movement(2, "up")]
-    candidate = _parent_centers(children[:2], 2, "system")[0]
-    confirmed = _parent_centers(children, 2, "system")[0]
-    assert candidate["upgrade_kind"] == confirmed["upgrade_kind"] == "extension_3x3"
-    assert candidate["status"] == "provisional" and candidate["progress"] == "2/3"
-    assert confirmed["status"] == "confirmed" and confirmed["progress"] == "3/3"
-    assert candidate["id"] == confirmed["id"]
+    assert _parent_centers(children[:2], 2, "system") == []
+    assert _parent_centers(children, 2, "system") == []
 
     malformed = [movement(0, "up", 4), movement(1, "down", 4)]
     # Keep their boundary stream contiguous so only the non-3-unit rule is
@@ -327,7 +272,7 @@ def test_l1_hierarchy_center_has_uniform_persistence_fields():
     assert "upgrade_kind" in persisted and persisted["upgrade_kind"] is None
 
 
-def test_build_hierarchy_upgrades_nine_pen_l1_extension_via_3x3():
+def test_build_hierarchy_does_not_confirm_parent_from_nine_pen_extension():
     # P0 is the entry. P1-P9 are nine consecutive, alternating L0 movements
     # absorbed by one fixed-core L1 center.
     prices = [0, 10, 2, 9, 3, 8, 4, 9, 3, 8, 4]
@@ -354,19 +299,11 @@ def test_build_hierarchy_upgrades_nine_pen_l1_extension_via_3x3():
         if item.get("role") == "hierarchy" and item["level"] == 2
         and item.get("upgrade_kind") == "extension_3x3"
     ]
-    assert len(upgraded) == 1
-    assert upgraded[0]["status"] == "confirmed"
-    assert upgraded[0]["progress"] == "3/3"
-    children = [
-        item for item in result["movements"]
-        if item["id"] in upgraded[0]["child_movement_ids"]
-    ]
-    assert len(children) == 3
-    assert all(len(item["source_unit_ids"]) == 3 for item in children)
-    assert len({unit_id for item in children for unit_id in item["source_unit_ids"]}) == 9
+    assert upgraded == []
+    assert all(item["status"] == "provisional" for item in result["movements"])
 
 
-def test_1a0001_daily_34_pen_extension_builds_l2_candidate_and_l3():
+def test_1a0001_daily_34_pen_extension_cannot_upgrade_without_reverse_center():
     # Static structural fixture from the 2022-03-03 through 2023-11-21 daily
     # endpoints. It intentionally has no dependency on the production DB.
     points = [
@@ -425,16 +362,10 @@ def test_1a0001_daily_34_pen_extension_builds_l2_candidate_and_l3():
     assert [
         (item["start_date"], item["end_date"], item["status"], item["progress"])
         for item in level_two
-    ] == [
-        ("2022-03-16", "2022-09-13", "confirmed", "3/3"),
-        ("2022-09-13", "2023-02-17", "confirmed", "3/3"),
-        ("2023-02-17", "2023-07-14", "confirmed", "3/3"),
-        ("2023-07-14", "2023-11-21", "provisional", "2/3"),
-    ]
-    assert all(item["upgrade_kind"] == "extension_3x3" for item in level_two)
+    ] == []
     level_three = [item for item in hierarchy_centers if item["level"] == 3]
     assert [
         (item["start_date"], item["end_date"], item["status"])
         for item in level_three
-    ] == [("2022-03-16", "2023-07-14", "confirmed")]
-    assert result["max_available_center_level"] == 3
+    ] == []
+    assert result["max_available_center_level"] == 1

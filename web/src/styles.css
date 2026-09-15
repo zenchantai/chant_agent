@@ -20,7 +20,9 @@
 .chart-layer-toggle:hover,.chart-layer-toggle:focus-visible{background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--ink);opacity:1}
 .chart-layer-toggle.active{color:var(--ink);opacity:1}
 .chart-layer-toggle .legend-swatch{flex:0 0 auto}
-@media(max-width:760px){.chart-layer-controls{top:8px;right:38px}.chart-layer-toggle{padding:0 5px}}
+.chart-level-toggle{padding-inline:5px;min-width:32px}
+.chart-level-toggle span{font-size:10px}
+@media(max-width:760px){.chart-layer-controls{top:8px;right:38px;max-width:calc(100% - 48px);overflow-x:auto}.chart-layer-toggle{padding:0 5px}}
 
 .quote{display:flex;flex-direction:column;align-items:stretch;gap:0;padding:8px 12px;min-height:76px;height:auto;white-space:normal;overflow:hidden}
 .quote-summary,.quote-details{display:flex;align-items:center;gap:16px;min-width:0;font-variant-numeric:tabular-nums}
