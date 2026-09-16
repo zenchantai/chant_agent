@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts/core";
 import { BarChart, CandlestickChart, LineChart, ScatterChart } from "echarts/charts";
 import {
@@ -39,10 +39,13 @@ import {
   MoreVertical,
 } from "lucide-react";
 import type { Bar, ChartData, Coverage, Node, SecurityCandidate, SecuritySearchResult, Stock, Drawing, DrawingStyle, WatchlistGroup, WatchlistMembership, WatchlistResponse, SubplotVisibility } from "./types";
+import { bindChartGestures, ChartGesture, gestureOwner, initialChartZoom, rebaseChartZoom } from "./chartInteractions";
+import type { ChartGestureCallbacks } from "./chartInteractions";
 import { levelStructureAppearance, levelStructureColor, periodStructureColor } from "./structureColors";
 import { formatCompactNumber, formatIndicatorValue, formatPrice, formatVolume } from "./marketFormatters";
 import {
   buildChartArtifacts,
+  buildVisiblePriceMarkLine,
   buildChartOption,
   buildChartPaneLayout,
   defaultPaneRatios,
@@ -366,19 +369,21 @@ function Chart({
   const zoomState = useRef({ start: 0, end: 100 });
   const previousDates = useRef<string[]>([]);
   const lastChartKey = useRef<string | undefined>(undefined);
-  const drawingStart = useRef<{trade_date:string;price:number} | null>(null);
-  const drawingCurrent = useRef<{trade_date:string;price:number} | null>(null);
-  const currentPointer = useRef({x:0,y:0});
-  const dragOrigin = useRef<{point:{trade_date:string;price:number};drawing:Drawing} | null>(null);
-  const structureDrag = useRef<{node:Node;handle:"start"|"end"|"left"|"right"|"top"|"bottom"} | null>(null);
+  const gesture = useRef(new ChartGesture());
+  const editor = useRef<{
+    point: { trade_date: string; price: number };
+    drawing?: Drawing;
+    node?: Node;
+    handle?: "start" | "end" | "move";
+    tool?: "segment" | "line" | "rectangle";
+  } | null>(null);
   const [contextMenu, setContextMenu] = useState<{x:number;y:number;node?:Node;drawing?:Drawing} | null>(null);
   const [preview, setPreview] = useState<{start:{trade_date:string;price:number};end:{trade_date:string;price:number}} | null>(null);
   const [selectedDrawing, setSelectedDrawing] = useState<number | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const [dragHandle, setDragHandle] = useState<"start"|"end"|"move"|null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [compactLayout, setCompactLayout] = useState(() => innerWidth <= 760);
-  const safeData = normalizeChartData(data);
+  const safeData = useMemo(() => normalizeChartData(data), [data]);
   const bars = safeData?.bars || [];
   const activeSubplotCount = subplotVisible.filter(Boolean).length;
   const paneKey = paneLayoutStorageKey(safeData?.symbol || "", safeData?.timeframe || "d", activeSubplotCount);
@@ -484,22 +489,12 @@ function Chart({
     const builderChartKey = `${builderData.symbol || ""}:${builderData.timeframe || ""}`;
     const builderTimeframeChanged = lastChartKey.current !== builderChartKey;
     if (builderTimeframeChanged) {
-      try {
-        const saved = localStorage.getItem(`chan-zoom-${builderChartKey}`);
-        const parsed = saved ? JSON.parse(saved) : null;
-        zoomState.current = parsed && Number.isFinite(parsed.start) && Number.isFinite(parsed.end)
-          ? { start: Math.max(0, Math.min(100, parsed.start)), end: Math.max(0, Math.min(100, parsed.end)) }
-          : { start: 0, end: 100 };
-      } catch { zoomState.current = { start: 0, end: 100 }; }
-    } else if (previousDates.current.length && builderDates.length > previousDates.current.length && previousDates.current[0] !== builderDates[0]) {
-      const old = previousDates.current;
-      const oldStart = old[Math.round((zoomState.current.start / 100) * Math.max(0, old.length - 1))];
-      const oldEnd = old[Math.round((zoomState.current.end / 100) * Math.max(0, old.length - 1))];
-      const startIndex = builderDates.indexOf(oldStart), endIndex = builderDates.indexOf(oldEnd);
-      if (startIndex >= 0 && endIndex >= 0) zoomState.current = {
-        start: (startIndex / Math.max(1, builderDates.length - 1)) * 100,
-        end: (endIndex / Math.max(1, builderDates.length - 1)) * 100,
-      };
+      let saved: string | null = null;
+      try { saved = localStorage.getItem(`chan-zoom-${builderChartKey}`); } catch {}
+      zoomState.current = initialChartZoom(bars.length, builderData.timeframe === "1", saved);
+      setHoveredIndex(null);
+    } else {
+      zoomState.current = rebaseChartZoom(zoomState.current, previousDates.current, builderDates);
     }
     previousDates.current = builderDates;
     lastChartKey.current = builderChartKey;
@@ -550,6 +545,9 @@ function Chart({
       if (Number.isFinite(value.start) && Number.isFinite(value.end)) {
         zoomState.current = { start: value.start, end: value.end };
         try { localStorage.setItem(`chan-zoom-${builderChartKey}`, JSON.stringify(zoomState.current)); } catch { /* storage is optional */ }
+        if (builderData.timeframe !== "1") {
+          instance.setOption({ series: [{ id: "kline", markLine: buildVisiblePriceMarkLine(bars, theme, value.start, value.end) }] }, { lazyUpdate: false });
+        }
       }
       if ((value.start ?? 100) <= 15 && builderData.has_more) onOlder();
     };
@@ -590,7 +588,7 @@ function Chart({
       return nearest?.node || center || null;
     };
     const builderCanvasClick = (event: any) => {
-      if (drawingTool) return;
+      if (drawingTool || gesture.current.suppressClick) return;
       const x = Number(event?.zrX ?? event?.offsetX), y = Number(event?.zrY ?? event?.offsetY);
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
       onSelect(findStructureAt(x, y));
@@ -623,98 +621,142 @@ function Chart({
       } catch { /* ECharts may already be disposed during a fast switch. */ }
     };
   }, [data, bars, onOlder, onSelect, selectedStructureId, height, visible, subplotIndicators, subplotVisible, mainIndicator, drawingTool, drawingItems, theme, movementsStale, paneRatios, compactLayout, effectiveHeight]);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || !drawingOpen) return;
-    const hit = (point: {trade_date:string;price:number}) => {
-      const [x,y] = pointPixel(point);
-      const rect = el.getBoundingClientRect();
-      const px = currentPointer.current;
-      const distance = (a:number,b:number) => Math.hypot(a-b, 0);
-      return (drawingItems || []).slice().reverse().find((d) => {
-        const [sx,sy] = pointPixel(d.start_anchor), [ex,ey] = pointPixel(d.end_anchor);
-        const tolerance = 12;
-        if (Math.hypot(px.x-sx, px.y-sy) < tolerance || Math.hypot(px.x-ex, px.y-ey) < tolerance) return true;
-        if (d.object_type === "rectangle") return px.x >= Math.min(sx,ex)-tolerance && px.x <= Math.max(sx,ex)+tolerance && px.y >= Math.min(sy,ey)-tolerance && px.y <= Math.max(sy,ey)+tolerance;
-        const dx=ex-sx, dy=ey-sy, len=Math.hypot(dx,dy); if (!len) return false;
-        return Math.abs((px.x-sx)*dy-(px.y-sy)*dx)/len < tolerance;
-      });
-    };
-    const onDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      const point = toPoint(event as unknown as React.PointerEvent); if (!point) return;
-      currentPointer.current = {x:event.offsetX,y:event.offsetY};
+  const eventPixel = (event: MouseEvent) => {
+    const rect = ref.current!.getBoundingClientRect();
+    return [event.clientX - rect.left, event.clientY - rect.top];
+  };
+  const drawingAt = (pixel: number[]) => (drawingItems || []).slice().reverse().find((drawing) => {
+    if (!drawing.visible) return false;
+    const start = pointPixel(drawing.start_anchor), end = pointPixel(drawing.end_anchor);
+    if (Math.hypot(pixel[0] - start[0], pixel[1] - start[1]) < 14
+      || Math.hypot(pixel[0] - end[0], pixel[1] - end[1]) < 14) return true;
+    if (drawing.object_type === "rectangle") return pixel[0] >= Math.min(start[0], end[0]) - 12
+      && pixel[0] <= Math.max(start[0], end[0]) + 12 && pixel[1] >= Math.min(start[1], end[1]) - 12
+      && pixel[1] <= Math.max(start[1], end[1]) + 12;
+    const deltaX = end[0] - start[0], deltaY = end[1] - start[1];
+    const length = Math.hypot(deltaX, deltaY);
+    if (!length) return false;
+    const projection = ((pixel[0] - start[0]) * deltaX + (pixel[1] - start[1]) * deltaY) / (length * length);
+    return (drawing.object_type === "line" || (projection >= 0 && projection <= 1))
+      && Math.abs((pixel[0] - start[0]) * deltaY - (pixel[1] - start[1]) * deltaX) / length < 12;
+  });
+  const editableNodes = [
+    ...(visible.pens ? data?.pens || [] : []),
+    ...(visible.centers && visible.centerLevels["1"] !== false
+      ? (data?.centers?.length ? data.centers : data?.pen_centers || []).filter((node) => nodeLevel(node) === 1) : []),
+  ];
+  const nodePixel = (node: Node, handle: "start" | "end") => pointPixel({
+    trade_date: handle === "start" ? node.start_date : node.end_date,
+    price: handle === "start" ? node.start_price ?? node.low ?? 0 : node.end_price ?? node.high ?? 0,
+  });
+  const endpointAt = (pixel: number[]) => editableNodes.flatMap((node) => (["start", "end"] as const).map((handle) => {
+    const endpoint = nodePixel(node, handle);
+    return { node, handle, distance: Math.hypot(pixel[0] - endpoint[0], pixel[1] - endpoint[1]) };
+  })).filter((hit) => hit.distance < 14).sort((first, second) => first.distance - second.distance)[0];
+  const clearEditor = () => { editor.current = null; setPreview(null); };
+  const gestureCallbacks = useRef<ChartGestureCallbacks>(null!);
+  gestureCallbacks.current = {
+    begin: (event) => {
+      const instance = chart.current;
+      if (!instance || isChartDisposed(instance)) return null;
+      const pixel = eventPixel(event);
+      if (!instance.containPixel({ gridIndex: paneLayout.tops.map((_, index) => index) }, pixel)) return null;
+      const mainGrid = instance.containPixel({ gridIndex: 0 }, pixel);
+      const editing = drawingOpen && mainGrid;
+      const drawing = editing && !drawingTool ? drawingAt(pixel) : undefined;
+      const endpoint = editing && !drawingTool && !drawing && onStructureUpdate ? endpointAt(pixel) : undefined;
+      const owner = gestureOwner(Boolean(editing && drawingTool), Boolean(drawing), Boolean(endpoint));
+      if (owner === "pan") return owner;
+      const point = toPoint(event as unknown as React.PointerEvent);
+      if (!point) return null;
+      editor.current = { point };
       if (drawingTool) {
-        drawingStart.current = point; drawingCurrent.current = point; setPreview({start:point,end:point});
-        el.setPointerCapture(event.pointerId); event.preventDefault(); return;
+        editor.current.tool = drawingTool;
+        setPreview({ start: point, end: point });
+      } else if (drawing) {
+        const start = pointPixel(drawing.start_anchor), end = pointPixel(drawing.end_anchor);
+        editor.current.drawing = drawing;
+        editor.current.handle = Math.hypot(pixel[0] - start[0], pixel[1] - start[1]) < 14 ? "start"
+          : Math.hypot(pixel[0] - end[0], pixel[1] - end[1]) < 14 ? "end" : "move";
+        setSelectedDrawing(drawing.id);
+        onDrawingSelect?.(drawing);
+      } else if (endpoint) {
+        editor.current.node = endpoint.node;
+        editor.current.handle = endpoint.handle;
       }
-      const target = hit(point);
-      if (target) {
-        setSelectedDrawing(target.id); onDrawingSelect?.(target);
-        const [sx,sy]=pointPixel(target.start_anchor), [ex,ey]=pointPixel(target.end_anchor);
-        const nearStart=Math.hypot(event.offsetX-sx,event.offsetY-sy)<14, nearEnd=Math.hypot(event.offsetX-ex,event.offsetY-ey)<14;
-        setDragHandle(nearStart ? "start" : nearEnd ? "end" : "move");
-        dragOrigin.current = {point, drawing:target}; el.setPointerCapture(event.pointerId); event.preventDefault();
+      return owner;
+    },
+    move: (event) => {
+      const active = editor.current;
+      const point = toPoint(event as unknown as React.PointerEvent);
+      if (!active || !point) return;
+      if (active.tool) { setPreview({ start: active.point, end: point }); return; }
+      if (active.node) {
+        onStructureUpdate?.(active.node, active.handle === "start"
+          ? { start_date: point.trade_date, start_price: point.price }
+          : { end_date: point.trade_date, end_price: point.price });
+      } else if (active.drawing) {
+        const drawing = active.drawing;
+        const deltaTime = Date.parse(point.trade_date) - Date.parse(active.point.trade_date);
+        const deltaPrice = point.price - active.point.price;
+        const moveAnchor = (anchor: { trade_date: string; price: number }) => ({
+          trade_date: new Date(Date.parse(anchor.trade_date) + deltaTime).toISOString().replace("T", " ").slice(0, 19),
+          price: anchor.price + deltaPrice,
+        });
+        onDrawingUpdate?.({ ...drawing,
+          start_anchor: active.handle === "start" ? point : active.handle === "move" ? moveAnchor(drawing.start_anchor) : drawing.start_anchor,
+          end_anchor: active.handle === "end" ? point : active.handle === "move" ? moveAnchor(drawing.end_anchor) : drawing.end_anchor,
+        });
       }
-    };
-    const onMove = (event: PointerEvent) => {
-      const point = toPoint(event as unknown as React.PointerEvent); if (!point) return;
-      currentPointer.current = {x:event.offsetX,y:event.offsetY};
-      if (drawingStart.current && drawingTool) { drawingCurrent.current = point; setPreview({start:drawingStart.current,end:point}); return; }
-      if (dragHandle && dragOrigin.current) {
-        const origin = dragOrigin.current; const dx = Date.parse(point.trade_date)-Date.parse(origin.point.trade_date); const dp = point.price-origin.point.price;
-        const moveAnchor = (a:{trade_date:string;price:number}) => ({trade_date:new Date(Date.parse(a.trade_date)+dx).toISOString().replace('T',' ').slice(0,19), price:a.price+dp});
-        if (dragHandle === "start") onDrawingUpdate?.({...origin.drawing,start_anchor:point});
-        else if (dragHandle === "end") onDrawingUpdate?.({...origin.drawing,end_anchor:point});
-        else onDrawingUpdate?.({...origin.drawing,start_anchor:moveAnchor(origin.drawing.start_anchor),end_anchor:moveAnchor(origin.drawing.end_anchor)});
+    },
+    end: (event) => {
+      const active = editor.current;
+      const point = toPoint(event as unknown as React.PointerEvent);
+      if (active?.tool && point && (active.point.trade_date !== point.trade_date || Math.abs(active.point.price - point.price) > 1e-9)) {
+        onDrawingCreate?.({ object_type: active.tool, start_anchor: active.point, end_anchor: point,
+          style: defaultDrawingStyle(data?.timeframe || "d", theme, active.tool === "rectangle"), label: "", visible: true });
       }
-    };
-    const onUp = (event: PointerEvent) => {
-      const point = toPoint(event as unknown as React.PointerEvent); if (!point) return;
-      if (drawingStart.current && drawingTool) {
-        const start = drawingStart.current; if (start.trade_date !== point.trade_date || Math.abs(start.price-point.price)>1e-9) onDrawingCreate?.({object_type:drawingTool,start_anchor:start,end_anchor:point,style:defaultDrawingStyle(data?.timeframe || "d", document.documentElement.dataset.theme || "dark", drawingTool === "rectangle"),label:"",visible:true});
-        drawingStart.current=null; drawingCurrent.current=null; setPreview(null); return;
-      }
-      setDragHandle(null); dragOrigin.current=null;
-    };
-    const onContext = (event: MouseEvent) => { event.preventDefault(); const point = toPoint(event as unknown as React.PointerEvent); if (point) { const target = hit(point); if (target) { setSelectedDrawing(target.id); onDrawingSelect?.(target); setContextMenu({x:event.clientX,y:event.clientY,drawing:target}); } } };
-    el.addEventListener("pointerdown", onDown); el.addEventListener("pointermove", onMove); el.addEventListener("pointerup", onUp); el.addEventListener("contextmenu", onContext);
-    return () => { el.removeEventListener("pointerdown", onDown); el.removeEventListener("pointermove", onMove); el.removeEventListener("pointerup", onUp); el.removeEventListener("contextmenu", onContext); };
-  }, [drawingOpen, drawingTool, drawingItems, toPoint, pointPixel, onDrawingCreate, onDrawingUpdate, onDrawingDelete, onDrawingSelect, data?.timeframe, dragHandle]);
+      clearEditor();
+    },
+    cancel: () => {
+      clearEditor();
+      const instance = chart.current;
+      if (instance && !isChartDisposed(instance)) instance.getZr().trigger("mouseup", { event: {} });
+    },
+  };
   useEffect(() => {
-    const zr = chart.current?.getZr();
-    if (!zr || !drawingOpen || drawingTool || !onStructureUpdate) return;
-    const editableCenters = (data?.centers?.length ? data.centers : (data?.pen_centers || []))
-      .filter((node) => nodeLevel(node) === 1);
-    // Only pens and L1 centers are editable; higher-level structures are derived.
-    const nodes = [...(data?.pens || []), ...editableCenters];
-    const nodePoint = (node: Node, end: boolean) => pointPixel({trade_date: end ? node.end_date : node.start_date, price: end ? (node.end_price ?? node.high ?? 0) : (node.start_price ?? node.low ?? 0)});
-    const find = (event: any) => {
-      const [x,y] = [event.offsetX,event.offsetY];
-      let best: {node:Node;handle:"start"|"end";distance:number}|null=null;
-      nodes.forEach((node) => (["start","end"] as const).forEach((handle) => { const [px,py]=nodePoint(node,handle==="end"); const d=Math.hypot(x-px,y-py); if(d<14 && (!best||d<best.distance)) best={node,handle,distance:d}; }));
-      return best;
-    };
-    const findNodeBody = (event:any) => {
-      const [x,y] = [event.offsetX,event.offsetY];
-      return nodes.slice().reverse().find((node) => {
-        const [sx,sy]=nodePoint(node,false), [ex,ey]=nodePoint(node,true); const dx=ex-sx,dy=ey-sy,len=Math.hypot(dx,dy);
-        return len > 0 && Math.abs((x-sx)*dy-(y-sy)*dx)/len < 9 && x >= Math.min(sx,ex)-8 && x <= Math.max(sx,ex)+8;
+    const element = ref.current;
+    if (!element || !bars.length) return;
+    return bindChartGestures(element, gesture.current, () => gestureCallbacks.current);
+  }, [data?.symbol, data?.timeframe, bars.length > 0, drawingOpen, drawingTool]);
+  const drawingContext = useRef<(event: MouseEvent) => void>(null!);
+  drawingContext.current = (event) => {
+    if (!drawingOpen) return;
+    event.preventDefault();
+    const pixel = eventPixel(event);
+    const drawing = drawingAt(pixel);
+    if (drawing) {
+      setSelectedDrawing(drawing.id); onDrawingSelect?.(drawing);
+      setContextMenu({ x: event.clientX, y: event.clientY, drawing });
+    } else {
+      const node = endpointAt(pixel)?.node || editableNodes.slice().reverse().find((item) => {
+        const start = nodePixel(item, "start"), end = nodePixel(item, "end");
+        const deltaX = end[0] - start[0], deltaY = end[1] - start[1], length = Math.hypot(deltaX, deltaY);
+        return length > 0 && Math.abs((pixel[0] - start[0]) * deltaY - (pixel[1] - start[1]) * deltaX) / length < 9
+          && pixel[0] >= Math.min(start[0], end[0]) - 8 && pixel[0] <= Math.max(start[0], end[0]) + 8;
       });
-    };
-    const down=(event:any)=>{ const hit=find(event) as {node:Node;handle:"start"|"end";distance:number}|null; if(hit){ structureDrag.current={node:hit.node,handle:hit.handle}; event.event?.preventDefault?.(); }};
-    const move=(event:any)=>{ const drag=structureDrag.current; if(!drag) return; const point=toPoint({clientX:(ref.current?.getBoundingClientRect().left || 0)+(event.event?.zrX ?? event.offsetX),clientY:(ref.current?.getBoundingClientRect().top || 0)+(event.event?.zrY ?? event.offsetY)} as any); if(!point) return; const payload=drag.handle==="start"?{start_date:point.trade_date,start_price:point.price}:{end_date:point.trade_date,end_price:point.price}; onStructureUpdate?.(drag.node,payload); };
-    const up=()=>{structureDrag.current=null;};
-    const context=(event:any)=>{ event.event?.preventDefault?.(); const endpoint = find(event) as {node:Node;handle:"start"|"end";distance:number}|null; const node=findNodeBody(event) || endpoint?.node; if(node) setContextMenu({x:event.event?.clientX || event.offsetX,y:event.event?.clientY || event.offsetY,node}); };
-    zr.on("mousedown",down); zr.on("mousemove",move); zr.on("mouseup",up); zr.on("contextmenu",context);
-    return ()=>{zr.off("mousedown",down);zr.off("mousemove",move);zr.off("mouseup",up);zr.off("contextmenu",context);};
-  }, [drawingOpen, drawingTool, data?.pens, data?.centers, data?.pen_centers, pointPixel, toPoint, onStructureUpdate]);
+      if (node) setContextMenu({ x: event.clientX, y: event.clientY, node });
+    }
+  };
+  useEffect(() => {
+    const element = ref.current;
+    const context = (event: MouseEvent) => drawingContext.current(event);
+    element?.addEventListener("contextmenu", context);
+    return () => element?.removeEventListener("contextmenu", context);
+  }, []);
   const infoIndex = hoveredIndex ?? Math.max(0, bars.length - 1);
   const infoBar = bars[infoIndex];
   const infoMa = infoBar ? (data?.indicators?.ma || []).find((item) => item.trade_date === infoBar.trade_date) : undefined;
-  const infoPreviousClose = infoIndex > 0 ? bars[infoIndex - 1]?.close : undefined;
-  const infoChange = infoBar && infoPreviousClose ? (infoBar.close / infoPreviousClose - 1) * 100 : null;
-  const infoChangeAmount = infoBar && infoPreviousClose ? infoBar.close - infoPreviousClose : null;
   const chartCenters = data?.centers?.length ? data.centers : (data?.pen_centers || []);
   const visibleCenterCount = chartCenters.filter((item) => (item.role === undefined || item.role === "hierarchy") && visible.centers && visible.centerLevels[String(nodeLevel(item))] !== false).length;
   const visibleMovementCount = (data?.movements || []).filter((item) => visible.movements && item.role === "hierarchy_component" && visible.movementLevels[String(nodeLevel(item))] !== false).length;
@@ -724,46 +766,55 @@ function Chart({
     <div ref={ref} className="chart" aria-label={bars.length ? "K线图" : "暂无行情图表"} />
     {safeData && !bars.length && <div className="chart-empty-state" role="status">暂无可绘制行情</div>}
     {renderError && <div className="chart-render-error" role="alert">{renderError}</div>}
-    {data?.timeframe !== "1" && infoBar && <div className="kline-info-strip">
-      <strong>{formatTradeDate(infoBar.trade_date)}</strong>
-      <span>开盘：<b>{formatPrice(infoBar.open)}</b></span><span>最高：<b>{formatPrice(infoBar.high)}</b></span>
-      <span>最低：<b>{formatPrice(infoBar.low)}</b></span><span>收盘：<b>{formatPrice(infoBar.close)}</b></span>
-      <span>涨跌额 / 涨跌幅：<b className={infoChange === null || infoChange === 0 ? "" : infoChange > 0 ? "rise" : "fall"}>{infoChangeAmount === null ? "--" : `${infoChangeAmount >= 0 ? "+" : ""}${formatPrice(infoChangeAmount)}`} / {infoChange === null ? "--" : `${infoChange >= 0 ? "+" : ""}${infoChange.toFixed(2)}%`}</b></span>
-      <span>成交量：<b>{formatVolume(infoBar.volume)}</b></span><span>成交额：<b>{formatCompactNumber(infoBar.amount)}</b></span>
-    </div>}
-    {data?.timeframe !== "1" && infoBar && mainIndicator.mode !== "none" && <div className="kline-ma-strip">
-      {mainIndicator.mode === "ma" && mainIndicator.maPeriods.map((period) => <span key={period}>MA{period}: {formatPrice(infoMa?.values?.[String(period)])}</span>)}
-      {mainIndicator.mode === "boll" && (() => { const b=(data?.indicators?.boll||[]).find((item)=>item.trade_date===infoBar.trade_date); return <><span>BOLL上轨: {formatPrice(b?.upper)}</span><span>BOLL中轨: {formatPrice(b?.middle)}</span><span>BOLL下轨: {formatPrice(b?.lower)}</span></>; })()}
-      {mainIndicator.mode === "pen_center" && <span>笔 / 中枢 / 走势 · {data?.pens.length || 0} 笔 · {visibleCenterCount} 中枢 · {visibleMovementCount} 走势</span>}
-    </div>}
     <svg className={`drawing-overlay ${drawingOpen ? "editing" : ""}`} aria-hidden="true">
       {preview && (() => { const [sx,sy]=pointPixel(preview.start), [ex,ey]=pointPixel(preview.end); const color=periodStructureColor(document.documentElement.dataset.theme === "light" ? "light":"dark", data?.timeframe || "d"); return preview && drawingTool === "rectangle" ? <rect x={Math.min(sx,ex)} y={Math.min(sy,ey)} width={Math.abs(ex-sx)} height={Math.abs(ey-sy)} fill={`${color}22`} stroke={color} strokeDasharray="5 4" /> : <line x1={sx} y1={sy} x2={ex} y2={ey} stroke={color} strokeWidth="2" strokeDasharray="5 4" />; })()}
       {selectedDrawing !== null && (() => { const item=(drawingItems || []).find((d)=>d.id===selectedDrawing); if(!item) return null; const [sx,sy]=pointPixel(item.start_anchor), [ex,ey]=pointPixel(item.end_anchor); return <g className="drawing-selection"><circle cx={sx} cy={sy} r="5"/><circle cx={ex} cy={ey} r="5"/></g>; })()}
     </svg>
-    {data?.timeframe !== "1" && <div className="chart-layer-controls" style={{top: paneLayout.tops[0] + 6}} aria-label="缠论图层控制">
-      {([['pens', '正式笔', 'pen'], ['centers', '正式中枢', 'center'], ['movements', '正式走势', 'movement']] as const).map(([key, label, icon]) => (
-        <button
-          key={key}
-          className={`chart-layer-toggle ${visible[key] ? "active" : ""}`}
-          aria-label={`${visible[key] ? "隐藏" : "显示"}${label}`}
-          aria-pressed={visible[key]}
-          title={`${visible[key] ? "隐藏" : "显示"}${label}`}
-          onClick={() => onLayerToggle(key)}
-        >
-          <i
-            className={`legend-swatch ${icon}`}
-            style={{
-              borderColor: icon === "center" ? levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", centerLevels[0] || 1) : periodStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d"),
-              ...(icon === "center" ? { background: `${levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", centerLevels[0] || 1)}${theme === "light" ? "1A" : "24"}` } : {}),
-              ...(icon === "movement" ? { borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", movementLevels[0] || 1), borderWidth: 3 } : {}),
-            }}
-            aria-hidden="true"
-          />
-          <span>{label}</span>
-        </button>
-      ))}
-      {centerLevels.map((level) => <button key={`center-level-${level}`} className={`chart-layer-toggle chart-level-toggle ${visible.centers && visible.centerLevels[String(level)] !== false ? "active" : ""}`} aria-label={`${visible.centerLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}中枢`} aria-pressed={visible.centers && visible.centerLevels[String(level)] !== false} title={`${visible.centerLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}中枢`} onClick={() => onLayerToggle("centers", level)}><i className="legend-swatch center" style={{borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level), background: `${levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level)}${theme === "light" ? "1A" : "24"}`}} aria-hidden="true"/><span>L{level}</span></button>)}
-      {movementLevels.map((level) => <button key={`movement-level-${level}`} className={`chart-layer-toggle chart-level-toggle ${visible.movements && visible.movementLevels[String(level)] !== false ? "active" : ""}`} aria-label={`${visible.movementLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}走势`} aria-pressed={visible.movements && visible.movementLevels[String(level)] !== false} title={`${visible.movementLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}走势`} onClick={() => onLayerToggle("movements", level)}><i className="legend-swatch movement" style={{borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level), borderWidth: 3}} aria-hidden="true"/><span>L{level}</span></button>)}
+    {data && <div className="chart-main-overlay" style={{ top: data.timeframe === "1" ? 8 : paneLayout.tops[0] + 6 }}>
+      <div className="chart-indicator-group">
+        <div className="main-indicator-controls">
+          <select className={data.timeframe === "1" ? "intraday-indicator-hidden" : ""}
+            value={mainIndicator.mode} disabled={data.timeframe === "1"}
+            onChange={(event) => onMainIndicator?.(event.target.value as MainIndicator["mode"])} aria-label="主图指标">
+            <option value="none">不显示指标</option><option value="ma">MA</option>
+            <option value="boll">布林线</option><option value="pen_center">笔中枢</option>
+          </select>
+          <button title={data.timeframe === "1" ? "分时图设置" : "主图指标设置"}
+            aria-label={data.timeframe === "1" ? "分时图设置" : "主图指标设置"} onClick={onOpenIndicatorSettings}>
+            <Settings size={15}/>
+          </button>
+        </div>
+        {data.timeframe !== "1" && infoBar && mainIndicator.mode !== "none" && <div className="kline-ma-strip" tabIndex={0} aria-label="主图指标数值，可横向滚动">
+          {mainIndicator.mode === "ma" && mainIndicator.maPeriods.map((period) => <span key={period}>MA{period}: {formatPrice(infoMa?.values?.[String(period)])}</span>)}
+          {mainIndicator.mode === "boll" && (() => { const boll=(data?.indicators?.boll||[]).find((item)=>item.trade_date===infoBar.trade_date); return <><span>BOLL上轨: {formatPrice(boll?.upper)}</span><span>BOLL中轨: {formatPrice(boll?.middle)}</span><span>BOLL下轨: {formatPrice(boll?.lower)}</span></>; })()}
+          {mainIndicator.mode === "pen_center" && <span>笔 / 中枢 / 走势 · {data?.pens.length || 0} 笔 · {visibleCenterCount} 中枢 · {visibleMovementCount} 走势</span>}
+        </div>}
+      </div>
+      {data.timeframe !== "1" && <div className="chart-layer-controls" aria-label="缠论图层控制">
+        {([['pens', '正式笔', 'pen'], ['centers', '正式中枢', 'center'], ['movements', '正式走势', 'movement']] as const).map(([key, label, icon]) => (
+          <button
+            key={key}
+            className={`chart-layer-toggle ${visible[key] ? "active" : ""}`}
+            aria-label={`${visible[key] ? "隐藏" : "显示"}${label}`}
+            aria-pressed={visible[key]}
+            title={`${visible[key] ? "隐藏" : "显示"}${label}`}
+            onClick={() => onLayerToggle(key)}
+          >
+            <i
+              className={`legend-swatch ${icon}`}
+              style={{
+                borderColor: icon === "center" ? levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", centerLevels[0] || 1) : periodStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d"),
+                ...(icon === "center" ? { background: `${levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", centerLevels[0] || 1)}${theme === "light" ? "1A" : "24"}` } : {}),
+                ...(icon === "movement" ? { borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", movementLevels[0] || 1), borderWidth: 3 } : {}),
+              }}
+              aria-hidden="true"
+            />
+            <span>{label}</span>
+          </button>
+        ))}
+        {centerLevels.map((level) => <button key={`center-level-${level}`} className={`chart-layer-toggle chart-level-toggle ${visible.centers && visible.centerLevels[String(level)] !== false ? "active" : ""}`} aria-label={`${visible.centerLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}中枢`} aria-pressed={visible.centers && visible.centerLevels[String(level)] !== false} title={`${visible.centerLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}中枢`} onClick={() => onLayerToggle("centers", level)}><i className="legend-swatch center" style={{borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level), background: `${levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level)}${theme === "light" ? "1A" : "24"}`}} aria-hidden="true"/><span>L{level}</span></button>)}
+        {movementLevels.map((level) => <button key={`movement-level-${level}`} className={`chart-layer-toggle chart-level-toggle ${visible.movements && visible.movementLevels[String(level)] !== false ? "active" : ""}`} aria-label={`${visible.movementLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}走势`} aria-pressed={visible.movements && visible.movementLevels[String(level)] !== false} title={`${visible.movementLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}走势`} onClick={() => onLayerToggle("movements", level)}><i className="legend-swatch movement" style={{borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level), borderWidth: 3}} aria-hidden="true"/><span>L{level}</span></button>)}
+      </div>}
     </div>}
     {movementsStale && <div className="drawing-preview" aria-live="polite">走势待重算</div>}
     {preview && <div className="drawing-preview" aria-live="polite">正在绘制 · {preview.end.trade_date} · {formatPrice(preview.end.price)}</div>}
@@ -826,7 +877,7 @@ function Chart({
         }}
       ><span /></div>;
     })}
-    {data && <div className="main-indicator-controls"><select className={data.timeframe === "1" ? "intraday-indicator-hidden" : ""} value={mainIndicator.mode} disabled={data.timeframe === "1"} onChange={(event)=>onMainIndicator?.(event.target.value as any)} aria-label="主图指标"><option value="none">不显示指标</option><option value="ma">MA</option><option value="boll">布林线</option><option value="pen_center">笔中枢</option></select><button title={data.timeframe === "1" ? "分时图设置" : "主图指标设置"} aria-label={data.timeframe === "1" ? "分时图设置" : "主图指标设置"} onClick={onOpenIndicatorSettings}><Settings size={15}/></button></div>}
+
     {subplotIndicators.map((indicator, index) => subplotVisible[index] && <label className={`indicator-select subplot-${index + 1}`} style={{top: paneLayout.tops[subplotVisible.slice(0, index).filter(Boolean).length + 1] + 4}} key={index}>
       <select value={indicator} onChange={(event) => onSubplotIndicator(index as 0 | 1, event.target.value as SubplotIndicator)}>
         <option value="macd">MACD(12,26,9)</option>

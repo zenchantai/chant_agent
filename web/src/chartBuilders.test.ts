@@ -4,6 +4,8 @@ import {
   buildChartArtifacts,
   buildChartOption,
   buildChartPaneLayout,
+  visiblePriceExtremes,
+  buildVisiblePriceMarkLine,
   defaultPaneRatios,
   buildEndpointLabels,
   buildMovementSeries,
@@ -28,6 +30,57 @@ const base = (overrides: Record<string, unknown> = {}) => ({
 }) as any;
 
 describe("chart builders", () => {
+  it("只统计当前可视K线的最高价和最低价", () => {
+    const bars = [bar("2026-01-01", 10), { ...bar("2026-01-02", 11), high: 30, low: 9 }, { ...bar("2026-01-03", 12), high: 20, low: 1 }, bar("2026-01-04", 13)];
+    expect(visiblePriceExtremes(bars, 0, 50)).toMatchObject({
+      high: { date: "2026-01-02", price: 30 },
+      low: { date: "2026-01-03", price: 1 },
+      startIndex: 0,
+      endIndex: 2,
+    });
+    expect(visiblePriceExtremes(bars, 50, 100)).toMatchObject({
+      high: { date: "2026-01-02", price: 30 },
+      low: { date: "2026-01-03", price: 1 },
+      startIndex: 1,
+      endIndex: 3,
+    });
+  });
+
+  it("把可视最高最低价标记在K线主图", () => {
+    const option = buildChartOption({ data: base(), zoomStart: 30, zoomEnd: 80 });
+    const candle = option?.series.find((series: any) => series.id === "kline");
+    expect(candle?.markLine.data).toHaveLength(2);
+    expect(candle?.markLine.data.map((item: any) => item.name)).toEqual(["最高价", "最低价"]);
+  });
+
+  it("缩放范围变化时生成不同的最高最低价标记", () => {
+    const bars = Array.from({ length: 10 }, (_, index) => ({ ...bar(`2026-01-${String(index + 1).padStart(2, "0")}`, index + 10), high: index < 5 ? index + 20 : index + 100, low: index < 5 ? index : index + 5 }));
+    const first = buildVisiblePriceMarkLine(bars, "dark", 0, 40);
+    const second = buildVisiblePriceMarkLine(bars, "dark", 50, 100);
+    expect(first?.data).not.toEqual(second?.data);
+    expect(second?.data).toEqual([{ name: "最高价", yAxis: 109 }, { name: "最低价", yAxis: 4 }]);
+  });
+
+  it("K线顶部固定12px且不受指标和副图数量影响", () => {
+    for (const compact of [true, false]) {
+      for (const subplotCount of [1, 2, 3, 4]) {
+        for (const mainIndicatorVisible of [true, false]) {
+          const layout = buildChartPaneLayout({ requestedHeight: 560, subplotCount, intraday: false, compact, mainIndicatorVisible });
+          expect(layout.topInset).toBe(12);
+          expect(layout.tops[0]).toBe(12);
+          expect(layout.heights.every((height, index) => height >= layout.minHeights[index])).toBe(true);
+        }
+      }
+    }
+    expect(buildChartPaneLayout({ requestedHeight: 560, subplotCount: 1, intraday: true }).topInset).toBe(48);
+  });
+
+  it("显式启用时间轴平移、滚轮缩放并联动全部副图", () => {
+    const option = buildChartOption({ data: base(), subplotVisible: [true, true, true, true], zoomStart: 50, zoomEnd: 90 });
+    expect(option?.dataZoom[0]).toMatchObject({ type: "inside", moveOnMouseMove: true, zoomOnMouseWheel: true, moveOnMouseWheel: false, preventDefaultMouseMove: true, xAxisIndex: [0, 1, 2, 3, 4], start: 50, end: 90 });
+    expect(option?.dataZoom[1]).toMatchObject({ type: "slider", xAxisIndex: [0, 1, 2, 3, 4], start: 50, end: 90 });
+  });
+
   it("normalizes invalid bars, nodes and missing indicator arrays", () => {
     const result = normalizeChartData(base({
       bars: [bar("2026-01-02"), { trade_date: "bad", open: "x", high: 1, low: 1, close: 1 }, bar("2026-01-02", 12)],
@@ -57,7 +110,7 @@ describe("chart builders", () => {
         expect(layout.heights[0]).toBeGreaterThanOrEqual(240);
         expect(layout.heights.slice(1).every((height) => height >= 80)).toBe(true);
         layout.tops.slice(1).forEach((top, index) => {
-          expect(top).toBeCloseTo(layout.tops[index] + layout.heights[index] + layout.gap);
+          expect(top).toBeCloseTo(layout.tops[index] + layout.heights[index] + layout.gap + (index === 0 ? layout.timeAxisHeight : 0));
         });
         expect(layout.tops.at(-1)! + layout.heights.at(-1)! + layout.bottomInset).toBeCloseTo(layout.chartHeight);
       }
@@ -73,8 +126,8 @@ describe("chart builders", () => {
         expect(axes.grid).toHaveLength(subplotCount + 1);
         expect(axes.xAxis).toHaveLength(subplotCount + 1);
         expect(axes.yAxis).toHaveLength(subplotCount + 1);
-        expect(axes.xAxis.slice(0, -1).every((axis: any) => axis.axisLabel.show === false)).toBe(true);
-        expect(axes.xAxis.at(-1)?.axisLabel.show).toBe(true);
+        expect(axes.xAxis[0].axisLabel.show).toBe(true);
+        expect(axes.xAxis.slice(1).every((axis: any) => axis.axisLabel.show === false)).toBe(true);
         expect(Object.values(axes.subplotAxisIndices)).toEqual(Array.from({ length: subplotCount }, (_, index) => index + 1));
       }
     }
@@ -85,7 +138,7 @@ describe("chart builders", () => {
     const roomy = buildChartPaneLayout({ requestedHeight: 800, subplotCount: 2, intraday: true });
     expect(roomy.heights[0] / roomy.heights.reduce((sum, value) => sum + value, 0)).toBeCloseTo(0.6);
     const crowded = buildChartPaneLayout({ requestedHeight: 560, subplotCount: 4, intraday: false });
-    expect(crowded.chartHeight).toBe(734);
+    expect(crowded.chartHeight).toBe(674);
     expect(crowded.heights[0]).toBeGreaterThanOrEqual(240);
     const compact = buildChartPaneLayout({ requestedHeight: 430, subplotCount: 4, intraday: true, compact: true });
     expect(compact.heights[0]).toBeGreaterThanOrEqual(200);
