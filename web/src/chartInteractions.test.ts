@@ -13,6 +13,7 @@ describe("K线浏览范围", () => {
   });
   it("分时不采用120根默认窗口", () => {
     expect(initialChartZoom(240, true, null)).toEqual({ start: 0, end: 100 });
+    expect(initialChartZoom(20, true, '{"start":60,"end":80}')).toEqual({ start: 0, end: 100 });
   });
   it.each([{ start: 0, end: 100 }, { start: 25, end: 80 }])("恢复有效偏好 %j", (saved) => {
     expect(initialChartZoom(300, false, JSON.stringify(saved))).toEqual(saved);

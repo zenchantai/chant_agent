@@ -39,6 +39,8 @@ class Store:
                 created_at TEXT NOT NULL, PRIMARY KEY(group_id,symbol))""")
             self.db.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_group_order ON watchlist_groups(sort_order,id)")
             self.db.execute("CREATE INDEX IF NOT EXISTS idx_watchlist_member_symbol ON watchlist_group_members(symbol,group_id)")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS watchlist_section_order (
+                section_key TEXT PRIMARY KEY, sort_order INTEGER NOT NULL)""")
             self.db.execute("""CREATE TABLE IF NOT EXISTS security_catalog (
                 market_code TEXT PRIMARY KEY, symbol TEXT NOT NULL, name TEXT NOT NULL,
                 market TEXT NOT NULL, trade_status TEXT NOT NULL DEFAULT '',
@@ -168,6 +170,12 @@ class Store:
                 result.append(item)
             return result
 
+    def watchlist_symbols(self) -> list[str]:
+        with self._lock:
+            return [row[0] for row in self.db.execute(
+                "SELECT symbol FROM stock_pool WHERE enabled=1 ORDER BY sort_order,symbol"
+            ).fetchall()]
+
     def upsert_trade_calendar(self, rows: list[dict[str, Any]], exchange: str = "CN") -> int:
         values = [(exchange, row["trade_date"], int(bool(row["is_trading_day"])),
                    row.get("session_type", "full"), row.get("expected_5m_count", 48),
@@ -252,11 +260,46 @@ class Store:
         return [dict(row) for row in rows]
 
     def watchlist(self) -> dict[str, Any]:
-        return {
-            "stocks": self.list_stock_pool(),
-            "groups": self.list_watchlist_groups(),
-            "memberships": self.watchlist_memberships(),
-        }
+        with self._lock:
+            return {
+                "stocks": self.list_stock_pool(),
+                "groups": self.list_watchlist_groups(),
+                "memberships": self.watchlist_memberships(),
+                "section_order": self.list_watchlist_section_order(),
+            }
+
+    def list_watchlist_section_order(self) -> list[str]:
+        with self._lock:
+            groups = self.list_watchlist_groups()
+            valid = {"all", "ungrouped", *(f"group-{group['id']}" for group in groups)}
+            saved = [row[0] for row in self.db.execute(
+                "SELECT section_key FROM watchlist_section_order ORDER BY sort_order,section_key"
+            ).fetchall()]
+            ordered = [key for key in saved if key in valid]
+            return ordered + [key for key in ("all", "ungrouped", *(f"group-{group['id']}" for group in groups))
+                              if key not in set(ordered)]
+
+    def reorder_watchlist_sections(self, section_keys: list[str]) -> list[str]:
+        if len(section_keys) != len(set(section_keys)):
+            raise ValueError("分组排序包含重复分组")
+        with self._lock:
+            current = self.list_watchlist_section_order()
+            if set(current) != set(section_keys) or len(current) != len(section_keys):
+                raise ValueError("分组列表已变化，请刷新后重试")
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                self.db.execute("DELETE FROM watchlist_section_order")
+                self.db.executemany("INSERT INTO watchlist_section_order(section_key,sort_order) VALUES(?,?)",
+                                    [(key, index) for index, key in enumerate(section_keys)])
+                group_ids = [int(key.removeprefix("group-")) for key in section_keys if key.startswith("group-")]
+                now = datetime.now(timezone.utc).isoformat()
+                self.db.executemany("UPDATE watchlist_groups SET sort_order=?,updated_at=? WHERE id=?",
+                                    [(index, now, group_id) for index, group_id in enumerate(group_ids)])
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
+        return section_keys
 
     def create_watchlist_group(self, name: str) -> dict[str, Any]:
         value = self._watchlist_group_name(name)
@@ -300,6 +343,7 @@ class Store:
                     return False
                 self.db.execute("DELETE FROM watchlist_group_members WHERE group_id=?", (group_id,))
                 self.db.execute("DELETE FROM watchlist_groups WHERE id=?", (group_id,))
+                self.db.execute("DELETE FROM watchlist_section_order WHERE section_key=?", (f"group-{group_id}",))
                 self.db.commit()
                 return True
             except Exception:
@@ -309,23 +353,16 @@ class Store:
     def reorder_watchlist_groups(self, group_ids: list[int]) -> list[dict[str, Any]]:
         if len(group_ids) != len(set(group_ids)):
             raise ValueError("分组排序包含重复分组")
-        now = datetime.now(timezone.utc).isoformat()
         with self._lock:
             current = [row[0] for row in self.db.execute(
                 "SELECT id FROM watchlist_groups ORDER BY sort_order,id"
             ).fetchall()]
             if set(current) != set(group_ids) or len(current) != len(group_ids):
                 raise ValueError("分组列表已变化，请刷新后重试")
-            try:
-                self.db.execute("BEGIN IMMEDIATE")
-                self.db.executemany(
-                    "UPDATE watchlist_groups SET sort_order=?,updated_at=? WHERE id=?",
-                    [(index, now, group_id) for index, group_id in enumerate(group_ids)],
-                )
-                self.db.commit()
-            except Exception:
-                self.db.rollback()
-                raise
+            current_sections = self.list_watchlist_section_order()
+            custom = iter(group_ids)
+            sections = [f"group-{next(custom)}" if key.startswith("group-") else key for key in current_sections]
+            self.reorder_watchlist_sections(sections)
         return self.list_watchlist_groups()
 
     def add_watchlist_group_member(self, group_id: int, symbol: str) -> dict[str, Any]:

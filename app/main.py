@@ -20,12 +20,16 @@ from .period_structure import PeriodStructureService
 from .sync import SyncService
 from .rules import DEFINITION_VERSION, PERIOD_DEFINITION_VERSION
 from .securities import SecurityCatalogService
+from .intraday import IntradayService
+from .watchlist_quotes import WatchlistQuoteService
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
 store = Store(str(ROOT / "data" / "chant_agent.db"))
 period_structure_service = PeriodStructureService(store)
-sync_service = SyncService(store)
+intraday_service = IntradayService(store)
+watchlist_quote_service = WatchlistQuoteService(store, intraday_service)
+sync_service = SyncService(store, intraday=intraday_service)
 security_catalog_service = SecurityCatalogService(store)
 app = FastAPI(title="缠论 AI 交易 Agent", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -94,6 +98,10 @@ class WatchlistGroupRequest(BaseModel):
 
 class WatchlistGroupOrderRequest(BaseModel):
     group_ids: list[int]
+
+
+class WatchlistSectionOrderRequest(BaseModel):
+    section_keys: list[str]
 
 
 class WatchlistMemberOrderRequest(BaseModel):
@@ -237,6 +245,19 @@ def stock_pool():
 @app.get("/api/watchlist")
 def watchlist():
     return store.watchlist()
+
+
+@app.put("/api/watchlist/order")
+def order_watchlist_sections(request: WatchlistSectionOrderRequest):
+    try:
+        return {"section_order": store.reorder_watchlist_sections(request.section_keys)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/watchlist/quotes")
+def watchlist_quotes():
+    return watchlist_quote_service.snapshot()
 
 
 @app.post("/api/watchlist-groups")
@@ -401,11 +422,18 @@ def market_data(symbol: str, timeframe: str = "d", adjustflag: str = "2", start_
 
 
 @app.get("/api/chart-data/{symbol}")
-def chart_data(symbol: str, timeframe: str = "d", adjustflag: str = "2", before: str | None = None, limit: int = 300, ma_periods: str = "5,10,20,60", boll_period: int = 20, boll_multiplier: float = 2.0, structure_level: int = 1):
+def chart_data(symbol: str, timeframe: str = "d", adjustflag: str = "2", before: str | None = None, limit: int = 300, ma_periods: str = "5,10,20,60", boll_period: int = 20, boll_multiplier: float = 2.0, structure_level: int = 1, refresh: bool = False):
     if timeframe not in TIMEFRAMES:
         raise HTTPException(status_code=400, detail=f"不支持的周期: {timeframe}")
+    if refresh and (timeframe != "1" or before is not None):
+        raise HTTPException(status_code=400, detail="仅最新分时图支持实时刷新")
     periods = tuple(sorted({int(item) for item in ma_periods.split(",") if item.strip()})) or (5, 10, 20, 60)
     periods = tuple(item for item in periods if 1 <= item <= 1000)[:10] or (5, 10, 20, 60)
+    if timeframe == "1":
+        if refresh:
+            intraday_service.refresh(symbol, adjustflag)
+        return intraday_service.chart_page(symbol, adjustflag, before, min(max(limit, 1), 300), periods,
+                                          max(1, min(boll_period, 1000)), max(0.01, boll_multiplier))
     result = period_structure_service.chart_page(symbol, timeframe, adjustflag, before, min(max(limit, 1), 300), periods, max(1, min(boll_period, 1000)), max(0.01, boll_multiplier))
     result["active_structure_level"] = 1
     result["coverage_required"] = True

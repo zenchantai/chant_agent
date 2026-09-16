@@ -4,6 +4,7 @@ import csv
 import asyncio
 import os
 import re
+import math
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -125,6 +126,54 @@ def fetch_tencent(symbol: str, timeframe: str, start_date: str = "2015-01-01",
     if not parsed:
         raise RuntimeError(f"腾讯行情返回空数据: {symbol} {timeframe} {start_date}~{end_date}")
     return parsed
+
+
+def fetch_tencent_quotes(symbols: list[str]) -> list[dict[str, Any]]:
+    """Fetch one lightweight quote snapshot for each application symbol."""
+    if not symbols:
+        return []
+    mappings = []
+    result = []
+    for symbol in dict.fromkeys(symbols):
+        try:
+            mappings.append((symbol, normalize_baostock_symbol(symbol).replace(".", "")))
+        except ValueError:
+            result.append({"symbol": symbol, "status": "unavailable", "source": "tencent", "error": "不支持的证券代码"})
+    if not mappings:
+        return result
+    response = httpx.get(
+        "https://qt.gtimg.cn/q=" + ",".join(provider_symbol for _, provider_symbol in mappings),
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.content.decode("gb18030", errors="replace")
+    for symbol, provider_symbol in mappings:
+        match = re.search(rf'v_{re.escape(provider_symbol)}="([^"]*)"', payload)
+        fields = match.group(1).split("~") if match else []
+        try:
+            if len(fields) < 33 or fields[2] != provider_symbol[2:]:
+                raise ValueError("证券不匹配")
+            latest = float(fields[3]) if fields[3] else None
+            previous_close = float(fields[4]) if fields[4] else None
+            change = float(fields[31]) if len(fields) > 31 and fields[31] else None
+            change_pct = float(fields[32]) if len(fields) > 32 and fields[32] else None
+            quote_time = fields[30] if len(fields) > 30 and fields[30] else None
+            if latest is None or latest <= 0 or not math.isfinite(latest):
+                raise ValueError("无有效成交价")
+            previous_close = previous_close if previous_close and previous_close > 0 and math.isfinite(previous_close) else None
+            change = change if change is not None and math.isfinite(change) else None
+            change_pct = change_pct if change_pct is not None and math.isfinite(change_pct) else None
+            if previous_close is None:
+                change = change_pct = None
+        except (IndexError, TypeError, ValueError):
+            latest = previous_close = change = change_pct = None
+            quote_time = None
+        status = "success" if latest is not None else "unavailable"
+        result.append({"symbol": symbol, "latest": latest, "previous_close": previous_close,
+                       "change": change, "change_pct": change_pct, "quote_time": quote_time,
+                       "source": "tencent", "status": status,
+                       "error": None if status == "success" else "行情源未返回有效报价"})
+    return result
 
 
 def fetch_baostock(symbol: str, timeframe: str, start_date: str = "2015-01-01", end_date: str = "", adjustflag: str = "2") -> list[dict[str, Any]]:

@@ -3,6 +3,7 @@ export type GestureOwner = "pan" | "draw" | "drawing" | "structure";
 export type ChartPointer = { pointerId: number; clientX: number; clientY: number };
 
 export const initialChartZoom = (count: number, intraday: boolean, saved: string | null): ChartZoom => {
+  if (intraday) return { start: 0, end: 100 };
   try {
     const parsed = saved ? JSON.parse(saved) : null;
     if (parsed && Number.isFinite(parsed.start) && Number.isFinite(parsed.end)

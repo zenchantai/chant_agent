@@ -27,6 +27,9 @@
 .quote{display:flex;flex-direction:column;align-items:stretch;gap:0;padding:8px 12px;min-height:76px;height:auto;white-space:normal;overflow:hidden}
 .quote-summary,.quote-details{display:flex;align-items:center;gap:16px;min-width:0;font-variant-numeric:tabular-nums}
 .quote-summary{min-height:34px}.quote-date{color:var(--muted);font-size:11px;white-space:nowrap}.quote-last{font-size:20px;line-height:1.1}.quote-change-amount,.quote-change{font-weight:600}.quote-change{display:inline-flex;align-items:baseline;gap:5px}.quote-change small{font-size:11px;font-weight:400;color:var(--muted)}
+.intraday-refresh-status{color:var(--muted);font-size:11px;line-height:1.6;overflow-wrap:anywhere;padding-top:3px}
+.quote:has(.intraday-refresh-status){flex-basis:auto}
+.quote:has(.intraday-refresh-status)>*{flex-shrink:0}
 .quote-details{padding-top:6px;color:var(--muted);font-size:12px;gap:18px;overflow:auto;white-space:nowrap}.quote-details b{color:inherit;font-weight:550}.quote-details.rise,.quote-details.fall{color:var(--muted)}.quote-summary .rise,.quote-details.rise b{color:var(--rise)!important}.quote-summary .fall,.quote-details.fall b{color:var(--fall)!important}
 @media(max-width:760px){.quote{min-height:88px;padding:7px 42px 7px 12px}.quote-summary{gap:10px;overflow:hidden}.quote-last{font-size:19px}.quote-change-amount{display:none}.quote-details{gap:14px;overflow-x:auto}.quote-details span:nth-child(n+5){display:none}}
 
@@ -109,4 +112,8 @@ header{height:46px}.workspace{height:calc(100dvh - 46px)}
 .chart-main-overlay .chart-layer-controls{position:static;flex:0 1 auto;max-width:min(55%,max(60px,calc(100% - 254px)));min-width:0;overflow-x:auto;pointer-events:auto;scrollbar-width:thin}
 .chart-main-overlay .chart-layer-toggle{flex:0 0 auto}
 .kline-chart .chart.is-panning,.kline-chart .chart.is-panning canvas{cursor:grabbing!important}
+.watchlist-quote>small:not(.quote-state){color:inherit}
+.group-drag-handle{touch-action:none;user-select:none}@media(max-width:760px){.group-drag-handle{box-sizing:content-box;padding:8px 4px}}
+.watchlist-section>.watchlist-group-head[draggable=true],.watchlist-section>.watchlist-group-head[draggable=true] .group-toggle{cursor:grab}.watchlist-section>.watchlist-group-head[draggable=false]{cursor:wait}.watchlist-quote-status{flex-shrink:0;padding:4px 8px;font-size:10px;color:var(--muted);border-bottom:1px solid var(--line)}.watchlist-quote{flex-shrink:0;font-variant-numeric:tabular-nums}.watchlist-quote .quote-state{font-size:9px;color:var(--muted)}.watchlist-quote .quote-state-error,.watchlist-quote .quote-state-stale,.watchlist-quote .quote-state-historical{color:#b7791f}
+.group-drag-handle{flex-shrink:0;margin-left:4px;color:var(--muted);opacity:.55}.custom-group>.watchlist-group-head .group-toggle{cursor:grab}.custom-group>.watchlist-group-head[draggable="false"],.custom-group>.watchlist-group-head[draggable="false"] .group-toggle{cursor:wait}.group-dragging{opacity:.45}.group-drop-before::before,.group-drop-after::after{content:"";position:absolute;left:0;right:0;height:3px;background:var(--accent);z-index:2;pointer-events:none}.group-drop-before::before{top:0}.group-drop-after::after{bottom:0}
 @media(max-width:760px){.chart-main-overlay{gap:6px}.chart-indicator-group{min-width:min(206px,calc(100% - 46px));gap:4px}.chart-main-overlay .main-indicator-controls select{width:66px}.chart-main-overlay .chart-layer-controls{max-width:min(55%,max(40px,calc(100% - 212px)))}.chart-main-overlay .kline-ma-strip{gap:10px}}

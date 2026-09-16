@@ -4,9 +4,10 @@ import asyncio
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .providers import TIMEFRAMES, MarketDataProvider, fetch_baostock, fetch_stock_name, fetch_trade_calendar, fetch_tencent, is_trading_day
+from .providers import TIMEFRAMES, MarketDataProvider, fetch_baostock, fetch_stock_name, fetch_trade_calendar, is_trading_day
 from .store import Store
 from .period_structure import PeriodStructureService
+from .intraday import IntradayService
 
 TZ = ZoneInfo("Asia/Shanghai")
 INTRADAY = ("1", "5", "15", "30", "60", "120", "d")
@@ -14,8 +15,9 @@ HISTORY_START = "2015-01-01"
 
 
 class SyncService:
-    def __init__(self, store: Store, structures: PeriodStructureService | None = None):
+    def __init__(self, store: Store, structures: PeriodStructureService | None = None, intraday: IntradayService | None = None):
         self.store = store
+        self.intraday = intraday or IntradayService(store)
         self.period_structures = structures or PeriodStructureService(store)
         self.market_provider = MarketDataProvider()
         self._lock = asyncio.Lock()
@@ -112,6 +114,14 @@ class SyncService:
             return
         run_id = self.store.create_sync_run(symbol, timeframe, mode, stamp)
         try:
+            if timeframe == "1":
+                attempt = await asyncio.to_thread(self.intraday.refresh, symbol, adjustflag)
+                if attempt["result"] == "failed":
+                    raise RuntimeError(attempt["error"])
+                range_start, range_end = self.store.market_range(symbol, timeframe, adjustflag)
+                count = len(self.store.market_bars(symbol, timeframe, adjustflag, "0000-01-01"))
+                self.store.finish_sync_run(run_id, "success", count, range_start, range_end)
+                return
             cached_start, cached_end = self.store.market_range(symbol, timeframe, adjustflag)
             if mode == "full" or not cached_end:
                 start = HISTORY_START
@@ -120,14 +130,6 @@ class SyncService:
             # A tail-only incremental update cannot repair a hole in the middle
             # of the 5-minute series. Use the cached daily calendar as the
             # authoritative trading-day index and backfill from the first gap.
-            if timeframe == "1":
-                start = date.today().isoformat()
-                if not await asyncio.to_thread(is_trading_day, start):
-                    for offset in range(1, 10):
-                        candidate = date.today() - timedelta(days=offset)
-                        if await asyncio.to_thread(is_trading_day, candidate.isoformat()):
-                            start = candidate.isoformat()
-                            break
             if timeframe == "5" and mode != "full":
                 daily_dates = {row["trade_date"][:10] for row in self.store.market_bars(symbol, "d", "2", HISTORY_START, date.today().isoformat())}
                 minute_dates = {row["trade_date"][:10] for row in self.store.market_bars(symbol, "5", "2", HISTORY_START, date.today().isoformat())}
@@ -140,11 +142,7 @@ class SyncService:
                 if delay:
                     await asyncio.sleep(delay)
                 try:
-                    if timeframe == "1":
-                        rows = await asyncio.to_thread(fetch_tencent, symbol, "1", start, date.today().isoformat(), adjustflag)
-                        for row in rows:
-                            row["source"] = "tencent"
-                    elif timeframe == "5":
+                    if timeframe == "5":
                         fetched = await self.market_provider.fetch_5m(symbol, start, date.today().isoformat(), adjustflag)
                         rows = fetched["rows"]
                     else:
@@ -159,8 +157,6 @@ class SyncService:
                 raise RuntimeError("BaoStock 未返回可缓存的行情数据")
             source = rows[0].get("source", "baostock") if rows else "baostock"
             snapshot_id = rows[0].get("snapshot_id", "") if rows else ""
-            if timeframe == "1" and rows:
-                self.store.retain_market_date(symbol, timeframe, adjustflag, rows[0]["trade_date"])
             count, changed_from = self.store.upsert_bars_with_changes(symbol, timeframe, adjustflag, rows, source=source, snapshot_id=snapshot_id)
             coverage = self.period_structures.coverage(symbol, timeframe, adjustflag)
             self.store.save_market_coverage(symbol, timeframe, adjustflag, coverage)

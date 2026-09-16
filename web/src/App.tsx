@@ -1,4 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { DragEvent, PointerEvent as ReactPointerEvent } from "react";
+import { chartDates, intradayCoordinate, intradayPointDates } from "./intradayTimeline";
+import { mergeIntradayData, startIntradayRefresh } from "./intradayRefresh";
+import { groupDropPosition, normalizeSectionOrder, reorderWatchlistSections } from "./watchlistGroupOrder";
+import type { GroupDropPosition } from "./watchlistGroupOrder";
+import { mergeWatchlistQuotes, startWatchlistQuoteRefresh, watchlistQuoteLabel } from "./watchlistQuotes";
+import type { WatchlistQuote, WatchlistQuoteResponse } from "./watchlistQuotes";
 import * as echarts from "echarts/core";
 import { BarChart, CandlestickChart, LineChart, ScatterChart } from "echarts/charts";
 import {
@@ -37,6 +44,7 @@ import {
   FolderPlus,
   Folder,
   MoreVertical,
+  GripVertical,
 } from "lucide-react";
 import type { Bar, ChartData, Coverage, Node, SecurityCandidate, SecuritySearchResult, Stock, Drawing, DrawingStyle, WatchlistGroup, WatchlistMembership, WatchlistResponse, SubplotVisibility } from "./types";
 import { bindChartGestures, ChartGesture, gestureOwner, initialChartZoom, rebaseChartZoom } from "./chartInteractions";
@@ -381,6 +389,7 @@ function Chart({
   const [preview, setPreview] = useState<{start:{trade_date:string;price:number};end:{trade_date:string;price:number}} | null>(null);
   const [selectedDrawing, setSelectedDrawing] = useState<number | null>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const hoveredIndexRef = useRef<number | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [compactLayout, setCompactLayout] = useState(() => innerWidth <= 760);
   const safeData = useMemo(() => normalizeChartData(data), [data]);
@@ -409,17 +418,19 @@ function Chart({
     const px = [event.clientX - rect.left, event.clientY - rect.top];
     const value = chart.current.convertFromPixel({xAxisIndex: 0, yAxisIndex: 0}, px) as any[];
     const rawIndex = Number(value?.[0]);
-    const index = Math.max(0, Math.min(bars.length - 1, Math.round(rawIndex)));
+    const dates = chartDates(safeData?.timeframe || "", bars);
+    const index = Math.max(0, Math.min(dates.length - 1, Math.round(rawIndex)));
     const y = Number(value?.[1]);
     if (!Number.isFinite(y)) return null;
-    return { trade_date: bars[index].trade_date, price: y };
-  }, [bars]);
+    return { trade_date: dates[index], price: y };
+  }, [bars, safeData?.timeframe]);
   const pointPixel = useCallback((point: {trade_date:string;price:number}) => {
     if (!chart.current) return [0,0];
-    const index = Math.max(0, datesIndex(bars, point.trade_date));
+    const dates = chartDates(safeData?.timeframe || "", bars);
+    const index = safeData?.timeframe === "1" ? Math.max(0, dates.indexOf(intradayCoordinate(point.trade_date))) : Math.max(0, datesIndex(bars, point.trade_date));
     const px = chart.current.convertToPixel({xAxisIndex:0,yAxisIndex:0}, [index, point.price]) as number[];
     return [Number(px?.[0] || 0), Number(px?.[1] || 0)];
-  }, [bars]);
+  }, [bars, safeData?.timeframe]);
   useEffect(() => {
     const element = ref.current;
     if (!element || !bars.length) {
@@ -485,7 +496,8 @@ function Chart({
     /* Keep option construction outside the React effect's ad-hoc object graph.
        The builder validates every series and axis before ECharts sees it. */
     const builderData = safeData as ChartData;
-    const builderDates = bars.map((bar) => bar.trade_date);
+    const builderDates = chartDates(builderData.timeframe, bars);
+    const builderPointDates = builderData.timeframe === "1" ? intradayPointDates(bars, builderDates) : builderDates;
     const builderChartKey = `${builderData.symbol || ""}:${builderData.timeframe || ""}`;
     const builderTimeframeChanged = lastChartKey.current !== builderChartKey;
     if (builderTimeframeChanged) {
@@ -493,6 +505,9 @@ function Chart({
       try { saved = localStorage.getItem(`chan-zoom-${builderChartKey}`); } catch {}
       zoomState.current = initialChartZoom(bars.length, builderData.timeframe === "1", saved);
       setHoveredIndex(null);
+      hoveredIndexRef.current = null;
+    } else if (builderData.timeframe === "1") {
+      zoomState.current = { start: 0, end: 100 };
     } else {
       zoomState.current = rebaseChartZoom(zoomState.current, previousDates.current, builderDates);
     }
@@ -534,6 +549,9 @@ function Chart({
     try {
       if (isChartDisposed(instance) || echarts.getInstanceByDom(element) !== instance) return;
       instance.setOption(artifacts.option, { notMerge: true, lazyUpdate: false });
+      if (builderData.timeframe === "1" && hoveredIndexRef.current !== null && hoveredIndexRef.current < bars.length) {
+        instance.dispatchAction({ type: "showTip", seriesIndex: 0, dataIndex: builderPointDates.indexOf(bars[hoveredIndexRef.current].trade_date) });
+      }
       setRenderError(null);
     } catch (error) {
       console.error("缠论图表渲染失败", error);
@@ -541,6 +559,7 @@ function Chart({
       return;
     }
     const builderZoom = (event: any) => {
+      if (builderData.timeframe === "1") return;
       const value = event.batch?.[0] || event;
       if (Number.isFinite(value.start) && Number.isFinite(value.end)) {
         zoomState.current = { start: value.start, end: value.end };
@@ -554,10 +573,19 @@ function Chart({
     const builderClick = () => {};
     const builderAxisPointer = (event: any) => {
       const axis = event.axesInfo?.find((item: any) => item.axisDim === "x" && item.axisIndex === 0);
-      const index = typeof axis?.value === "string" ? builderDates.indexOf(axis.value) : Number(axis?.value);
-      if (Number.isInteger(index) && index >= 0 && index < bars.length) setHoveredIndex(index);
+      const axisIndex = typeof axis?.value === "string" ? builderDates.indexOf(axis.value) : Number(axis?.value);
+      const pricePoint = axis?.seriesDataIndices?.find((item: any) => item.seriesIndex === 0);
+      const stamp = pricePoint ? builderPointDates[pricePoint.dataIndex] : builderDates[axisIndex];
+      const index = builderData.timeframe === "1" ? bars.findIndex((bar) => bar.trade_date === stamp) : axisIndex;
+      if (Number.isInteger(index) && index >= 0 && index < bars.length) {
+        hoveredIndexRef.current = index;
+        setHoveredIndex(index);
+      } else if (builderData.timeframe === "1") {
+        hoveredIndexRef.current = null;
+        setHoveredIndex(null);
+      }
     };
-    const builderGlobalOut = () => setHoveredIndex(null);
+    const builderGlobalOut = () => { hoveredIndexRef.current = null; setHoveredIndex(null); };
     const distanceToSegment = (x: number, y: number, start: number[], end: number[]) => {
       const dx = end[0] - start[0], dy = end[1] - start[1];
       if (!dx && !dy) return Math.hypot(x - start[0], y - start[1]);
@@ -791,7 +819,7 @@ function Chart({
         </div>}
       </div>
       {data.timeframe !== "1" && <div className="chart-layer-controls" aria-label="缠论图层控制">
-        {([['pens', '正式笔', 'pen'], ['centers', '正式中枢', 'center'], ['movements', '正式走势', 'movement']] as const).map(([key, label, icon]) => (
+        {([['pens', '笔', 'pen'], ['centers', '中枢', 'center'], ['movements', '走势', 'movement']] as const).map(([key, label, icon]) => (
           <button
             key={key}
             className={`chart-layer-toggle ${visible[key] ? "active" : ""}`}
@@ -812,8 +840,8 @@ function Chart({
             <span>{label}</span>
           </button>
         ))}
-        {centerLevels.map((level) => <button key={`center-level-${level}`} className={`chart-layer-toggle chart-level-toggle ${visible.centers && visible.centerLevels[String(level)] !== false ? "active" : ""}`} aria-label={`${visible.centerLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}中枢`} aria-pressed={visible.centers && visible.centerLevels[String(level)] !== false} title={`${visible.centerLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}中枢`} onClick={() => onLayerToggle("centers", level)}><i className="legend-swatch center" style={{borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level), background: `${levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level)}${theme === "light" ? "1A" : "24"}`}} aria-hidden="true"/><span>L{level}</span></button>)}
-        {movementLevels.map((level) => <button key={`movement-level-${level}`} className={`chart-layer-toggle chart-level-toggle ${visible.movements && visible.movementLevels[String(level)] !== false ? "active" : ""}`} aria-label={`${visible.movementLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}走势`} aria-pressed={visible.movements && visible.movementLevels[String(level)] !== false} title={`${visible.movementLevels[String(level)] !== false ? "隐藏" : "显示"}L${level}走势`} onClick={() => onLayerToggle("movements", level)}><i className="legend-swatch movement" style={{borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level), borderWidth: 3}} aria-hidden="true"/><span>L{level}</span></button>)}
+        {centerLevels.map((level) => <button key={`center-level-${level}`} className={`chart-layer-toggle chart-level-toggle ${visible.centers && visible.centerLevels[String(level)] !== false ? "active" : ""}`} aria-label={`${visible.centerLevels[String(level)] !== false ? "隐藏" : "显示"}中枢 L${level}`} aria-pressed={visible.centers && visible.centerLevels[String(level)] !== false} title={`${visible.centerLevels[String(level)] !== false ? "隐藏" : "显示"}中枢 L${level}`} onClick={() => onLayerToggle("centers", level)}><i className="legend-swatch center" style={{borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level), background: `${levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level)}${theme === "light" ? "1A" : "24"}`}} aria-hidden="true"/><span>中枢 L{level}</span></button>)}
+        {movementLevels.map((level) => <button key={`movement-level-${level}`} className={`chart-layer-toggle chart-level-toggle ${visible.movements && visible.movementLevels[String(level)] !== false ? "active" : ""}`} aria-label={`${visible.movementLevels[String(level)] !== false ? "隐藏" : "显示"}走势 L${level}`} aria-pressed={visible.movements && visible.movementLevels[String(level)] !== false} title={`${visible.movementLevels[String(level)] !== false ? "隐藏" : "显示"}走势 L${level}`} onClick={() => onLayerToggle("movements", level)}><i className="legend-swatch movement" style={{borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level), borderWidth: 3}} aria-hidden="true"/><span>走势 L{level}</span></button>)}
       </div>}
     </div>}
     {movementsStale && <div className="drawing-preview" aria-live="polite">走势待重算</div>}
@@ -896,6 +924,11 @@ export function App() {
   );
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [watchlistGroups, setWatchlistGroups] = useState<WatchlistGroup[]>([]);
+  const [sectionOrder, setSectionOrder] = useState<string[]>(["all", "ungrouped"]);
+  const [watchlistQuotes, setWatchlistQuotes] = useState<Record<string, WatchlistQuote>>({});
+  const [quoteStatus, setQuoteStatus] = useState("等待行情");
+  const sectionRevision = useRef(0);
+  const sectionSaving = useRef(false);
   const [memberships, setMemberships] = useState<WatchlistMembership[]>([]);
   const [watchlistLoaded, setWatchlistLoaded] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
@@ -972,7 +1005,9 @@ export function App() {
   const drawingRedo = useRef<Drawing[][]>([]);
   const [drawingOpen, setDrawingOpen] = useState(false);
   const [dragStock, setDragStock] = useState<{symbol:string;viewKey:string;groupId:number|null} | null>(null);
-  const [dragGroupId, setDragGroupId] = useState<number | null>(null);
+  const [dragGroupId, setDragGroupId] = useState<string | null>(null);
+  const [groupDropTarget, setGroupDropTarget] = useState<{id:string;position:GroupDropPosition} | null>(null);
+  const [groupOrderSaving, setGroupOrderSaving] = useState(false);
   const loadingOlder = useRef(false);
   const loadSequence = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
@@ -1000,15 +1035,37 @@ export function App() {
     return () => removeEventListener("resize", adapt);
   }, []);
   const refreshStocks = useCallback(async () => {
+    const revision = sectionRevision.current;
     const result = await api<WatchlistResponse>("/api/watchlist");
     setStocks(result.stocks);
     setWatchlistGroups(result.groups);
+    if (!sectionSaving.current && sectionRevision.current === revision) setSectionOrder(normalizeSectionOrder(result.section_order || [], result.groups));
     setMemberships(result.memberships);
     setWatchlistLoaded(true);
     if (result.stocks.length) setSymbol((current) => current || result.stocks[0].symbol);
     return result.stocks;
   }, []);
   useEffect(() => { refreshStocks().catch((error) => setWatchlistError(error.message)); }, [refreshStocks]);
+  const quoteSymbolsKey = [...new Set(stocks.map((stock) => stock.symbol))].sort().join(",");
+  const quoteGroupsKey = watchlistGroups.map((group) => `${group.id}:${group.name}`).join("|") + JSON.stringify(memberships) + sectionOrder.join(",");
+  useEffect(() => {
+    if (!watchlistLoaded) return;
+    if (!quoteSymbolsKey) { setWatchlistQuotes({}); setQuoteStatus("暂无自选"); return; }
+    const symbols = quoteSymbolsKey.split(",");
+    return startWatchlistQuoteRefresh({
+      visibility: document,
+      fetch: (signal) => api<WatchlistQuoteResponse>("/api/watchlist/quotes", {signal}),
+      onQuotes: (response) => {
+        setWatchlistQuotes((current) => mergeWatchlistQuotes(current, response.quotes, symbols));
+        setQuoteStatus(`${response.market_status} · ${response.refresh_after_ms === 10_000 ? "10秒刷新" : "低频更新"}`);
+      },
+      onError: () => {
+        setQuoteStatus("行情更新失败，已保留有效报价");
+        setWatchlistQuotes((current) => Object.fromEntries(Object.entries(current)
+          .filter(([code]) => symbols.includes(code)).map(([code, quote]) => [code, {...quote, status:"error", error:"行情请求失败"}])));
+      },
+    });
+  }, [watchlistLoaded, quoteSymbolsKey, quoteGroupsKey, symbol]);
   useEffect(() => {
     if (!watchlistLoaded) return;
     setCollapsedGroups((current) => {
@@ -1121,6 +1178,10 @@ export function App() {
             : fresh,
         );
         if (!prepend) { const loaded = fresh.drawings || []; setDraftDrawings(loaded); drawingBaseline.current = loaded; setDeletedDrawings([]); setStructureOperations([]); drawingHistory.current=[]; drawingRedo.current=[]; }
+        if (requestTimeframe === "1") {
+          setCoverage(null);
+          return;
+        }
         try {
           const coverageResult = await api<Coverage>(`/api/market-coverage/${encodeURIComponent(requestSymbol)}?timeframe=${requestTimeframe}&adjustflag=2`, { signal: controller.signal });
           if (isCurrent()) setCoverage(coverageResult);
@@ -1148,6 +1209,32 @@ export function App() {
     loadAbort.current = null;
     loadingOlder.current = false;
   }, [symbol, timeframe]);
+  const [intradayError, setIntradayError] = useState("");
+  const intradayReady = !loading && data?.symbol === symbol && data?.timeframe === "1";
+  const intradayState = useRef(data?.intraday_refresh);
+  intradayState.current = data?.intraday_refresh;
+  useEffect(() => {
+    setIntradayError("");
+    if (!symbol || timeframe !== "1" || !intradayReady) return;
+    return startIntradayRefresh({
+      visibility: document,
+      initial: intradayState.current,
+      onError: () => setIntradayError("分时刷新失败，已保留上次数据"),
+      fetch: async (signal) => {
+        const params = new URLSearchParams({ timeframe: "1", adjustflag: "2", refresh: "true", limit: "300",
+          ma_periods: mainIndicator.maPeriods.join(","), boll_period: String(mainIndicator.bollPeriod),
+          boll_multiplier: String(mainIndicator.bollMultiplier) });
+        const response = await api<ChartData>(`/api/chart-data/${encodeURIComponent(symbol)}?${params}`, { signal });
+        const fresh = normalizeChartData(response);
+        if (!fresh?.intraday_refresh || fresh.symbol !== symbol || fresh.timeframe !== "1") throw new Error("分时响应无效");
+        if (!signal.aborted) {
+          setData((current) => current?.symbol === symbol && current.timeframe === "1" ? mergeIntradayData(current, fresh) : current);
+          setIntradayError(fresh.intraday_refresh.error || fresh.intraday_refresh.calendar_error || "");
+        }
+        return fresh.intraday_refresh;
+      },
+    });
+  }, [symbol, timeframe, mainIndicator, intradayReady]);
   useEffect(() => {
     nextBefore.current = undefined;
     setSelected(null);
@@ -1338,23 +1425,28 @@ export function App() {
       setNotice({kind:"success", text:`已删除分组“${group.name}”`});
     } catch (error) { setNotice({kind:"error", text:(error as Error).message}); }
   };
-  const reorderGroup = async (targetId: number) => {
-    if (dragGroupId === null || dragGroupId === targetId) return;
-    const from = watchlistGroups.findIndex((group) => group.id === dragGroupId);
-    const to = watchlistGroups.findIndex((group) => group.id === targetId);
-    if (from < 0 || to < 0) return;
-    const previous = watchlistGroups;
-    const reordered = [...watchlistGroups];
-    const [moving] = reordered.splice(from, 1);
-    reordered.splice(to, 0, moving);
-    setWatchlistGroups(reordered.map((group, index) => ({...group, sort_order:index})));
+  const clearGroupDrag = () => {
+    setDragGroupId(null);
+    setGroupDropTarget(null);
+  };
+  const reorderGroup = async (targetId: string, position: GroupDropPosition) => {
+    clearGroupDrag();
+    if (dragGroupId === null || sectionSaving.current) return;
+    const previous = sectionOrder;
+    const sections = normalizeSectionOrder(previous, watchlistGroups).map((key, sort_order) => ({key, sort_order}));
+    const reordered = reorderWatchlistSections(sections, dragGroupId, targetId, position);
+    if (reordered === sections) return;
+    sectionRevision.current += 1;
+    sectionSaving.current = true;
+    setGroupOrderSaving(true);
+    setSectionOrder(reordered.map((section) => section.key));
     try {
-      const saved = await api<WatchlistGroup[]>("/api/watchlist-groups/order", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({group_ids:reordered.map((group)=>group.id)})});
-      setWatchlistGroups(saved);
+      const saved = await api<{section_order:string[]}>("/api/watchlist/order", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({section_keys:reordered.map((section)=>section.key)})});
+      setSectionOrder(saved.section_order);
     } catch (error) {
-      setWatchlistGroups(previous);
+      setSectionOrder(previous);
       setNotice({kind:"error", text:`分组排序失败：${(error as Error).message}`});
-    } finally { setDragGroupId(null); }
+    } finally { sectionRevision.current += 1; sectionSaving.current = false; setGroupOrderSaving(false); }
   };
   const toggleMembership = async (groupId: number, stockSymbol: string, selected: boolean) => {
     if (membershipUpdating) return;
@@ -1534,7 +1626,7 @@ export function App() {
   };
   const last = data?.bars.at(-1),
     quote = data?.quote,
-    prev = timeframe === "1" && data?.previous_close ? { close: data.previous_close } : data?.bars.at(-2),
+    prev = timeframe === "1" ? (data?.previous_close ? { close: data.previous_close } : undefined) : data?.bars.at(-2),
     change = quote?.change_pct ?? (last && prev && Number.isFinite(last.close) && Number.isFinite(prev.close) && prev.close !== 0
       ? (last.close / prev.close - 1) * 100
       : null),
@@ -1544,10 +1636,85 @@ export function App() {
     quoteTone = change === null || change === 0 ? "" : change > 0 ? "rise" : "fall",
     formattedChange = change === null ? "--" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`;
   const ungroupedStocks = watchlistUngroupedStocks(stocks, memberships);
+  const groupDragProps = (key: string) => ({
+    className: `watchlist-group-head${groupDropTarget?.id === key ? ` group-drop-${groupDropTarget.position}` : ""}`,
+    draggable: !groupOrderSaving,
+    title: "拖动分组标题排序；上半部插入前面，下半部插入后面",
+    onDragStart: (event: DragEvent<HTMLDivElement>) => {
+      if (groupOrderSaving || (event.target as HTMLElement).closest(".group-actions,.group-add-stock")) { event.preventDefault(); return; }
+      event.stopPropagation();
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", key);
+      setDragStock(null);
+      setDragGroupId(key);
+      setGroupDropTarget(null);
+      setGroupMenuId(null);
+      setMembershipMenu(null);
+    },
+    onDragEnd: clearGroupDrag,
+    onDragOver: (event: DragEvent<HTMLDivElement>) => {
+      if (dragGroupId === null || dragGroupId === key || groupOrderSaving) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+      const bounds = event.currentTarget.getBoundingClientRect();
+      setGroupDropTarget({id:key, position:groupDropPosition(event.clientY, bounds.top, bounds.height)});
+    },
+    onDragLeave: (event: DragEvent<HTMLDivElement>) => {
+      if (!event.currentTarget.contains(event.relatedTarget as globalThis.Node | null)) setGroupDropTarget(null);
+    },
+    onDrop: (event: DragEvent<HTMLDivElement>) => {
+      if (dragGroupId === null || groupOrderSaving) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const bounds = event.currentTarget.getBoundingClientRect();
+      reorderGroup(key, groupDropPosition(event.clientY, bounds.top, bounds.height));
+    },
+  });
+  const touchGroupTarget = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const head = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>(".watchlist-group-head");
+    const key = head?.closest<HTMLElement>("[data-section-key]")?.dataset.sectionKey;
+    if (!head || !key || key === dragGroupId) return null;
+    const bounds = head.getBoundingClientRect();
+    return {id:key, position:groupDropPosition(event.clientY, bounds.top, bounds.height)};
+  };
+  const renderGroupGrip = (key: string) => <GripVertical className="group-drag-handle" size={14} aria-hidden="true"
+    onPointerDown={(event) => {
+      if (event.pointerType === "mouse" || sectionSaving.current) return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setDragStock(null);
+      setDragGroupId(key);
+      setGroupDropTarget(null);
+      setGroupMenuId(null);
+      setMembershipMenu(null);
+    }}
+    onPointerMove={(event) => {
+      if (event.pointerType === "mouse" || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+      event.preventDefault();
+      setGroupDropTarget(touchGroupTarget(event));
+    }}
+    onPointerUp={(event) => {
+      if (event.pointerType === "mouse" || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+      event.preventDefault();
+      const target = touchGroupTarget(event);
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      if (target) void reorderGroup(target.id, target.position);
+      else clearGroupDrag();
+    }}
+    onPointerCancel={clearGroupDrag}
+  />;
   const renderStockRows = (items: Stock[], viewKey: string, groupId: number | null, canReorder: boolean) => items.map((stock) => {
     const menuKey = `${viewKey}:${stock.symbol}`;
+    const quote = watchlistQuotes[stock.symbol];
+    const quoteChange = quote?.change_pct;
     return <div key={menuKey} draggable={canReorder} className={`stock-row ${symbol === stock.symbol ? "active" : ""}`}
-      onDragStart={() => canReorder && setDragStock({symbol:stock.symbol,viewKey,groupId})}
+      onDragStart={(event) => {
+        event.stopPropagation();
+        clearGroupDrag();
+        if (canReorder) setDragStock({symbol:stock.symbol,viewKey,groupId});
+      }}
+      onDragEnd={() => setDragStock(null)}
       onDragOver={(event) => { if (canReorder) event.preventDefault(); }}
       onDrop={(event) => { event.stopPropagation(); if (canReorder) reorderStock(stock.symbol, viewKey, groupId); }}>
       <button className="stock" onClick={() => setSymbol(stock.symbol)}>
@@ -1556,9 +1723,11 @@ export function App() {
           <small>{stock.symbol}</small>
           {syncLabel(stock.sync_status) && <small className={`sync-${stock.sync_status}`}>{syncLabel(stock.sync_status)}</small>}
         </span>
-        <span className={(stock.market?.change_pct || 0) >= 0 ? "rise" : "fall"}>
-          {formatPrice(stock.market?.latest)}
-          <small>{stock.market?.change_pct?.toFixed(2) || "--"}%</small>
+        <span className={`watchlist-quote ${quoteChange == null || quoteChange === 0 ? "" : quoteChange > 0 ? "rise" : "fall"}`}
+          title={`${quote?.source || "腾讯行情"} · ${quote?.quote_time || "暂无报价时间"}${quote?.error ? ` · ${quote.error}` : ""}`}>
+          {formatPrice(quote?.latest ?? undefined)}
+          <small>{quoteChange == null ? "--" : `${quoteChange > 0 ? "+" : ""}${quoteChange.toFixed(2)}%`}</small>
+          <small className={`quote-state quote-state-${quote?.status || "pending"}`}>{watchlistQuoteLabel(quote)}</small>
         </span>
       </button>
       <button className="manage-memberships" aria-label={`管理分组：${stock.name || stock.symbol}`} title="管理分组"
@@ -1580,8 +1749,9 @@ export function App() {
       </div>}
     </div>;
   });
-  const renderSystemSection = (key: "all"|"ungrouped", label: string, items: Stock[]) => <section className="watchlist-section" key={key}>
-    <div className="watchlist-group-head">
+  const renderSystemSection = (key: "all"|"ungrouped", label: string, items: Stock[]) => <section className={`watchlist-section system-group${dragGroupId === key ? " group-dragging" : ""}`} key={key} data-section-key={key}>
+    <div {...groupDragProps(key)}>
+      {renderGroupGrip(key)}
       <button className="group-toggle" onClick={() => toggleGroup(key)} aria-expanded={!collapsedGroups[key]}>
         {collapsedGroups[key] ? <ChevronRight size={15}/> : <ChevronDown size={15}/>}<b>{label}</b><small>{items.length}</small>
       </button>
@@ -1620,7 +1790,7 @@ export function App() {
           <div className="panel-head">
             <b>自选</b>
             <div className="watchlist-head-actions">
-              <button className="icon" title="新建分组" aria-label="新建分组" onClick={createGroup}><FolderPlus size={17}/></button>
+              <button className="icon" title="新建分组" aria-label="新建分组" disabled={groupOrderSaving} onClick={createGroup}><FolderPlus size={17}/></button>
               <button className="icon" title={showAdd ? "关闭搜索" : "添加自选"} aria-label={showAdd ? "关闭搜索" : "添加自选"}
                 onClick={() => showAdd ? setShowAdd(false) : openStockSearch(null)}>{showAdd ? <X size={17}/> : <Plus size={17}/>}</button>
             </div>
@@ -1647,23 +1817,23 @@ export function App() {
             </div>
             {watchlistError && <p className="watchlist-error">{watchlistError}</p>}
           </div>}
+          <div className="watchlist-quote-status" role="status">{quoteStatus}</div>
           <div className="stock-list watchlist-tree">
-            {renderSystemSection("all", "全部", stocks)}
-            {renderSystemSection("ungrouped", "未分组", ungroupedStocks)}
-            {watchlistGroups.map((group) => {
-              const key = `group-${group.id}`;
+            {normalizeSectionOrder(sectionOrder, watchlistGroups).map((key) => {
+              if (key === "all") return renderSystemSection("all", "全部", stocks);
+              if (key === "ungrouped") return renderSystemSection("ungrouped", "未分组", ungroupedStocks);
+              const group = watchlistGroups.find((item) => `group-${item.id}` === key)!;
               const items = stocksForGroup(group.id);
               const isCollapsed = collapsedGroups[key] ?? true;
-              return <section className="watchlist-section custom-group" key={group.id} draggable
-                onDragStart={(event) => { if ((event.target as HTMLElement).closest(".stock-row")) return; setDragGroupId(group.id); }}
-                onDragOver={(event) => event.preventDefault()} onDrop={() => reorderGroup(group.id)}>
-                <div className="watchlist-group-head">
+              return <section className={`watchlist-section custom-group${dragGroupId === key ? " group-dragging" : ""}`} key={key} data-section-key={key}>
+                <div {...groupDragProps(key)}>
+                  {renderGroupGrip(key)}
                   <button className="group-toggle" onClick={() => toggleGroup(key)} aria-expanded={!isCollapsed}>
                     {isCollapsed ? <ChevronRight size={15}/> : <ChevronDown size={15}/>}<Folder className="group-folder" size={14}/><b title={group.name}>{group.name}</b><small>{items.length}</small>
                   </button>
                   <div className="group-actions">
                     <button className="icon" title={`添加到${group.name}`} aria-label={`添加到${group.name}`} onClick={() => openStockSearch(group.id)}><Plus size={14}/></button>
-                    <button className="icon" title="分组菜单" aria-label={`${group.name}分组菜单`} onClick={() => setGroupMenuId((current) => current === group.id ? null : group.id)}><MoreVertical size={15}/></button>
+                    <button className="icon" title="分组菜单" disabled={groupOrderSaving} aria-label={`${group.name}分组菜单`} onClick={() => setGroupMenuId((current) => current === group.id ? null : group.id)}><MoreVertical size={15}/></button>
                     {groupMenuId === group.id && <div className="group-menu">
                       <button onClick={() => renameGroup(group)}><Pencil size={14}/>重命名</button>
                       <button className="danger" onClick={() => deleteGroup(group)}><Trash2 size={14}/>删除分组</button>
@@ -1747,13 +1917,19 @@ export function App() {
                 <span className={`quote-change ${quoteTone}`}><small>涨跌幅</small>{formattedChange}</span>
               </>}
             </div>
+            {timeframe === "1" && data?.intraday_refresh && <div className="intraday-refresh-status" role="status">
+              {data.intraday_refresh.market_status} · 数据：{data.intraday_refresh.latest_data_at || "暂无数据"}
+              {!data.intraday_refresh.is_today && data.intraday_refresh.data_date && "（非今日行情）"}
+              {data.intraday_refresh.last_success_at && ` · 获取：${data.intraday_refresh.last_success_at.slice(11, 19)}`}
+              {intradayError && ` · ${intradayError}`}
+            </div>}
             {(quote || last) && <div className="quote-details">
               <span>昨收：<b>{formatPrice(quote?.previous_close)}</b></span>
               <span>今开：<b>{formatPrice(quote?.open ?? last?.open)}</b></span>
               <span>最高：<b className="rise">{formatPrice(quote?.high ?? last?.high)}</b></span>
               <span>最低：<b className="fall">{formatPrice(quote?.low ?? last?.low)}</b></span>
               <span>成交量：<b>{formatVolume(quote?.volume ?? last?.volume)}</b></span>
-              <span>成交额：<b>{formatCompactNumber(quote?.amount ?? last?.amount)}</b></span>
+              <span>成交额：<b>{formatCompactNumber(timeframe === "1" ? quote?.amount : quote?.amount ?? last?.amount)}</b></span>
               <span>振幅：<b>{quote?.amplitude_pct == null ? "--" : `${quote.amplitude_pct.toFixed(2)}%`}</b></span>
             </div>}
           </div>
@@ -1844,7 +2020,7 @@ export function App() {
               <dd>{periodLabels[timeframe] || timeframe}</dd>
               <dt>结构数量</dt>
               <dd>
-                {data?.pens.length || 0} 正式笔 · {(data?.centers || data?.pen_centers || []).filter((item) => visible.centers && (item.role === undefined || item.role === "hierarchy") && visible.centerLevels[String(nodeLevel(item))] !== false).length} 正式中枢 · {(data?.movements || []).filter((item) => visible.movements && item.role === "hierarchy_component" && visible.movementLevels[String(nodeLevel(item))] !== false).length} 正式走势
+                {data?.pens.length || 0} 笔 · {(data?.centers || data?.pen_centers || []).filter((item) => visible.centers && (item.role === undefined || item.role === "hierarchy") && visible.centerLevels[String(nodeLevel(item))] !== false).length} 中枢 · {(data?.movements || []).filter((item) => visible.movements && item.role === "hierarchy_component" && visible.movementLevels[String(nodeLevel(item))] !== false).length} 走势
               </dd>
             </dl>
           </section>

@@ -1,4 +1,5 @@
 import type { Bar, ChartData, Drawing, DrawingStyle, Node } from "./types";
+import { alignIntradaySeries, chartDates, intradayPointDates } from "./intradayTimeline";
 import { levelStructureColor, periodStructureColor } from "./structureColors";
 import { formatCompactNumber, formatIndicatorValue, formatPrice, formatVolume } from "./marketFormatters";
 
@@ -556,7 +557,7 @@ export const resizeAdjacentPanes = (heights: number[], separatorIndex: number, d
 export const buildAxes = (context: ChartBuildContext) => {
   const data = context.data;
   const bars = context.bars || data.bars || [];
-  const dates = bars.map((bar) => bar.trade_date);
+  const dates = chartDates(data.timeframe, bars);
   const dark = context.theme !== "light";
   const intraday = data.timeframe === "1";
   const indicators = context.subplotIndicators || ["volume", "macd", "macd", "macd"];
@@ -564,7 +565,7 @@ export const buildAxes = (context: ChartBuildContext) => {
   const count = slots.length;
   const layout = buildChartPaneLayout({ requestedHeight: context.chartHeight || 560, subplotCount: count, ratios: context.paneRatios, intraday, mainIndicatorVisible: context.mainIndicator?.mode !== "none", compact: context.compactLayout });
   const grid: Record<string, any>[] = [{ left: 64, right: 18, top: layout.tops[0], height: layout.heights[0] }];
-  const clockLabel = (value: string) => value.endsWith("09:30:00") || value.endsWith("11:30:00") || value.endsWith("15:00:00") ? value.slice(11, 16) : "";
+  const clockLabel = (value: string) => value.endsWith("11:30:00") ? "11:30/13:00" : value.endsWith("09:30:00") || value.endsWith("15:00:00") ? value.slice(11, 16) : "";
   const xAxis: Record<string, any>[] = [{ type: "category", data: dates, boundaryGap: !intraday, axisLine: { lineStyle: { color: dark ? "#44505b" : "#bdc7ce" } }, axisLabel: { show: true, color: dark ? "#8998a5" : "#60707b", hideOverlap: true, ...(intraday ? { interval: 0, formatter: clockLabel } : { interval: "auto" }) } }];
   const yAxis: Record<string, any>[] = [{ type: "value", scale: true, splitLine: { lineStyle: { color: dark ? "#28343e" : "#e7ecef" } }, axisLabel: { color: dark ? "#8998a5" : "#60707b", formatter: (value: number) => formatPrice(value) } }];
   const subplotAxisIndices: Record<number, number> = {};
@@ -586,7 +587,7 @@ export const buildPriceSeries = (context: ChartBuildContext, centerAreas: any[] 
   if (data.timeframe === "1") {
     let volume = 0, amount = 0;
     const average = bars.map((bar) => { volume += Number(bar.volume || 0); amount += ((bar.high + bar.low + bar.close) / 3) * Number(bar.volume || 0); return volume > 0 ? amount / volume : bar.close; });
-    const previous = Number(data.previous_close ?? bars[0].open);
+    const previous = data.previous_close == null ? Number.NaN : Number(data.previous_close);
     const markLine = Number.isFinite(previous) ? { silent: true, symbol: "none", lineStyle: { type: "dashed", width: 1, color: dark ? "#71808b" : "#9aa7ad" }, label: { show: false }, data: [{ yAxis: previous }] } : undefined;
     const line: Record<string, any> = { id: "intraday-price", name: "分时", type: "line", data: bars.map((bar) => bar.close), showSymbol: false, smooth: false, lineStyle: { width: 2, color: "#42b8d4" }, itemStyle: { color: "#42b8d4" }, areaStyle: { color: "#42b8d4", opacity: 0.08 } };
     if (markLine) line.markLine = markLine;
@@ -764,12 +765,10 @@ const validSeriesDataItem = (type: string, item: unknown): boolean => {
   if (type === "scatter") {
     return Array.isArray(value) && value.length === 2 && validCategoryCoordinate(value[0]) && typeof value[1] === "number" && Number.isFinite(value[1]);
   }
-  if (type === "line") {
+  if (type === "line" || type === "bar") {
     if (typeof value === "number") return Number.isFinite(value);
-    return Array.isArray(value) && value.length === 2 && validCategoryCoordinate(value[0]) && typeof value[1] === "number" && Number.isFinite(value[1]);
-  }
-  if (type === "bar") {
-    return typeof value === "number" && Number.isFinite(value);
+    return Array.isArray(value) && value.length === 2 && validCategoryCoordinate(value[0])
+      && (value[1] === null || (typeof value[1] === "number" && Number.isFinite(value[1])));
   }
   return false;
 };
@@ -823,16 +822,20 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
   const bars = normalizeBars(context.bars === undefined ? data.bars : context.bars);
   if (!bars.length) return { option: null, issues: [{ code: "empty_bars" }], visibleCenters: [], visibleMovements: [] };
   context = { ...context, data, bars };
-  const dates = bars.map((bar) => bar.trade_date);
+  const dates = chartDates(data.timeframe, bars);
+  const pointDates = data.timeframe === "1" ? intradayPointDates(bars, dates) : dates;
   const issues: ChartBuildIssue[] = [];
   const axes = buildAxes({ ...context, bars });
   const { axisCount, subplotAxisIndices, paneLayout: _paneLayout, ...axesOption } = axes;
   const centers = buildCenterAreas({ ...context, bars }, dates, issues);
   const movement = buildMovementSeries({ ...context, bars }, dates, issues);
   const hitSeries = buildStructureHitSeries({ ...context, bars }, dates, centers.visibleCenters, movement.visibleMovements, (data.pens || []).filter((pen) => pen.status === "confirmed"));
-  const series = [
+  const marketSeries = [
     ...buildPriceSeries({ ...context, bars }, centers.areas),
     ...buildIndicatorSeries({ ...context, bars }, axes),
+  ];
+  const series = [
+    ...(data.timeframe === "1" ? alignIntradaySeries(marketSeries, bars, dates) : marketSeries),
     ...buildPenSeries({ ...context, bars }, dates, issues),
     ...movement.series,
     ...hitSeries,
@@ -858,7 +861,12 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
     tooltip: { trigger: "axis", confine: true, backgroundColor: dark ? "#18232c" : "#fff", borderColor: dark ? "#44505b" : "#ccd5db", textStyle: { color: dark ? "#dce4e9" : "#22313a" }, formatter: (params: any) => {
       const items = Array.isArray(params) ? params : [params];
       const candle = items.find((item: any) => (item?.seriesName === "K线" || item?.seriesName === "分时") && item?.axisIndex === 0);
-      if (candle && context.formatKlineTooltip) return context.formatKlineTooltip(bars[candle.dataIndex], data.timeframe === "1" ? data.previous_close : bars[candle.dataIndex - 1]?.close);
+      if (candle && context.formatKlineTooltip) {
+        const bar = data.timeframe === "1" ? bars.find((item) => item.trade_date === pointDates[candle.dataIndex]) : bars[candle.dataIndex];
+        if (!bar) return "";
+        return context.formatKlineTooltip(bar, data.timeframe === "1" ? data.previous_close ?? undefined : bars[candle.dataIndex - 1]?.close);
+      }
+      if (data.timeframe === "1" && !items.some((item: any) => bars.some((bar) => bar.trade_date === pointDates[item?.dataIndex]))) return "";
       const first = items.find((item: any) => item?.seriesName !== "零轴");
       if (!first) return "";
       return items.filter((item: any) => item?.seriesName !== "零轴").map((item: any) => {
@@ -867,7 +875,7 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
         return `${item.marker || ""}${item.seriesName}：${formatted}`;
       }).join("<br/>");
     } },
-    dataZoom: [{ type: "inside", xAxisIndex: axes.xAxis.map((_, index) => index), start: context.zoomStart ?? 0, end: context.zoomEnd ?? 100, moveOnMouseMove: true, zoomOnMouseWheel: true, moveOnMouseWheel: false, preventDefaultMouseMove: true }, ...(data.timeframe === "1" ? [] : [{ type: "slider", xAxisIndex: axes.xAxis.map((_, index) => index), bottom: 5, height: 18, start: context.zoomStart ?? 0, end: context.zoomEnd ?? 100, borderColor: dark ? "#34424c" : "#bfd2df", backgroundColor: dark ? "#17232c" : "#edf5fa", fillerColor: dark ? "#3f92bd2e" : "#75a8c936" }])],
+    dataZoom: [{ type: "inside", xAxisIndex: axes.xAxis.map((_, index) => index), start: data.timeframe === "1" ? 0 : context.zoomStart ?? 0, end: data.timeframe === "1" ? 100 : context.zoomEnd ?? 100, disabled: data.timeframe === "1", moveOnMouseMove: data.timeframe !== "1", zoomOnMouseWheel: data.timeframe !== "1", moveOnMouseWheel: false, preventDefaultMouseMove: true }, ...(data.timeframe === "1" ? [] : [{ type: "slider", xAxisIndex: axes.xAxis.map((_, index) => index), bottom: 5, height: 18, start: context.zoomStart ?? 0, end: context.zoomEnd ?? 100, borderColor: dark ? "#34424c" : "#bfd2df", backgroundColor: dark ? "#17232c" : "#edf5fa", fillerColor: dark ? "#3f92bd2e" : "#75a8c936" }])],
     series: checked.valid,
   };
   if (!valueIsValid(option)) {

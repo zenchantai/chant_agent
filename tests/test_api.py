@@ -153,6 +153,37 @@ def test_security_search_and_confirmed_watchlist_add(tmp_path, monkeypatch):
     assert len(store.list_stock_pool()) == 1
 
 
+def test_watchlist_group_order_persists_without_changing_memberships(tmp_path, monkeypatch):
+    database = str(tmp_path / "watchlist-order.db")
+    store = Store(database)
+    monkeypatch.setattr(main_module, "store", store)
+    client = TestClient(main_module.app)
+    group_ids = [client.post("/api/watchlist-groups", json={"name": name}).json()["id"]
+                 for name in ("分组A", "分组B", "分组C")]
+    store.upsert_stock("000001", "平安银行", group_ids[0])
+    store.upsert_stock("000002", "万科A", group_ids[1])
+    previous = client.get("/api/watchlist").json()
+    expected = [group_ids[2], group_ids[0], group_ids[1]]
+    response = client.put("/api/watchlist-groups/order", json={"group_ids": expected})
+    assert response.status_code == 200
+    assert [group["id"] for group in response.json()] == expected
+    assert [group["sort_order"] for group in response.json()] == [0, 1, 2]
+    refreshed = client.get("/api/watchlist").json()
+    assert [group["id"] for group in refreshed["groups"]] == expected
+    assert refreshed["stocks"] == previous["stocks"]
+    assert sorted(refreshed["memberships"], key=lambda item: (item["group_id"], item["symbol"])) == sorted(
+        previous["memberships"], key=lambda item: (item["group_id"], item["symbol"]))
+    for invalid in ([group_ids[0]], [group_ids[0]] * 3, [group_ids[0], group_ids[1], 999999]):
+        assert client.put("/api/watchlist-groups/order", json={"group_ids": invalid}).status_code == 400
+        assert [group["id"] for group in client.get("/api/watchlist").json()["groups"]] == expected
+    reopened = Store(database)
+    try:
+        assert [group["id"] for group in reopened.list_watchlist_groups()] == expected
+    finally:
+        reopened.db.close()
+        store.db.close()
+
+
 def test_watchlist_group_api_and_grouped_stock_add(tmp_path, monkeypatch):
     store = Store(str(tmp_path / "watchlist-api.db"))
     catalog = {"catalog_date": "2026-09-12", "items": [

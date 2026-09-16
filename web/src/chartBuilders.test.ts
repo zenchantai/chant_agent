@@ -30,6 +30,13 @@ const base = (overrides: Record<string, unknown> = {}) => ({
 }) as any;
 
 describe("chart builders", () => {
+  it("分时昨收未知时不使用开盘价冒充昨收线", () => {
+    const data = base({ timeframe: "1", previous_close: null });
+    const artifacts = buildChartArtifacts({ data, theme: "light" });
+    const price = (artifacts.option?.series as any[])?.find((item) => item.id === "intraday-price");
+    expect(price).toBeDefined();
+    expect(price.markLine).toBeUndefined();
+  });
   it("只统计当前可视K线的最高价和最低价", () => {
     const bars = [bar("2026-01-01", 10), { ...bar("2026-01-02", 11), high: 30, low: 9 }, { ...bar("2026-01-03", 12), high: 20, low: 1 }, bar("2026-01-04", 13)];
     expect(visiblePriceExtremes(bars, 0, 50)).toMatchObject({
