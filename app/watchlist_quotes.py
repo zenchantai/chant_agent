@@ -20,9 +20,10 @@ class WatchlistQuoteService:
         self._errors = {}
         self._attempts = {}
 
-    def snapshot(self):
+    def snapshot(self, current_symbol: str | None = None):
         with self._lock:
-            symbols = self.store.watchlist_symbols()
+            all_symbols = self.store.watchlist_symbols()
+            symbols = [symbol for symbol in all_symbols if symbol != current_symbol]
             now = self.clock().astimezone(TZ)
             calendar = self.intraday.calendar_days(
                 (now.date() - timedelta(days=30)).isoformat(),
@@ -34,7 +35,7 @@ class WatchlistQuoteService:
             if calendar.get(today) and (9, 15) <= clock < (9, 30):
                 state.update(phase="auction", market_status="开盘集合竞价")
             active = state["phase"] in {"trading", "auction"}
-            interval = 10 if active else 60
+            interval = 15 if active else 60
             key = (today, state["phase"])
             due = [symbol for symbol in symbols if symbol not in self._attempts
                    or self._attempts[symbol][0] != key
@@ -66,10 +67,11 @@ class WatchlistQuoteService:
                         error = quote.get("error") or "暂无有效报价"
                     self._errors[symbol] = error
                     self._attempts[symbol] = (key, self.monotonic())
-            current_symbols = self.store.watchlist_symbols()
+            active_symbols = self.store.watchlist_symbols()
             for cache in (self._quotes, self._errors, self._attempts):
-                for symbol in set(cache) - set(current_symbols):
+                for symbol in set(cache) - set(active_symbols):
                     del cache[symbol]
+            current_symbols = [symbol for symbol in active_symbols if symbol != current_symbol]
             now = self.clock().astimezone(TZ)
             trading_days = [day for day, trading in calendar.items() if trading and day <= today]
             expected_day = max(trading_days, default=None)

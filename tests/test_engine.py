@@ -179,7 +179,10 @@ def test_directional_center_requires_strict_entry_and_core_overlap():
     assert build_pen_centers(point_touch) == []
     provisional = [pen(i, a, b) for i, (a, b) in enumerate([(1, 6), (6, 2), (2, 7), (7, 3)])]
     provisional[-1]["status"] = "provisional"
-    assert build_pen_centers(provisional) == []
+    candidates = build_pen_centers(provisional)
+    assert len(candidates) == 1
+    assert candidates[0]["status"] == "provisional"
+    assert candidates[0]["progress"] == "2/3"
 
 
 def test_directional_center_consumes_four_pens_and_failure_slides_one():
@@ -212,9 +215,10 @@ def test_temporary_departure_reentry_is_peripheral_not_new_center():
         (1, 6), (6, 2), (2, 7), (7, 3), (3, 8), (8, 7), (7, 2),
     ])]
     center = build_pen_centers(values)[0]
-    assert center["peripheral_pen_ids"] == ["p5"]
-    assert center["extension_pen_ids"] == ["p4", "p6"]
-    assert center["tail_status"] == "active_extension"
+    assert center["peripheral_pen_ids"] == []
+    assert center["extension_pen_ids"] == ["p4"]
+    assert center["departure_pen_ids"] == ["p5"]
+    assert center["tail_status"] == "provisional_departure"
 
 
 def test_confirmed_outside_center_rolls_crossing_pen_back_to_departure():

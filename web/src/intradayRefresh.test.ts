@@ -20,8 +20,13 @@ class Visibility extends EventTarget {
 afterEach(() => vi.useRealTimers());
 
 describe("分时刷新调度", () => {
+  it("周期K线在服务端给定的收口时刻补取", () => {
+    expect(refreshDelay({ ...state("10:29:55"), next_bar_finalize_at: "2026-09-16T10:30:15+08:00" })).toBe(15_000);
+    expect(refreshDelay({ ...state("10:30:05"), next_bar_finalize_at: "2026-09-16T10:30:15+08:00" })).toBe(10_000);
+  });
   it("盘中15秒、边界补取、休市等待和日历未知60秒", () => {
     expect(refreshDelay(state())).toBe(15_000);
+    expect(refreshDelay(state("09:20:00", "auction", "09:30:00"))).toBe(15_000);
     expect(refreshDelay(state("11:29:50"))).toBe(25_000);
     expect(refreshDelay(state("14:59:45", "trading", "15:00:00"))).toBe(30_000);
     expect(refreshDelay(state("11:30:15", "lunch", "13:00:00"))).toBe(5_385_000);
@@ -167,6 +172,19 @@ describe("静默行情合并", () => {
     expect(merged.drawings).toBe(current.drawings);
     expect(merged.drawings_version).toBe("local-draft");
     expect(merged.override_version).toBe("draft");
+  });
+
+  it("合并5分钟实时结构和形成中K线，同时保留本地绘图", () => {
+    const current = { ...data("000001", 10), timeframe: "5", drawings: [], drawings_version: "local-draft" };
+    const fresh = { ...data("000001", 11), timeframe: "5", forming_bar: {
+      trade_date: "2026-09-16 10:05:00", is_forming: true, status: "provisional" as const,
+    }, structure_preview: true, preview_structure_version: "preview-1", drawings_version: "server" };
+    const merged = mergeIntradayData(current, fresh);
+    expect(merged.forming_bar?.is_forming).toBe(true);
+    expect(merged.structure_preview).toBe(true);
+    expect(merged.preview_structure_version).toBe("preview-1");
+    expect(merged.drawings).toBe(current.drawings);
+    expect(merged.drawings_version).toBe("local-draft");
   });
 
   it("空结果保留旧曲线，跨日响应整体替换不混合日期", () => {

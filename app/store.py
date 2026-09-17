@@ -535,8 +535,8 @@ class Store:
         count, _ = self.upsert_bars_with_changes(symbol, timeframe, adjustflag, rows)
         return count
 
-    def upsert_bars_with_changes(self, symbol: str, timeframe: str, adjustflag: str, rows: list[dict[str, Any]], source: str = "baostock", snapshot_id: str = "") -> tuple[int, str | None]:
-        priority = {"baostock": 1, "api": 2, "csv": 3}
+    def upsert_bars_with_changes(self, symbol: str, timeframe: str, adjustflag: str, rows: list[dict[str, Any]], source: str = "baostock", snapshot_id: str = "", allow_lower_priority: bool = False) -> tuple[int, str | None]:
+        priority = {"tencent": 0, "baostock": 1, "api": 2, "csv": 3}
         values = [(symbol, timeframe, row["trade_date"], row["open"], row["high"], row["low"], row["close"], row.get("volume", 0), row.get("amount", 0), adjustflag,
                    row.get("source", source), row.get("snapshot_id", snapshot_id), row.get("source_revision", ""), row.get("adjust_factor", 1),
                    int(bool(row.get("is_suspended", False))), row.get("limit_up"), row.get("limit_down")) for row in rows]
@@ -551,7 +551,7 @@ class Store:
             for row, value in zip(rows, values):
                 old = existing.get(row["trade_date"])
                 new_source = row.get("source", source)
-                if old and priority.get(new_source, 0) < priority.get(old.get("source", "baostock"), 0):
+                if old and not allow_lower_priority and priority.get(new_source, 0) < priority.get(old.get("source", "baostock"), 0):
                     continue
                 new_prices = tuple(float(row.get(key, 0) or 0) for key in ("open", "high", "low", "close", "volume", "amount"))
                 old_prices = tuple(old[key] for key in ("open", "high", "low", "close", "volume", "amount")) if old else None
@@ -709,15 +709,28 @@ class Store:
         levels = [int(level) for row in rows for level, count in json.loads(row[0] or "{}").items() if count]
         return max(levels, default=0)
 
-    def replace_period_structure(self, symbol: str, timeframe: str, adjustflag: str,
-                                 definition_version: str, result: dict[str, Any],
-                                 market_version: str, coverage_version: str = ""):
-        now = datetime.now(timezone.utc).isoformat()
-        mapping = (("period_processed_bars", "processed_bars"), ("period_fractals", "fractals"),
-                   ("period_pens", "pens"), ("period_pen_centers", "centers"),
-                   ("period_center_relations", "center_relations"),
-                   ("period_movements", "movements"))
+    @staticmethod
+    def _period_structure_mapping():
+        return (("period_processed_bars", "processed_bars"), ("period_fractals", "fractals"),
+                ("period_pens", "pens"), ("period_pen_centers", "centers"),
+                ("period_center_relations", "center_relations"),
+                ("period_movements", "movements"))
+
+    @staticmethod
+    def _prepare_period_structure_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+        symbol = item["symbol"]
+        timeframe = item["timeframe"]
+        adjustflag = item.get("adjustflag", "2")
+        definition_version = item["definition_version"]
+        result = item["result"]
         centers = result.get("centers", result.get("pen_centers", []))
+        json.dumps(centers)
+        from .structure_validation import assert_valid_structure
+
+        try:
+            assert_valid_structure(result)
+        except ValueError as exc:
+            raise ValueError(f"走势确认不合法: {exc}") from exc
         center_level_counts: dict[str, int] = {}
         for center in centers:
             if center.get("role") not in {None, "hierarchy"}:
@@ -726,55 +739,133 @@ class Store:
             center_level_counts[key] = center_level_counts.get(key, 0) + 1
         from .hierarchy import movement_confirmation_errors
 
-        json.dumps(centers)
         center_by_id = {center["id"]: center for center in centers if center.get("id")}
         for movement in result.get("movements", []):
             errors = movement_confirmation_errors(movement, center_by_id)
             if errors:
                 raise ValueError(f"走势确认不合法: {movement.get('id')}: {errors}")
-        movement_count = len(result.get("movements", []))
         movement_level_counts: dict[str, int] = {}
         for movement in result.get("movements", []):
             if movement.get("role") not in {None, "hierarchy_component"}:
                 raise ValueError("period_movements 只允许正式 hierarchy_component")
             key = f"L{movement.get('level', 1)}:hierarchy_component"
             movement_level_counts[key] = movement_level_counts.get(key, 0) + 1
+        return {
+            **item,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "adjustflag": adjustflag,
+            "definition_version": definition_version,
+            "started_at": item.get("started_at") or datetime.now(timezone.utc).isoformat(),
+            "centers": centers,
+            "center_level_counts": center_level_counts,
+            "movement_level_counts": movement_level_counts,
+            "movement_count": len(result.get("movements", [])),
+        }
+
+    def _insert_period_structure_snapshot(self, prepared: dict[str, Any]) -> int:
+        result = prepared["result"]
+        cur = self.db.execute("""INSERT INTO period_structure_runs
+            (symbol,timeframe,adjustflag,definition_version,started_at,status,market_version,coverage_version,calculator_fingerprint)
+            VALUES(?,?,?,?,?,'running',?,?,?)""", (
+            prepared["symbol"], prepared["timeframe"], prepared["adjustflag"],
+            prepared["definition_version"], prepared["started_at"],
+            prepared["market_version"], prepared.get("coverage_version", ""),
+            result.get("calculator_fingerprint", ""),
+        ))
+        run_id = cur.lastrowid
+        self.db.execute("UPDATE period_structure_runs SET structure_metadata=? WHERE id=?", (
+            json.dumps({key: result.get(key, {}) if key == "unassigned_by_level" else result.get(key, [])
+                        for key in ("unassigned_by_level", "hierarchy_issues", "pen_diagnostics")}, ensure_ascii=False), run_id))
+        for table, key in self._period_structure_mapping():
+            values = []
+            for ordinal, item in enumerate(result.get(key, [])):
+                start = item.get("start_date") or item.get("trade_date") or ""
+                end = item.get("end_date") or item.get("trade_date") or start
+                values.append((run_id, prepared["symbol"], prepared["timeframe"], prepared["adjustflag"],
+                               prepared["definition_version"], ordinal, start, end,
+                               json.dumps(item, ensure_ascii=False, sort_keys=True)))
+            if values:
+                self.db.executemany(
+                    f"INSERT INTO {table}(run_id,symbol,timeframe,adjustflag,definition_version,ordinal,start_date,end_date,payload) VALUES(?,?,?,?,?,?,?,?,?)",
+                    values,
+                )
+        self.db.execute("""UPDATE period_structure_runs SET finished_at=?,status='success',
+            structure_version=?,center_level_counts=?,movement_count=?,movement_level_counts=?,
+            max_confirmed_center_level=?,max_available_center_level=? WHERE id=?""",
+            (datetime.now(timezone.utc).isoformat(), result.get("structure_version", ""),
+             json.dumps(prepared["center_level_counts"], sort_keys=True), prepared["movement_count"],
+             json.dumps(prepared["movement_level_counts"], sort_keys=True),
+             int(result.get("max_confirmed_center_level", 0)),
+             int(result.get("max_available_center_level", 0)), run_id))
+        return int(run_id)
+
+    def replace_period_structures_atomic(
+        self,
+        items: list[dict[str, Any]],
+        retire_symbols: tuple[str, ...] = (),
+        keep_timeframes: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        if not items:
+            return {"runs": [], "retired_active_runs": []}
+        prepared = [self._prepare_period_structure_snapshot(item) for item in items]
+        keys = [(item["symbol"], item["timeframe"], item["adjustflag"]) for item in prepared]
+        if len(keys) != len(set(keys)):
+            raise ValueError("批量结构快照包含重复的标的、周期和复权组合")
         with self._lock:
             try:
                 self.db.execute("BEGIN IMMEDIATE")
-                cur = self.db.execute("""INSERT INTO period_structure_runs
-                    (symbol,timeframe,adjustflag,definition_version,started_at,status,market_version,coverage_version,calculator_fingerprint)
-                    VALUES(?,?,?,?,?,'running',?,?,?)""", (
-                        symbol, timeframe, adjustflag, definition_version, now,
-                        market_version, coverage_version,
-                        result.get("calculator_fingerprint", ""),
-                    ))
-                run_id = cur.lastrowid
-                self.db.execute("UPDATE period_structure_runs SET structure_metadata=? WHERE id=?", (
-                    json.dumps({key: result.get(key, {}) if key == "unassigned_by_level" else result.get(key, [])
-                                for key in ("unassigned_by_level", "hierarchy_issues", "pen_diagnostics")}, ensure_ascii=False), run_id))
-                for table, key in mapping:
-                    values = []
-                    for ordinal, item in enumerate(result.get(key, [])):
-                        start = item.get("start_date") or item.get("trade_date") or ""
-                        end = item.get("end_date") or item.get("trade_date") or start
-                        values.append((run_id,symbol,timeframe,adjustflag,definition_version,ordinal,start,end,json.dumps(item,ensure_ascii=False,sort_keys=True)))
-                    if values:
-                        self.db.executemany(f"INSERT INTO {table}(run_id,symbol,timeframe,adjustflag,definition_version,ordinal,start_date,end_date,payload) VALUES(?,?,?,?,?,?,?,?,?)", values)
-                self.db.execute("""UPDATE period_structure_runs SET finished_at=?,status='success',
-                    structure_version=?,center_level_counts=?,movement_count=?,movement_level_counts=?,
-                    max_confirmed_center_level=?,max_available_center_level=? WHERE id=?""",
-                    (datetime.now(timezone.utc).isoformat(), result.get("structure_version", ""),
-                     json.dumps(center_level_counts, sort_keys=True), movement_count,
-                     json.dumps(movement_level_counts, sort_keys=True),
-                     int(result.get("max_confirmed_center_level", 0)),
-                     int(result.get("max_available_center_level", 0)), run_id))
-                self.db.execute("""INSERT INTO active_period_structure_runs(symbol,timeframe,adjustflag,run_id,activated_at)
-                    VALUES(?,?,?,?,?) ON CONFLICT(symbol,timeframe,adjustflag) DO UPDATE SET run_id=excluded.run_id,activated_at=excluded.activated_at""", (symbol,timeframe,adjustflag,run_id,datetime.now(timezone.utc).isoformat()))
+                run_ids = [self._insert_period_structure_snapshot(item) for item in prepared]
+                activated_at = datetime.now(timezone.utc).isoformat()
+                for item, run_id in zip(prepared, run_ids):
+                    self.db.execute("""INSERT INTO active_period_structure_runs(symbol,timeframe,adjustflag,run_id,activated_at)
+                        VALUES(?,?,?,?,?) ON CONFLICT(symbol,timeframe,adjustflag) DO UPDATE SET
+                        run_id=excluded.run_id,activated_at=excluded.activated_at""",
+                        (item["symbol"], item["timeframe"], item["adjustflag"], run_id, activated_at))
+                retired_active_runs = []
+                if retire_symbols:
+                    placeholders = ",".join("?" for _ in keep_timeframes) or "NULL"
+                    for symbol in retire_symbols:
+                        stale = self.db.execute(
+                            f"""SELECT a.timeframe,a.run_id FROM active_period_structure_runs a
+                               JOIN period_structure_runs r ON r.id=a.run_id
+                               WHERE a.symbol=? AND a.adjustflag=? AND a.timeframe NOT IN ({placeholders})
+                                 AND r.definition_version!=?""",
+                            (symbol, prepared[0]["adjustflag"], *keep_timeframes, prepared[0]["definition_version"]),
+                        ).fetchall()
+                        for timeframe, run_id in stale:
+                            self.db.execute(
+                                "DELETE FROM active_period_structure_runs WHERE symbol=? AND timeframe=? AND adjustflag=? AND run_id=?",
+                                (symbol, timeframe, prepared[0]["adjustflag"], run_id),
+                            )
+                            retired_active_runs.append({"symbol": symbol, "timeframe": timeframe, "run_id": run_id})
                 self.db.commit()
-                return self.active_period_structure_run(symbol,timeframe,adjustflag)
             except Exception:
-                self.db.rollback(); raise
+                self.db.rollback()
+                raise
+        return {
+            "runs": [self._run_by_id(run_id) for run_id in run_ids],
+            "retired_active_runs": retired_active_runs if retire_symbols else [],
+        }
+
+    def _run_by_id(self, run_id: int):
+        with self._lock:
+            row = self.db.execute("SELECT * FROM period_structure_runs WHERE id=?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def replace_period_structure(self, symbol: str, timeframe: str, adjustflag: str,
+                                 definition_version: str, result: dict[str, Any],
+                                 market_version: str, coverage_version: str = ""):
+        batch = self.replace_period_structures_atomic([{
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "adjustflag": adjustflag,
+            "definition_version": definition_version,
+            "result": result,
+            "market_version": market_version,
+            "coverage_version": coverage_version,
+        }])
+        return batch["runs"][0]
 
     def period_rows(self, table: str, run_id: int, start_date: str | None = None, end_date: str | None = None):
         allowed = {"period_processed_bars", "period_fractals", "period_pens", "period_pen_centers", "period_center_relations", "period_movements"}

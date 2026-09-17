@@ -71,13 +71,13 @@ def test_cache_ttl_and_single_flight_do_not_write_database(quote_service):
     before = service.store.db.total_changes
     service.store.list_stock_pool = lambda: pytest.fail("报价接口不得构建日线摘要")
     first = service.snapshot()
-    assert first["refresh_after_ms"] == 10_000
+    assert first["refresh_after_ms"] == 15_000
     assert first["quotes"][0]["quote_time"] == "2026-09-16T10:00:00+08:00"
     with ThreadPoolExecutor(max_workers=4) as executor:
         results = list(executor.map(lambda _:service.snapshot(), range(4)))
     assert len(calls) == 1
     assert all(result == first for result in results)
-    tick[0] = 10
+    tick[0] = 15
     service.snapshot()
     assert len(calls) == 2
     assert service.store.db.total_changes == before
@@ -86,15 +86,15 @@ def test_cache_ttl_and_single_flight_do_not_write_database(quote_service):
 def test_failure_and_older_responses_preserve_last_good_quote(quote_service):
     service, clock, tick, calls, calendar = quote_service
     service.snapshot()
-    tick[0] = 11
+    tick[0] = 16
     service.fetcher = lambda symbols: [parsed_quote(stamp="20260915095900", latest=5)]
     quote = service.snapshot()["quotes"][0]
     assert quote["latest"] == 11 and quote["status"] == "error"
-    tick[0] = 22
+    tick[0] = 32
     service.fetcher = lambda symbols: (_ for _ in ()).throw(TimeoutError())
     quote = service.snapshot()["quotes"][0]
     assert quote["latest"] == 11 and quote["status"] == "error"
-    tick[0] = 33
+    tick[0] = 48
     service.fetcher = lambda symbols: [parsed_quote(latest=12)]
     assert service.snapshot()["quotes"][0]["status"] == "success"
 
@@ -111,12 +111,12 @@ def test_historical_stale_and_session_transitions(quote_service):
     service, clock, tick, calls, calendar = quote_service
     service.fetcher = lambda symbols: [parsed_quote(stamp="20260915150000")]
     assert service.snapshot()["quotes"][0]["status"] == "historical"
-    tick[0] += 11
+    tick[0] += 16
     service.fetcher = lambda symbols: [parsed_quote()]
     clock[0] += timedelta(minutes=3)
     assert service.snapshot()["quotes"][0]["status"] == "stale"
-    for day, hour, minute, phase, interval in [(16,9,20,"auction",10_000), (16,12,0,"lunch",60_000),
-                                            (16,13,0,"trading",10_000), (16,15,0,"closed",60_000),
+    for day, hour, minute, phase, interval in [(16,9,20,"auction",15_000), (16,12,0,"lunch",60_000),
+                                            (16,13,0,"trading",15_000), (16,15,0,"closed",60_000),
                                             (17,10,0,"closed",60_000), (19,10,0,"closed",60_000)]:
         clock[0] = datetime(2026,9,day,hour,minute,tzinfo=TZ)
         result = service.snapshot()
@@ -146,6 +146,20 @@ def test_quote_endpoint_uses_snapshot_service(quote_service, monkeypatch):
     response = TestClient(main.app).get("/api/watchlist/quotes")
     assert response.status_code == 200
     assert response.json()["quotes"][0]["latest"] == 11
+
+
+def test_quote_endpoint_excludes_current_chart_symbol(quote_service, monkeypatch):
+    service, *_ = quote_service
+    service.store.upsert_stock("600000", "测试2")
+    requested = []
+    service.fetcher = lambda symbols: requested.extend(symbols) or [parsed_quote(symbol) for symbol in symbols]
+    monkeypatch.setattr(main, "watchlist_quote_service", service)
+
+    response = TestClient(main.app).get("/api/watchlist/quotes?current_symbol=000001")
+
+    assert response.status_code == 200
+    assert requested == ["600000"]
+    assert [quote["symbol"] for quote in response.json()["quotes"]] == ["600000"]
 
 
 def test_mixed_section_order_migration_legacy_and_preservation(tmp_path, monkeypatch):

@@ -102,20 +102,15 @@ def test_hierarchy_component_movements_use_raw_l1_centers_for_parent_links():
     assert hierarchy_movements
     assert all(set(item.get("center_ids", [])) <= raw_ids for item in hierarchy_movements)
     parents = [item for item in result["centers"] if item.get("role") == "hierarchy" and item["level"] == 2]
-    assert parents
-    assert all(set(item.get("child_center_ids", [])) <= raw_ids for item in parents)
+    assert parents == []
 
 
 def test_expansion_upgrade_keeps_kind_for_candidate_and_confirmation():
     from tests.test_strict_movements import structural_stream
     units, centers = structural_stream(4)
     movements = build_hierarchy_components(units, centers, 1)["movements"]
-    candidate = _parent_centers(movements[:2], 2, "system", centers)[0]
-    confirmed = _parent_centers(movements[:3], 2, "system", centers)[0]
-    assert candidate["status"] == "provisional" and candidate["progress"] == "2/3"
-    assert confirmed["status"] == "confirmed" and confirmed["progress"] == "3/3"
-    assert candidate["id"] == confirmed["id"]
-    assert candidate["upgrade_kind"] == confirmed["upgrade_kind"] == "expansion"
+    assert _parent_centers(movements[:2], 2, "system", centers) == []
+    assert _parent_centers(movements[:3], 2, "system", centers) == []
 
 
 def test_same_direction_separated_cores_continue_trend_despite_envelope_overlap():

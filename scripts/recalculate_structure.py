@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.period_structure import calculate_calculator_fingerprint
+from app.period_structure import analyze_period_ranges, calculate_calculator_fingerprint
 from app.rules import PERIOD_DEFINITION_VERSION
 
 # Kept only as a compatibility fallback for a pre-stock-pool database.  A
@@ -171,6 +171,7 @@ def _execute(db: Path, requested_symbols: tuple[str, ...] | None = None) -> dict
             if not tables:
                 symbols = DEFAULT_SYMBOLS
     items: list[dict] = []
+    snapshots: list[dict] = []
     for symbol in symbols:
         for timeframe in TIMEFRAMES:
             item = {
@@ -182,23 +183,36 @@ def _execute(db: Path, requested_symbols: tuple[str, ...] | None = None) -> dict
             before = store.active_period_structure_run(symbol, timeframe, ADJUSTFLAG)
             item["old_run_id"] = before.get("id") if before else None
             try:
-                result = service.ensure(symbol, timeframe, ADJUSTFLAG, force=True)
-                active = store.active_period_structure_run(symbol, timeframe, ADJUSTFLAG)
-                item.update(_summarize_result(result))
-                item["new_run_id"] = active.get("id") if active else None
-                item["active_status"] = active.get("status") if active else None
-                item["active_definition_version"] = active.get("definition_version") if active else None
-                item["active_calculator_fingerprint"] = active.get("calculator_fingerprint") if active else None
-                if not result.get("available"):
+                rows = store.market_bars(symbol, timeframe, ADJUSTFLAG, "0000-01-01")
+                market_version = service.market_version(rows)
+                coverage = service.coverage(symbol, timeframe, ADJUSTFLAG)
+                meta = store.save_market_coverage(symbol, timeframe, ADJUSTFLAG, coverage)
+                coverage["coverage_version"] = meta["coverage_version"]
+                if not rows or not coverage["continuous_ranges"]:
                     raise RuntimeError("行情为空或没有可用 continuous_ranges")
-                if not active or active.get("status") != "success":
-                    raise RuntimeError("新结构快照未成功激活")
-                if active.get("definition_version") != EXPECTED_VERSION:
-                    raise RuntimeError("活动快照版本不是当前版本")
-                if active.get("calculator_fingerprint") != EXPECTED_FINGERPRINT:
-                    raise RuntimeError("活动快照指纹与当前代码不一致")
+                result = analyze_period_ranges(
+                    rows, symbol, timeframe, coverage["continuous_ranges"],
+                    calculator_fingerprint=EXPECTED_FINGERPRINT,
+                )
+                result.update({
+                    "available": True,
+                    "market_version": market_version,
+                    "coverage_version": meta["coverage_version"],
+                    "coverage": coverage,
+                })
+                item.update(_summarize_result(result))
+                snapshots.append({
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "adjustflag": ADJUSTFLAG,
+                    "definition_version": EXPECTED_VERSION,
+                    "result": result,
+                    "market_version": market_version,
+                    "coverage_version": meta["coverage_version"],
+                    "started_at": item["started_at"],
+                })
                 item["status"] = "success"
-            except Exception as exc:  # continue with the remaining matrix items
+            except Exception as exc:
                 try:
                     store.db.rollback()
                 except Exception:
@@ -209,18 +223,35 @@ def _execute(db: Path, requested_symbols: tuple[str, ...] | None = None) -> dict
             item["finished_at"] = datetime.now(timezone.utc).isoformat()
             items.append(item)
     retired_active_runs = []
-    if all(item.get("status") == "success" for item in items):
-        for symbol in symbols:
-            stale = store.db.execute("""SELECT a.timeframe,a.run_id FROM active_period_structure_runs a
-                JOIN period_structure_runs r ON r.id=a.run_id
-                WHERE a.symbol=? AND a.adjustflag=? AND r.definition_version!=?""",
-                (symbol, ADJUSTFLAG, EXPECTED_VERSION)).fetchall()
-            for timeframe, run_id in stale:
-                if timeframe not in TIMEFRAMES:
-                    store.db.execute("DELETE FROM active_period_structure_runs WHERE symbol=? AND timeframe=? AND adjustflag=? AND run_id=?",
-                                     (symbol, timeframe, ADJUSTFLAG, run_id))
-                    retired_active_runs.append({"symbol": symbol, "timeframe": timeframe, "run_id": run_id})
-        store.db.commit()
+    if snapshots and all(item.get("status") == "success" for item in items):
+        try:
+            batch = store.replace_period_structures_atomic(
+                snapshots,
+                retire_symbols=tuple(symbols),
+                keep_timeframes=tuple(TIMEFRAMES),
+            )
+            retired_active_runs = batch["retired_active_runs"]
+            for item, active in zip((item for item in items if item.get("status") == "success"), batch["runs"]):
+                item["new_run_id"] = active["id"]
+                item["active_status"] = active["status"]
+                item["active_definition_version"] = active["definition_version"]
+                item["active_calculator_fingerprint"] = active["calculator_fingerprint"]
+                if active["status"] != "success":
+                    raise RuntimeError("新结构快照未成功激活")
+                if active["definition_version"] != EXPECTED_VERSION:
+                    raise RuntimeError("活动快照版本不是当前版本")
+                if active["calculator_fingerprint"] != EXPECTED_FINGERPRINT:
+                    raise RuntimeError("活动快照指纹与当前代码不一致")
+        except Exception as exc:
+            try:
+                store.db.rollback()
+            except Exception:
+                pass
+            for item in items:
+                if item.get("status") == "success":
+                    item["status"] = "failed"
+                    item["error"] = f"批量快照写入或激活失败: {exc}"
+                    item["traceback"] = traceback.format_exc(limit=12)
     try:
         store.db.close()
     except Exception:

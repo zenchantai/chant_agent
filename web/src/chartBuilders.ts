@@ -240,6 +240,8 @@ export const normalizeChartData = (input: ChartData | null): ChartData | null =>
 };
 export const nodeLevel = (node: Node) => Number.isFinite(Number(node.level)) ? Math.max(1, Math.floor(Number(node.level))) : 1;
 export const isProvisionalStatus = (status?: string) => status === "provisional" || status === "candidate" || status === "pending";
+export const movementClassificationLabel = (classification?: Node["classification"]) =>
+  classification === "trend" ? "趋势" : classification === "consolidation" ? "盘整" : "待定";
 export const centerZd = (center: Node) => Number(center.zd ?? center.fixed_zd);
 export const centerZg = (center: Node) => Number(center.zg ?? center.fixed_zg);
 
@@ -685,7 +687,7 @@ const buildMovementSeriesForRole = (context: ChartBuildContext, dates: string[],
   });
   const lines = visible.map(({ movement, boundary }) => {
     const style = movementVisualStyle(context.theme === "light" ? "light" : "dark", movement, context.data.timeframe);
-    return { id: movement.id, name: `${movement.classification === "trend" ? "趋势" : "盘整"} ${(Number(movement.ordinal) || 0) + 1}`, type: "line", data: [{ value: [boundary.startDate, boundary.startPrice], movementId: movement.id }, { value: [boundary.endDate, boundary.endPrice], movementId: movement.id }], showSymbol: false, lineStyle: { width: 4.4, type: style.lineType, color: style.color, opacity: 0.72 }, itemStyle: { color: style.color }, tooltip: { trigger: "item", formatter: () => context.formatMovementTooltip?.(movement, context.data.timeframe) || "" }, z: 4 };
+    return { id: movement.id, name: `${movementClassificationLabel(movement.classification)} ${(Number(movement.ordinal) || 0) + 1}`, type: "line", data: [{ value: [boundary.startDate, boundary.startPrice], movementId: movement.id }, { value: [boundary.endDate, boundary.endPrice], movementId: movement.id }], showSymbol: false, lineStyle: { width: 4.4, type: style.lineType, color: style.color, opacity: 0.72 }, itemStyle: { color: style.color }, tooltip: { trigger: "item", formatter: () => context.formatMovementTooltip?.(movement, context.data.timeframe) || "" }, z: 4 };
   });
   const rendered = visible.map(({ movement, boundary }) => ({ ...movement, start_date: boundary.startDate, end_date: boundary.endDate, start_price: boundary.startPrice, end_price: boundary.endPrice }));
   const markers = movementEndpointMarkers(rendered, dates);

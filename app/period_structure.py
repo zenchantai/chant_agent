@@ -11,8 +11,9 @@ from .coverage import validate_coverage
 from .providers import INTRADAY_TIMEFRAMES
 from .engine import normalize_bars, process_inclusions, find_fractals, find_gaps, build_pens
 from .indicators import calculate_bollinger, calculate_macd, calculate_moving_averages
-from .hierarchy import HIERARCHY_VERSION, build_hierarchy
+from .hierarchy import HIERARCHY_VERSION, atomic_pen_units, build_directional_centers, build_hierarchy
 from .rules import PERIOD_DEFINITION_VERSION
+from .structure_validation import assert_valid_structure
 
 
 _DISPLAY_PERIOD_CHAINS = {
@@ -33,6 +34,7 @@ CALCULATOR_SOURCE_FILES = (
     "app/period_structure.py",
     "app/rules.py",
     "app/store.py",
+    "app/structure_validation.py",
     "knowledge/chan_rules.md",
     "knowledge/chan_rules.yaml",
 )
@@ -108,166 +110,13 @@ def _stable_id(prefix: str, values: list[str]) -> str:
     return f"{prefix}-{digest}"
 
 
-def _strict_overlap(low_a: float, high_a: float, low_b: float, high_b: float) -> bool:
-    return max(low_a, low_b) < min(high_a, high_b)
-
-
-def _pen_direction(pen: dict[str, Any]) -> str:
-    return pen.get("direction") or (
-        "up" if float(pen["end_price"]) > float(pen["start_price"]) else "down"
-    )
-
-
-def _pen_bounds(pen: dict[str, Any]) -> tuple[float, float]:
-    start, end = float(pen["start_price"]), float(pen["end_price"])
-    return min(start, end), max(start, end)
-
-
-def _directional_center_seed(pens: list[dict[str, Any]], index: int) -> dict[str, Any] | None:
-    if index + 3 >= len(pens):
-        return None
-    group = pens[index:index + 4]
-    entry, core = group[0], group[1:]
-    sequence_id = entry.get("sequence_id", 0)
-    continuous_range_id = entry.get("continuous_range_id", entry.get("range_index", 0))
-    directions = [_pen_direction(pen) for pen in group]
-    if any(pen.get("status", "confirmed") != "confirmed" for pen in group):
-        return None
-    if any(
-        pen.get("sequence_id", 0) != sequence_id
-        or pen.get("continuous_range_id", pen.get("range_index", 0)) != continuous_range_id
-        for pen in group
-    ):
-        return None
-    if any(left == right for left, right in zip(directions, directions[1:])):
-        return None
-    core_bounds = [_pen_bounds(pen) for pen in core]
-    zd = max(low for low, _ in core_bounds)
-    zg = min(high for _, high in core_bounds)
-    if zd >= zg:
-        return None
-    entry_start, entry_end = float(entry["start_price"]), float(entry["end_price"])
-    direction = directions[0]
-    entered = (
-        direction == "up" and entry_start < zd < entry_end
-    ) or (
-        direction == "down" and entry_start > zg > entry_end
-    )
-    if not entered:
-        return None
-    return {"group": group, "entry": entry, "core": core, "direction": direction,
-            "sequence_id": sequence_id, "continuous_range_id": continuous_range_id,
-            "zd": zd, "zg": zg}
-
-
 def build_pen_centers(pens: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build directional L1 centers and extend each fixed core over later pens."""
-    centers: list[dict[str, Any]] = []
-    i = 0
-    while i + 3 < len(pens):
-        seed = _directional_center_seed(pens, i)
-        if not seed:
-            i += 1
-            continue
-        group, entry, core = seed["group"], seed["entry"], seed["core"]
-        direction, sequence_id = seed["direction"], seed["sequence_id"]
-        continuous_range_id = seed["continuous_range_id"]
-        zd, zg = seed["zd"], seed["zg"]
-        source = list(group)
-        extension: list[dict[str, Any]] = []
-        peripheral: list[dict[str, Any]] = []
-        departure: list[dict[str, Any]] = []
-        pending: list[dict[str, Any]] = []
-        next_seed_index: int | None = None
-        j = i + 4
-        while j < len(pens) and (
-            pens[j].get("sequence_id", 0) == sequence_id
-            and pens[j].get("continuous_range_id", pens[j].get("range_index", 0)) == continuous_range_id
-        ):
-            pen = pens[j]
-            if pen.get("status", "confirmed") != "confirmed":
-                pending.append(pen)
-                break
-            low, high = _pen_bounds(pen)
-            if _strict_overlap(low, high, zd, zg):
-                if pending:
-                    peripheral.extend(pending)
-                    source.extend(pending)
-                    pending = []
-                extension.append(pen)
-                source.append(pen)
-                j += 1
-                continue
-            pending.append(pen)
-            candidate_index = j
-            candidate = None
-            if j - 1 >= i + 4:
-                previous_candidate = _directional_center_seed(pens, j - 1)
-                if previous_candidate and not _strict_overlap(
-                    previous_candidate["zd"], previous_candidate["zg"], zd, zg
-                ):
-                    candidate_index, candidate = j - 1, previous_candidate
-            candidate = candidate or _directional_center_seed(pens, j)
-            if candidate and not _strict_overlap(candidate["zd"], candidate["zg"], zd, zg):
-                next_seed_index = candidate_index
-                departure = [pens[candidate_index]]
-                # Once the outside center is confirmed, the immediately
-                # preceding crossing pen is retrospectively the leaving pen,
-                # not an extension component of the old center.
-                if extension and extension[-1] is pens[candidate_index]:
-                    end_price = float(extension[-1]["end_price"])
-                    if not zd < end_price < zg:
-                        leaving = extension.pop()
-                        source.pop()
-                        departure = [leaving]
-                break
-            j += 1
-        if j < len(pens) and (
-            pens[j].get("sequence_id", 0) != sequence_id
-            or pens[j].get("continuous_range_id", pens[j].get("range_index", 0)) != continuous_range_id
-        ) and next_seed_index is None:
-            next_seed_index = j
-        if next_seed_index is None and pending:
-            departure = list(pending)
-
-        lows, highs = zip(*(_pen_bounds(pen) for pen in source))
-        last = core[-1]
-        absorbed_last = source[-1]
-        centers.append({
-            "id": _stable_id("directional-pen-center-L1", [pen["id"] for pen in group]),
-            "ordinal": len(centers), "level_ordinal": len(centers),
-            "kind": "pen_center", "level": 1, "direction": direction,
-            "entry_pen_id": entry["id"],
-            "formation_pen_ids": [pen["id"] for pen in group],
-            "core_pen_ids": [pen["id"] for pen in core],
-            "extension_pen_ids": [pen["id"] for pen in extension],
-            "peripheral_pen_ids": [pen["id"] for pen in peripheral],
-            "departure_pen_ids": [pen["id"] for pen in departure],
-            "start_pen": core[0]["id"], "end_pen": absorbed_last["id"],
-            "start_pen_index": i + 1, "end_pen_index": pens.index(absorbed_last),
-            "pen_ids": [pen["id"] for pen in source],
-            "source_pen_ids": [pen["id"] for pen in source],
-            "sequence_id": sequence_id, "continuous_range_id": continuous_range_id,
-            "start_date": core[0]["start_date"], "end_date": absorbed_last["end_date"],
-            "core_start_date": core[0]["start_date"], "core_end_date": last["end_date"],
-            "extension_end_date": absorbed_last["end_date"],
-            "zd": zd, "zg": zg, "fixed_zd": zd, "fixed_zg": zg,
-            "dd": min(lows), "gg": max(highs),
-            "low": zd, "high": zg,
-            "status": "confirmed", "confirmed_at": last["confirmed_at"],
-            "tail_status": "confirmed_departure" if next_seed_index is not None else (
-                "provisional_departure" if departure else "active_extension"
-            ),
-            "termination_reason": (
-                "sequence_boundary" if next_seed_index is not None and pens[next_seed_index].get("sequence_id", 0) != sequence_id
-                else "independent_center" if next_seed_index is not None else "right_edge"
-            ),
-            "completion_reason": "directional_core_with_extension",
-            "evidence": ["CENTER-DIRECTIONAL-ENTRY-001", "CENTER-DIRECTIONAL-CORE-001",
-                         *( ["CENTER-L1-EXTENSION-001"] if extension else [] ),
-                         *( ["CENTER-L1-REENTRY-001"] if peripheral else [] )],
-        })
-        i = next_seed_index if next_seed_index is not None else len(pens)
+    """Adapt current-period pens to the shared directional center builder."""
+    centers = build_directional_centers(atomic_pen_units(pens), 1)
+    index_by_id = {pen["id"]: index for index, pen in enumerate(pens)}
+    for center in centers:
+        center["start_pen_index"] = index_by_id[center["core_unit_ids"][0]]
+        center["end_pen_index"] = index_by_id[center["source_unit_ids"][-1]]
     return centers
 
 
@@ -286,6 +135,9 @@ def analyze_period(
     hierarchy = build_hierarchy(pens, centers)
     payload = {"symbol": symbol, "timeframe": timeframe, "definition_version": PERIOD_DEFINITION_VERSION,
                "calculator_fingerprint": fingerprint,
+               "structure_mode": "formal_hierarchy",
+               "movement_confirmation_mode": "reverse_independent_center",
+               "center_construction_mode": "unified_directional_ownership",
                "bars": [b.json() | {"amount": getattr(b, "amount", 0)} for b in bars],
                "processed_bars": [asdict(x) for x in processed], "fractals": [asdict(x) for x in fractals],
                "pens": pens, "pen_diagnostics": pen_diagnostics,
@@ -293,6 +145,7 @@ def analyze_period(
                "center_relations": hierarchy["center_relations"], "movements": hierarchy["movements"],
                "max_confirmed_center_level": hierarchy["max_confirmed_center_level"],
                "max_available_center_level": hierarchy["max_available_center_level"]}
+    assert_valid_structure(payload)
     payload["structure_version"] = _structure_version(payload)
     return payload
 
@@ -329,11 +182,17 @@ def analyze_period_ranges(rows: list[dict[str, Any]], symbol: str, timeframe: st
         for center in part["pen_centers"]:
             old_center_id = center["id"]
             center["id"] = f"R{range_index}-{old_center_id}"
-            for field in ("start_pen", "end_pen", "entry_pen_id"):
+            for field in ("start_pen", "end_pen", "entry_pen_id", "entry_unit_id"):
                 value = center.get(field)
                 if value:
                     center[field] = pen_ids.get(value, value if value.startswith(f"R{range_index}-") else f"R{range_index}-{value}")
-            for field in ("pen_ids", "source_pen_ids", "core_pen_ids", "formation_pen_ids", "extension_pen_ids", "peripheral_pen_ids", "departure_pen_ids"):
+            for field in (
+                "pen_ids", "source_pen_ids", "core_pen_ids", "formation_pen_ids",
+                "extension_pen_ids", "peripheral_pen_ids", "departure_pen_ids",
+                "core_unit_ids", "formation_unit_ids", "extension_unit_ids",
+                "peripheral_unit_ids", "departure_unit_ids", "source_unit_ids",
+                "owned_unit_ids",
+            ):
                 center[field] = [pen_ids.get(item, item if item.startswith(f"R{range_index}-") else f"R{range_index}-{item}") for item in center.get(field, [])]
             center["range_index"] = range_index
             center["continuous_range_id"] = range_index
@@ -358,11 +217,15 @@ def analyze_period_ranges(rows: list[dict[str, Any]], symbol: str, timeframe: st
     payload = {"symbol": symbol, "timeframe": timeframe,
                "definition_version": PERIOD_DEFINITION_VERSION,
                "calculator_fingerprint": fingerprint,
+               "structure_mode": "formal_hierarchy",
+               "movement_confirmation_mode": "reverse_independent_center",
+               "center_construction_mode": "unified_directional_ownership",
                **merged,
                "unassigned_by_level": hierarchy["unassigned_by_level"],
                "hierarchy_issues": hierarchy["hierarchy_issues"],
                "max_confirmed_center_level": hierarchy["max_confirmed_center_level"],
                "max_available_center_level": hierarchy["max_available_center_level"]}
+    assert_valid_structure(payload)
     payload["structure_version"] = _structure_version(payload)
     return payload
 
@@ -394,6 +257,23 @@ class PeriodStructureService:
         return validate_coverage(rows, timeframe, expected_trading_dates=expected,
                                  declared_end=declared_end, now=now, is_market_open=market_open)
 
+    def _analysis_ranges(self, coverage: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Include a verified current partial session without treating it as complete coverage."""
+        ranges = [dict(item) for item in coverage.get("continuous_ranges", [])]
+        observed_days = {row["trade_date"][:10] for row in rows}
+        for partial in coverage.get("partial_sessions", []):
+            day = partial.get("date")
+            if not day or day not in observed_days or any(item["start_date"] <= day <= item["end_date"] for item in ranges):
+                continue
+            trading_days = self.store.trading_dates("0000-01-01", day)
+            previous_day = trading_days[-2] if len(trading_days) >= 2 and trading_days[-1] == day else None
+            if ranges and previous_day == ranges[-1]["end_date"]:
+                ranges[-1]["end_date"] = day
+                ranges[-1]["session_count"] = int(ranges[-1].get("session_count", 0)) + 1
+            else:
+                ranges.append({"start_date": day, "end_date": day, "session_count": 1})
+        return ranges
+
     def ensure(self, symbol: str, timeframe: str, adjustflag: str = "2", force: bool = False):
         rows = self.store.market_bars(symbol, timeframe, adjustflag, "0000-01-01")
         if timeframe not in STRUCTURE_TIMEFRAMES:
@@ -418,7 +298,8 @@ class PeriodStructureService:
             and not force
         ):
             return self.load(symbol, timeframe, adjustflag)
-        if not rows or not coverage["continuous_ranges"]:
+        analysis_ranges = self._analysis_ranges(coverage, rows)
+        if not rows or not analysis_ranges:
             return {"symbol": symbol, "timeframe": timeframe, "available": False,
                     "definition_version": PERIOD_DEFINITION_VERSION,
                     "calculator_fingerprint": self.calculator_fingerprint,
@@ -426,7 +307,7 @@ class PeriodStructureService:
                     "pens": [], "centers": [], "pen_centers": [], "center_relations": [], "movements": [],
                     "max_confirmed_center_level": 0, "max_available_center_level": 0}
         result = analyze_period_ranges(
-            rows, symbol, timeframe, coverage["continuous_ranges"],
+            rows, symbol, timeframe, analysis_ranges,
             calculator_fingerprint=self.calculator_fingerprint,
         )
         run = self.store.replace_period_structure(symbol, timeframe, adjustflag, PERIOD_DEFINITION_VERSION, result, market_version, meta["coverage_version"])
@@ -511,7 +392,8 @@ class PeriodStructureService:
             "market_version", "coverage_version", "structure_version", "coverage", "run_id",
             "system_structure_version", "effective_structure_version", "override_version",
             "overrides", "override_conflicts", "drawings", "drawings_version",
-            "structure_overrides_enabled", "movement_confirmation_mode",
+            "structure_overrides_enabled", "structure_mode", "movement_confirmation_mode",
+            "center_construction_mode",
             "unassigned_by_level", "hierarchy_issues", "pen_diagnostics",
             "center_level_counts", "movement_level_counts", "max_confirmed_center_level",
             "max_available_center_level",
@@ -541,6 +423,31 @@ class PeriodStructureService:
         context_ids = {center_id for movement in movements for center_id in [*movement.get("center_ids", []), movement.get("confirmation_center_id")] if center_id}
         context_centers = [center for center in data.get("centers", []) if center["id"] in context_ids - visible_center_ids]
         return out | {"pens": pens, "centers": centers, "pen_centers": centers, "center_relations": relations, "movements": movements, "context_centers": context_centers}
+
+    def preview_period(self, symbol: str, timeframe: str, adjustflag: str,
+                       rows: list[dict[str, Any]]) -> dict[str, Any]:
+        """Calculate a transient structure snapshot without touching SQLite."""
+        coverage = self.coverage(symbol, timeframe, adjustflag)
+        preview_coverage = dict(coverage)
+        live_day = rows[-1]["trade_date"][:10] if rows else None
+        if timeframe in {"d", "w", "m"} and live_day:
+            ranges = [dict(item) for item in coverage.get("continuous_ranges", [])]
+            if ranges:
+                if live_day > ranges[-1]["end_date"]:
+                    ranges[-1]["end_date"] = live_day
+                    ranges[-1]["session_count"] = int(ranges[-1].get("session_count", 0)) + 1
+            elif rows:
+                ranges = [{"start_date": rows[0]["trade_date"][:10], "end_date": live_day,
+                           "session_count": len(rows)}]
+        else:
+            preview_coverage["partial_sessions"] = [*coverage.get("partial_sessions", []), {"date": live_day}] if live_day else coverage.get("partial_sessions", [])
+            ranges = self._analysis_ranges(preview_coverage, rows)
+        result = analyze_period_ranges(rows, symbol, timeframe, ranges, self.calculator_fingerprint)
+        result["structure_preview"] = True
+        result["structure_persisted"] = False
+        result["preview_structure_version"] = result.get("structure_version", "")
+        result["structure_as_of"] = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
+        return result
     @staticmethod
     def _clip_path_points(path_points, page, all_rows):
         if not path_points or not page:

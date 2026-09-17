@@ -125,6 +125,9 @@ def fetch_tencent(symbol: str, timeframe: str, start_date: str = "2015-01-01",
         })
     if not parsed:
         raise RuntimeError(f"腾讯行情返回空数据: {symbol} {timeframe} {start_date}~{end_date}")
+    revision = f"tencent:{secid}:{timeframe}:{parsed[-1]['trade_date']}"
+    for item in parsed:
+        item["source_revision"] = revision
     return parsed
 
 
@@ -155,6 +158,11 @@ def fetch_tencent_quotes(symbols: list[str]) -> list[dict[str, Any]]:
                 raise ValueError("证券不匹配")
             latest = float(fields[3]) if fields[3] else None
             previous_close = float(fields[4]) if fields[4] else None
+            open_price = float(fields[5]) if len(fields) > 5 and fields[5] else latest
+            high = float(fields[33]) if len(fields) > 33 and fields[33] else latest
+            low = float(fields[34]) if len(fields) > 34 and fields[34] else latest
+            volume = float(fields[36]) if len(fields) > 36 and fields[36] else 0.0
+            amount = float(fields[37]) if len(fields) > 37 and fields[37] else None
             change = float(fields[31]) if len(fields) > 31 and fields[31] else None
             change_pct = float(fields[32]) if len(fields) > 32 and fields[32] else None
             quote_time = fields[30] if len(fields) > 30 and fields[30] else None
@@ -163,14 +171,20 @@ def fetch_tencent_quotes(symbols: list[str]) -> list[dict[str, Any]]:
             previous_close = previous_close if previous_close and previous_close > 0 and math.isfinite(previous_close) else None
             change = change if change is not None and math.isfinite(change) else None
             change_pct = change_pct if change_pct is not None and math.isfinite(change_pct) else None
+            if not all(math.isfinite(value) and value > 0 for value in (open_price, high, low)):
+                raise ValueError("无效盘口价格")
+            if volume < 0 or not math.isfinite(volume) or amount is not None and (amount < 0 or not math.isfinite(amount)):
+                raise ValueError("无效成交数据")
             if previous_close is None:
                 change = change_pct = None
         except (IndexError, TypeError, ValueError):
             latest = previous_close = change = change_pct = None
+            open_price = high = low = volume = amount = None
             quote_time = None
         status = "success" if latest is not None else "unavailable"
         result.append({"symbol": symbol, "latest": latest, "previous_close": previous_close,
                        "change": change, "change_pct": change_pct, "quote_time": quote_time,
+                       "open": open_price, "high": high, "low": low, "volume": volume, "amount": amount,
                        "source": "tencent", "status": status,
                        "error": None if status == "success" else "行情源未返回有效报价"})
     return result

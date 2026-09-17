@@ -1,4 +1,4 @@
-version: chan-period-standard-pen-right-extreme-v19
+version: chan-period-unified-directional-center-ownership-v20
 source:
   title: 读缠论108课札记
   file: ../读缠论108课札记.pdf
@@ -24,11 +24,11 @@ rules:
   - {id: MOVEMENT-BOUNDARY-001, section: movements, priority: product_override, assertion: "同级、同连续区间的已确认中枢进入方向相反且核心严格分离时，确认前一走势完成；真实极值端点与反向中枢confirmed_at分开保存。"}
   - {id: MOVEMENT-STATUS-001, section: movements, priority: product_override, assertion: "最右侧未获反向中枢确认的走势保持provisional；首中枢前的笔记为unassigned，不伪造窗口左边界。"}
   - {id: CENTER-RELATION-HIERARCHY-001, section: hierarchy, priority: product_override, assertion: "正式层级中枢独立判定延伸、新生和扩张；关系用于组织正式层级递归。"}
-  - {id: CENTER-UPGRADE-EXTENSION-001, section: hierarchy, priority: product_override, assertion: "extension_3x3 仅为构成恰好三单位的特例标签；每个低级走势必须具备反向独立中枢确认依据，不按笔数自动升级。"}
-  - {id: CENTER-UPGRADE-EXPANSION-001, section: hierarchy, priority: product_override, assertion: "两个同级中枢核心分离但外围重叠时启动扩张候选，等待第三个连续已完成同级走势严格重叠后确认。"}
+  - {id: CENTER-UPGRADE-EXTENSION-001, section: hierarchy, priority: product_override, assertion: "extension_3x3 不再作为父级成枢分支；固定核心的后续严格重叠单位只能作为延伸，不能按数量自动升级。"}
+  - {id: CENTER-UPGRADE-EXPANSION-001, section: hierarchy, priority: product_override, assertion: "expansion 只保留为中枢关系描述，不替代统一的进入单位加三核心单位成枢条件。"}
   - {id: CENTER-PARENT-CHILD-001, section: hierarchy, priority: product_override, assertion: "高级中枢只新增父结构，低级中枢、走势和源笔永久保留。"}
   - {id: MOVEMENT-SHARED-ENDPOINT-001, section: movements, priority: product_override, assertion: "相邻正式走势只共享一个真实高低端点，不共享低级运动；实际边界与确认时间分开保存。"}
   - {id: RECURSION-001, section: hierarchy, runtime: true, assertion: "每个行情周期内独立递归中枢级别，不把行情周期直接映射为结构级别，递归上限L8。", source_lessons: [17, 18, 20, 83], source_pages: [102, 109, 119, 527]}
   - {id: CONFIRM-001, section: confirmation, assertion: "所有结构保存confirmed或provisional；确认时间取完成规则所需最后事件时间，禁止未来函数。", source_lessons: [65, 67, 77, 78], source_pages: [411, 418, 482, 489]}
   - {id: LEGACY-RECURSIVE, section: legacy, runtime: false, assertion: "旧版单层走势仅保留为历史快照审计；当前版本启用正式层级递归、级别显示颜色映射和计算器指纹快照失效。"}
-  - {id: CENTER-HIERARCHY-THREE-001, section: hierarchy, priority: product_override, assertion: "三个连续交替且具备反向完成证据的低级正式走势严格重叠确认父级；两个为2/3候选；一般路径recursive_three，最高L8。"}
+  - {id: CENTER-HIERARCHY-THREE-001, section: hierarchy, priority: product_override, assertion: "所有级别统一使用U0进入单位加U1/U2/U3三个核心单位；U0-U2为2/3候选，U0-U3才确认父级中枢。低级走势必须已由反向独立中枢确认。"}

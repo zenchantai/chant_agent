@@ -9,8 +9,18 @@ export type WatchlistQuoteResponse = {
   server_time: string; phase: string; market_status: string;
 };
 
+export const chartQuoteToWatchlistQuote = (symbol: string, quote?: {
+  latest?: number | null; previous_close?: number | null; change?: number | null; change_pct?: number | null;
+  quote_time?: string | null; trade_date?: string; source?: string; status?: WatchlistQuote["status"];
+} | null): WatchlistQuote | undefined => quote && quote.latest != null ? {
+  symbol, latest:quote.latest, previous_close:quote.previous_close ?? null,
+  change:quote.change ?? null, change_pct:quote.change_pct ?? null,
+  quote_time:quote.quote_time || quote.trade_date || null, source:quote.source || "tencent",
+  status:quote.status || "success", error:null,
+} : undefined;
+
 export const watchlistQuoteDelay = (response?: WatchlistQuoteResponse): number =>
-  response?.refresh_after_ms === 10_000 ? 10_000 : 60_000;
+  response?.refresh_after_ms === 15_000 ? 15_000 : 60_000;
 
 export const mergeWatchlistQuotes = (
   current: Record<string, WatchlistQuote>, incoming: WatchlistQuote[], symbols: string[],

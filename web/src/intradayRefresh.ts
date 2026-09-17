@@ -1,10 +1,14 @@
 import type { ChartData, IntradayRefresh } from "./types";
 
 export function refreshDelay(state: IntradayRefresh): number {
+  if (state.next_bar_finalize_at) {
+    const untilFinalize = Date.parse(state.next_bar_finalize_at) - Date.parse(state.server_time);
+    if (untilFinalize > 0 && untilFinalize <= 15_000) return untilFinalize;
+  }
   if (state.phase === "unknown") return 60_000;
   const untilTransition = state.next_transition_at
     ? Math.max(0, Date.parse(state.next_transition_at) - Date.parse(state.server_time)) : 60_000;
-  if (state.phase === "trading") return untilTransition <= 15_000 ? untilTransition + 15_000 : 15_000;
+  if (state.phase === "trading" || state.phase === "auction") return untilTransition <= 15_000 ? untilTransition + 15_000 : 15_000;
   return Math.max(1000, untilTransition);
 }
 
@@ -14,7 +18,10 @@ export function advanceSession(state: IntradayRefresh, elapsed: number): Intrada
   if (!state.next_transition_at || serverTime < Date.parse(state.next_transition_at)) return next;
   const day = state.next_transition_at.slice(0, 10);
   const clock = state.next_transition_at.slice(11, 16);
-  if (clock === "09:30" || clock === "13:00") {
+  if (clock === "09:15") {
+    next.phase = "auction";
+    next.next_transition_at = `${day}T09:30:00+08:00`;
+  } else if (clock === "09:30" || clock === "13:00") {
     next.phase = "trading";
     next.next_transition_at = `${day}T${clock === "09:30" ? "11:30" : "15:00"}:00+08:00`;
   } else if (clock === "11:30") {
@@ -34,8 +41,19 @@ export function mergeIntradayData(current: ChartData | null, fresh: ChartData): 
   if (!current || current.symbol !== fresh.symbol || current.timeframe !== fresh.timeframe) return fresh;
   return { ...current, bars: fresh.bars.length ? fresh.bars : current.bars,
     indicators: fresh.bars.length ? fresh.indicators : current.indicators,
+    pens: fresh.pens ?? current.pens, pen_diagnostics: fresh.pen_diagnostics ?? current.pen_diagnostics,
+    centers: fresh.centers ?? current.centers, pen_centers: fresh.pen_centers ?? current.pen_centers,
+    center_relations: fresh.center_relations ?? current.center_relations,
+    movements: fresh.movements ?? current.movements, context_centers: fresh.context_centers ?? current.context_centers,
+    center_levels: fresh.center_levels ?? current.center_levels, movement_levels: fresh.movement_levels ?? current.movement_levels,
+    run_id: fresh.run_id, structure_version: fresh.structure_version,
+    system_structure_version: fresh.system_structure_version, effective_structure_version: fresh.effective_structure_version,
+    market_version: fresh.market_version, coverage_version: fresh.coverage_version, coverage: fresh.coverage,
     quote: fresh.quote ?? current.quote, previous_close: fresh.previous_close,
     intraday_refresh: fresh.intraday_refresh, available: fresh.available || current.available,
+    forming_bar: fresh.forming_bar, forming_bar_trade_date: fresh.forming_bar_trade_date,
+    structure_preview: fresh.structure_preview, structure_persisted: fresh.structure_persisted,
+    preview_structure_version: fresh.preview_structure_version, structure_as_of: fresh.structure_as_of,
     has_more: false, next_before: undefined };
 }
 

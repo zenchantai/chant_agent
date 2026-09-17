@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mergeWatchlistQuotes, startWatchlistQuoteRefresh, watchlistQuoteDelay, watchlistQuoteLabel } from "./watchlistQuotes";
+import { chartQuoteToWatchlistQuote, mergeWatchlistQuotes, startWatchlistQuoteRefresh, watchlistQuoteDelay, watchlistQuoteLabel } from "./watchlistQuotes";
 import type { WatchlistQuote, WatchlistQuoteResponse } from "./watchlistQuotes";
 
 class Visibility extends EventTarget {
@@ -11,7 +11,7 @@ const quote = (symbol = "000001", latest = 11): WatchlistQuote => ({
   symbol, latest, previous_close:10, change:latest - 10, change_pct:(latest - 10) * 10,
   quote_time:"2026-09-16T10:00:00+08:00", source:"tencent", status:"success", error:null,
 });
-const response = (interval = 10_000): WatchlistQuoteResponse => ({
+const response = (interval = 15_000): WatchlistQuoteResponse => ({
   quotes:[quote()], refresh_after_ms:interval, server_time:"2026-09-16T10:00:00+08:00",
   phase:interval === 10_000 ? "trading" : "closed", market_status:"交易中",
 });
@@ -20,18 +20,18 @@ afterEach(() => { vi.useRealTimers(); });
 
 describe("自选行情独立轮询", () => {
   it("只依据后端交易日历调度，不依赖浏览器时区或星期", () => {
-    expect(watchlistQuoteDelay(response())).toBe(10_000);
+    expect(watchlistQuoteDelay(response())).toBe(15_000);
     expect(watchlistQuoteDelay(response(60_000))).toBe(60_000);
     expect(watchlistQuoteDelay()).toBe(60_000);
     expect(watchlistQuoteDelay(response(-1))).toBe(60_000);
   });
 
-  it("开页立即请求，交易十秒、午休及节假日六十秒刷新", async () => {
+  it("开页立即请求，交易十五秒、午休及节假日六十秒刷新", async () => {
     vi.useFakeTimers();
     const fetch = vi.fn().mockResolvedValueOnce(response()).mockResolvedValue(response(60_000));
     const onQuotes = vi.fn();
     const stop = startWatchlistQuoteRefresh({fetch, onQuotes, onError:vi.fn(), visibility:new Visibility()});
-    await vi.advanceTimersByTimeAsync(9_999);
+    await vi.advanceTimersByTimeAsync(14_999);
     expect(fetch).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -107,6 +107,13 @@ describe("自选行情独立轮询", () => {
 });
 
 describe("报价合并", () => {
+  it("当前图表报价可直接转换为左侧唯一报价源", () => {
+    expect(chartQuoteToWatchlistQuote("000001", {
+      latest:12, previous_close:10, change:2, change_pct:20,
+      quote_time:"2026-09-16T10:01:00+08:00", source:"tencent", status:"success",
+    })).toEqual({...quote(), latest:12, change:2, change_pct:20, quote_time:"2026-09-16T10:01:00+08:00"});
+    expect(chartQuoteToWatchlistQuote("000001", null)).toBeUndefined();
+  });
   it("同一证券只保留一份，过滤删除的股票，不回退旧时间", () => {
     const original = {"000001":quote(), "600000":quote("600000")};
     const newer = {...quote(), latest:12, quote_time:"2026-09-16T10:01:00+08:00"};

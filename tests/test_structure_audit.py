@@ -21,9 +21,9 @@ def test_api_audit_requires_all_levels_and_color_metadata():
         "calculator_fingerprint": EXPECTED_FINGERPRINT,
         "active_structure_level": 1,
         "max_available_center_level": 3,
-        "centers": [{"id": "c", "level": 2, "display_period": "w", "color_key": "period-w"}],
-        "pen_centers": [{"id": "c", "level": 2, "display_period": "w", "color_key": "period-w"}],
-        "movements": [{"id": "m", "level": 2, "role": "hierarchy_component", "status": "provisional"}],
+        "centers": [{"id": "c", "level": 2, "display_period": "w", "color_key": "period-w", "owned_unit_ids": ["u"], "source_unit_ids": ["u"]}],
+        "pen_centers": [{"id": "c", "level": 2, "display_period": "w", "color_key": "period-w", "owned_unit_ids": ["u"], "source_unit_ids": ["u"]}],
+        "movements": [{"id": "m", "level": 2, "role": "hierarchy_component", "status": "provisional", "center_ids": ["c"], "source_unit_ids": ["u"], "recursive_eligible": False}],
         "pens": [{"id": "p1"}, {"id": "p2"}, {"id": "p3"}],
     }
     assert audit_api_payload(payload, 2) == []

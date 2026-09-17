@@ -3,15 +3,65 @@ from __future__ import annotations
 import math
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .providers import fetch_tencent, fetch_trade_calendar
+from .providers import INTRADAY_TIMEFRAMES, TIMEFRAMES, fetch_tencent, fetch_tencent_quotes, fetch_trade_calendar
 from .store import Store
 from .indicators import calculate_bollinger, calculate_macd, calculate_moving_averages
 from .rules import PERIOD_DEFINITION_VERSION
+from .coverage import EXPECTED_TIMES
 
 TZ = ZoneInfo("Asia/Shanghai")
+MINUTE_PERIODS = {key: int(key) for key in INTRADAY_TIMEFRAMES}
+REALTIME_PERIODS = set(TIMEFRAMES)
+LIVE_STRUCTURE_PERIODS = {"5", "30", "d", "w", "m"}
+
+
+def _period_boundary(stamp: datetime, timeframe: str) -> datetime:
+    """Return the close boundary encoded by a Tencent period timestamp."""
+    if timeframe == "1":
+        return stamp + timedelta(minutes=1)
+    return stamp.replace(second=0, microsecond=0)
+
+
+def period_key(value: str | date | datetime, timeframe: str) -> str:
+    day = value if isinstance(value, date) and not isinstance(value, datetime) else None
+    if isinstance(value, datetime):
+        day = value.date()
+    elif isinstance(value, str):
+        day = date.fromisoformat(value[:10])
+    if day is None:
+        raise ValueError("无法识别周期日期")
+    if timeframe == "w":
+        iso = day.isocalendar()
+        return f"{iso.year}-W{iso.week:02d}"
+    if timeframe == "m":
+        return day.strftime("%Y-%m")
+    if timeframe == "y":
+        return day.strftime("%Y")
+    return day.isoformat()
+
+
+def period_date_range(value: str | date | datetime, timeframe: str) -> tuple[str, str]:
+    day = date.fromisoformat(str(value)[:10]) if isinstance(value, str) else (value.date() if isinstance(value, datetime) else value)
+    if timeframe == "w":
+        start = day - timedelta(days=day.weekday())
+        return start.isoformat(), (start + timedelta(days=6)).isoformat()
+    if timeframe == "m":
+        start = day.replace(day=1)
+        next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return start.isoformat(), (next_month - timedelta(days=1)).isoformat()
+    if timeframe == "y":
+        return day.replace(month=1, day=1).isoformat(), day.replace(month=12, day=31).isoformat()
+    return day.isoformat(), day.isoformat()
+
+
+def merge_period_rows(stored: list[dict], live: list[dict], timeframe: str) -> list[dict]:
+    key = (lambda row: row["trade_date"]) if timeframe in INTRADAY_TIMEFRAMES else (lambda row: period_key(row["trade_date"], timeframe))
+    merged = {key(row): dict(row) for row in stored}
+    merged.update({key(row): dict(row) for row in live})
+    return sorted(merged.values(), key=lambda row: row["trade_date"])
 
 
 def session_state(now: datetime, calendar: dict[str, bool]) -> dict:
@@ -20,14 +70,17 @@ def session_state(now: datetime, calendar: dict[str, bool]) -> dict:
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     if today not in calendar:
         return {"phase": "unknown", "market_status": "日历未知", "next_transition_at": None}
+    auction = midnight.replace(hour=9, minute=15)
     morning = midnight.replace(hour=9, minute=30)
     lunch = midnight.replace(hour=11, minute=30)
     afternoon = midnight.replace(hour=13)
     close = midnight.replace(hour=15)
     phase, transition = "closed", None
     if calendar[today]:
-        if now < morning:
-            transition = morning
+        if now < auction:
+            transition = auction
+        elif now < morning:
+            phase, transition = "auction", morning
         elif now < lunch:
             phase, transition = "trading", lunch
         elif now < afternoon:
@@ -45,7 +98,7 @@ def session_state(now: datetime, calendar: dict[str, bool]) -> dict:
                 transition = candidate.replace(hour=9, minute=30)
                 break
         transition = transition or midnight + timedelta(days=1)
-    return {"phase": phase, "market_status": {"trading": "交易中", "lunch": "午间休市", "closed": "已休市"}[phase],
+    return {"phase": phase, "market_status": {"auction": "开盘集合竞价", "trading": "交易中", "lunch": "午间休市", "closed": "已休市"}[phase],
             "next_transition_at": transition.isoformat()}
 
 
@@ -75,6 +128,53 @@ def validate_rows(rows: list[dict], now: datetime) -> list[dict]:
     return [result[stamp] for stamp in sorted(result)]
 
 
+def validate_period_rows(rows: list[dict], timeframe: str, now: datetime) -> list[dict]:
+    if timeframe not in REALTIME_PERIODS:
+        raise ValueError(f"不支持实时刷新的周期: {timeframe}")
+    if timeframe == "1":
+        return validate_rows(rows, now)
+    if not rows:
+        raise ValueError("行情源未返回周期数据")
+    now = now.astimezone(TZ)
+    result: dict[str, dict] = {}
+    if timeframe in INTRADAY_TIMEFRAMES:
+        latest_day = max(str(row["trade_date"])[:10] for row in rows)
+        tolerance = timedelta(minutes=MINUTE_PERIODS[timeframe])
+        expected_times = set(EXPECTED_TIMES[timeframe])
+    else:
+        current_key = period_key(now, timeframe)
+    for row in rows:
+        raw_stamp = str(row["trade_date"])
+        if timeframe in INTRADAY_TIMEFRAMES:
+            if raw_stamp[:10] != latest_day:
+                continue
+            stamp = datetime.strptime(raw_stamp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ)
+            if stamp > now + tolerance:
+                continue
+            if stamp.second or stamp.strftime("%H:%M") not in expected_times:
+                raise ValueError("行情源返回无效周期数据")
+            row_key = raw_stamp
+        else:
+            try:
+                stamp = datetime.fromisoformat(raw_stamp).replace(tzinfo=TZ)
+            except ValueError as exc:
+                raise ValueError("行情源返回无效周期数据") from exc
+            if stamp.date() > now.date() or period_key(stamp, timeframe) != current_key:
+                continue
+            row_key = current_key
+        values = [float(row[field]) for field in ("open", "high", "low", "close", "volume")]
+        amount = float(row.get("amount", 0))
+        if (not all(math.isfinite(value) for value in [*values, amount])
+                or min(values[:4]) <= 0 or values[4] < 0 or amount < 0
+                or float(row["low"]) > min(float(row["open"]), float(row["close"]))
+                or float(row["high"]) < max(float(row["open"]), float(row["close"]))):
+            raise ValueError("行情源返回无效周期数据")
+        result[row_key] = {**row, "source": "tencent"}
+    if not result:
+        raise ValueError("行情源尚未返回当日周期数据")
+    return sorted(result.values(), key=lambda row: row["trade_date"])
+
+
 class IntradayService:
     def __init__(self, store: Store, clock=None):
         self.store = store
@@ -86,6 +186,8 @@ class IntradayService:
         self._calendar_attempt = float("-inf")
         self._calendar_error = None
         self._future_calendar: dict[str, bool] = {}
+        self._live_rows: dict[tuple[str, str, str], list[dict]] = {}
+        self._quotes: dict[tuple[str, str], dict] = {}
 
     def calendar_days(self, start: str, end: str) -> dict[str, bool]:
         with self.store._lock:
@@ -118,15 +220,46 @@ class IntradayService:
                 raise
         return True
 
+    def period_finalize_at(self, row: dict, timeframe: str, calendar: dict[str, bool]) -> datetime | None:
+        stamp = datetime.fromisoformat(str(row["trade_date"])).replace(tzinfo=TZ)
+        if timeframe in INTRADAY_TIMEFRAMES:
+            return _period_boundary(stamp, timeframe) + timedelta(seconds=15)
+        day = stamp.date().isoformat()
+        if not calendar.get(day):
+            return None
+        if timeframe == "d":
+            return stamp.replace(hour=15, minute=0, second=15, microsecond=0)
+        future_days = sorted(candidate for candidate, trading in calendar.items() if trading and candidate > day)
+        if not future_days or period_key(future_days[0], timeframe) == period_key(day, timeframe):
+            return None
+        return stamp.replace(hour=15, minute=0, second=15, microsecond=0)
+
+    def replace_current_period(self, symbol: str, timeframe: str, adjustflag: str,
+                               rows: list[dict], finalize_before: datetime,
+                               calendar: dict[str, bool]) -> tuple[int, str | None]:
+        if timeframe == "1" or timeframe not in REALTIME_PERIODS:
+            raise ValueError("该周期不支持周期确认")
+        confirmed = []
+        for row in rows:
+            finalize_at = self.period_finalize_at(row, timeframe, calendar)
+            if finalize_at and finalize_at <= finalize_before:
+                confirmed.append(row)
+        if not confirmed:
+            return 0, None
+        return self.store.upsert_bars_with_changes(
+            symbol, timeframe, adjustflag, confirmed, source="tencent", allow_lower_priority=True
+        )
+
     def calendar(self, fetch: bool) -> dict[str, bool]:
         now = self.clock()
-        start = (now.date() - timedelta(days=30)).isoformat()
-        end = (now.date() + timedelta(days=14)).isoformat()
+        start = (now.date() - timedelta(days=400)).isoformat()
+        end = (now.date() + timedelta(days=400)).isoformat()
         with self._calendar_lock:
             days = self.calendar_days(start, end)
             stored_dates = set(days)
             days.update({day: trading for day, trading in self._future_calendar.items() if start <= day <= end})
-            if fetch and len(days) < 45 and time.monotonic() - self._calendar_attempt >= 60:
+            future_known = any(day > now.date().isoformat() for day in days)
+            if fetch and (not future_known or len(days) < 45) and time.monotonic() - self._calendar_attempt >= 60:
                 self._calendar_attempt = time.monotonic()
                 try:
                     fetched = fetch_trade_calendar(start, end)
@@ -141,40 +274,118 @@ class IntradayService:
             return days
 
     def refresh(self, symbol: str, adjustflag: str = "2") -> dict:
-        key = (symbol, "1", adjustflag)
+        return self.refresh_period(symbol, "1", adjustflag)
+
+    def refresh_period(self, symbol: str, timeframe: str, adjustflag: str = "2", include_quote: bool = False) -> dict:
+        if timeframe not in REALTIME_PERIODS:
+            raise ValueError(f"不支持实时刷新的周期: {timeframe}")
+        key = (symbol, timeframe, adjustflag)
         with self._guard:
             lock = self._locks.setdefault(key, threading.Lock())
         with lock:
             previous = self._attempts.get(key, {})
-            if time.monotonic() - previous.get("finished", float("-inf")) < 15:
-                return previous
+            live = self._live_rows.get(key, [])
             calendar = self.calendar(True)
+            live_finalize_at = self.period_finalize_at(live[-1], timeframe, calendar) if timeframe != "1" and live else None
+            finalization_due = bool(live_finalize_at and self.clock() >= live_finalize_at)
+            if time.monotonic() - previous.get("finished", float("-inf")) < 15 and not finalization_due:
+                return previous
             now = self.clock()
-            attempt = {"result": "failed", "error": None, "last_success_at": previous.get("last_success_at")}
+            attempt = {"result": "failed", "error": None, "last_success_at": previous.get("last_success_at"),
+                       "changed_from": None, "finalized_count": 0}
             if now.date().isoformat() not in calendar:
                 if previous:
                     return previous
+            quote = None
+            if include_quote:
+                try:
+                    fetched_quotes = fetch_tencent_quotes([symbol])
+                    candidate = fetched_quotes[0] if fetched_quotes else None
+                    if candidate and candidate.get("status") == "success" and candidate.get("quote_time"):
+                        quote_stamp = datetime.strptime(candidate["quote_time"], "%Y%m%d%H%M%S").replace(tzinfo=TZ)
+                        if quote_stamp <= self.clock() + timedelta(seconds=60):
+                            quote = candidate
+                            self._quotes[(symbol, adjustflag)] = {**candidate, "quote_time": quote_stamp.isoformat()}
+                except Exception:
+                    quote = None
+            if session_state(now, calendar)["phase"] == "auction":
+                available = bool(quote or self.latest_quote(symbol, adjustflag))
+                attempt.update(result="success" if available else "failed",
+                               last_success_at=self.clock().isoformat() if available else previous.get("last_success_at"),
+                               error=None if available else "实时刷新失败：暂无有效集合竞价报价",
+                               finished=time.monotonic())
+                self._attempts[key] = attempt
+                return attempt
             try:
-                rows = validate_rows(fetch_tencent(symbol, "1", "2015-01-01", now.date().isoformat(), adjustflag), self.clock())
-                accepted = self.replace_intraday(symbol, adjustflag, rows)
+                start, _ = period_date_range(now, timeframe)
+                if timeframe in INTRADAY_TIMEFRAMES or timeframe == "d":
+                    start = now.date().isoformat()
+                rows = validate_period_rows(
+                    fetch_tencent(symbol, timeframe, start, now.date().isoformat(), adjustflag),
+                    timeframe, self.clock(),
+                )
+                if quote and rows:
+                    quote_stamp = datetime.strptime(quote["quote_time"], "%Y%m%d%H%M%S").replace(tzinfo=TZ)
+                    if quote_stamp.date() == self.clock().date():
+                        rows[-1] = {**rows[-1], "close": float(quote["latest"]),
+                                    "high": max(float(rows[-1]["high"]), float(quote["latest"])),
+                                    "low": min(float(rows[-1]["low"]), float(quote["latest"]))}
+                if timeframe == "1":
+                    accepted = self.replace_intraday(symbol, adjustflag, rows)
+                else:
+                    accepted = True
+                    finalized_count, changed_from = self.replace_current_period(
+                        symbol, timeframe, adjustflag, rows, self.clock(), calendar
+                    )
+                    attempt.update(finalized_count=finalized_count, changed_from=changed_from)
+                    finalize_at = self.period_finalize_at(rows[-1], timeframe, calendar)
+                    latest_is_forming = finalize_at is None or self.clock() < finalize_at
+                    self._live_rows[key] = rows if latest_is_forming else []
                 attempt.update(result="success" if accepted else "stale", last_success_at=self.clock().isoformat(),
                                error=None if accepted else "行情源数据早于已有缓存，已保留缓存")
             except Exception as exc:
-                attempt["error"] = f"分时刷新失败：{type(exc).__name__}"
+                attempt["error"] = f"实时刷新失败：{type(exc).__name__}"
             attempt["finished"] = time.monotonic()
             self._attempts[key] = attempt
             return attempt
 
     def metadata(self, symbol: str, adjustflag: str = "2") -> dict:
+        return self.period_metadata(symbol, "1", adjustflag)
+
+    def period_metadata(self, symbol: str, timeframe: str, adjustflag: str = "2") -> dict:
         now = self.clock()
         state = session_state(now, self.calendar(False))
-        _, latest = self.store.market_range(symbol, "1", adjustflag)
-        attempt = self._attempts.get((symbol, "1", adjustflag), {})
+        live = self._live_rows.get((symbol, timeframe, adjustflag), [])
+        _, stored_latest = self.store.market_range(symbol, timeframe, adjustflag)
+        latest = live[-1]["trade_date"] if live else stored_latest
+        attempt = self._attempts.get((symbol, timeframe, adjustflag), {})
+        forming = self.forming_bar(symbol, timeframe, adjustflag)
         return {**state, "server_time": now.isoformat(), "data_date": latest[:10] if latest else None,
                 "latest_data_at": latest, "last_success_at": attempt.get("last_success_at"),
                 "result": attempt.get("result", "cached"), "error": attempt.get("error"),
                 "calendar_error": self._calendar_error,
+                "next_bar_finalize_at": forming.get("finalize_at") if forming else None,
                 "is_today": bool(latest and latest[:10] == now.date().isoformat())}
+
+    def live_rows(self, symbol: str, timeframe: str, adjustflag: str = "2") -> list[dict]:
+        return [dict(row) for row in self._live_rows.get((symbol, timeframe, adjustflag), [])]
+
+    def forming_bar(self, symbol: str, timeframe: str, adjustflag: str = "2") -> dict | None:
+        if timeframe == "1" or timeframe not in REALTIME_PERIODS:
+            return None
+        rows = self._live_rows.get((symbol, timeframe, adjustflag), [])
+        if not rows:
+            return None
+        latest = rows[-1]
+        finalize_at = self.period_finalize_at(latest, timeframe, self.calendar(False))
+        if finalize_at and self.clock() >= finalize_at:
+            return None
+        return {"trade_date": latest["trade_date"], "is_forming": True,
+                "status": "provisional", "finalize_at": finalize_at.isoformat() if finalize_at else None}
+
+    def latest_quote(self, symbol: str, adjustflag: str = "2") -> dict | None:
+        quote = self._quotes.get((symbol, adjustflag))
+        return dict(quote) if quote else None
 
     def chart_page(self, symbol: str, adjustflag: str, before: str | None, limit: int,
                    ma_periods: tuple, boll_period: int, boll_multiplier: float) -> dict:
@@ -203,15 +414,34 @@ class IntradayService:
         metadata = self.metadata(symbol, adjustflag)
         if rows:
             latest = rows[-1]
-            change = latest["close"] - previous_close if previous_close else None
+            snapshot = self.latest_quote(symbol, adjustflag)
+            quote_latest = float(snapshot["latest"]) if snapshot and snapshot.get("latest") is not None else latest["close"]
+            previous_close = snapshot.get("previous_close") if snapshot else previous_close
+            change = snapshot.get("change") if snapshot else (quote_latest - previous_close if previous_close else None)
             high, low = max(row["high"] for row in rows), min(row["low"] for row in rows)
-            quote = {"trade_date": latest["trade_date"], "latest": latest["close"], "previous_close": previous_close,
-                     "change": change, "change_pct": change / previous_close * 100 if previous_close else None,
+            quote = {"trade_date": latest["trade_date"], "latest": quote_latest, "previous_close": previous_close,
+                     "change": change, "change_pct": snapshot.get("change_pct") if snapshot else (change / previous_close * 100 if previous_close else None),
                      "open": rows[0]["open"], "high": high, "low": low,
                      "volume": sum(row["volume"] for row in rows),
                      "amount": sum(row["amount"] for row in rows) if any(row["amount"] for row in rows) else None,
                      "amplitude_pct": (high - low) / previous_close * 100 if previous_close else None,
-                     "market_status": metadata["market_status"]}
+                     "market_status": metadata["market_status"],
+                     "quote_time": snapshot.get("quote_time") if snapshot else latest["trade_date"],
+                     "source": snapshot.get("source", "tencent") if snapshot else "tencent",
+                     "status": snapshot.get("status", "success") if snapshot else "success"}
+        elif (snapshot := self.latest_quote(symbol, adjustflag)):
+            latest = float(snapshot["latest"])
+            previous_close = snapshot.get("previous_close")
+            quote = {"trade_date": snapshot.get("quote_time") or metadata.get("latest_data_at"),
+                     "latest": latest, "previous_close": previous_close,
+                     "change": snapshot.get("change"), "change_pct": snapshot.get("change_pct"),
+                     "open": snapshot.get("open") or latest, "high": snapshot.get("high") or latest,
+                     "low": snapshot.get("low") or latest, "volume": snapshot.get("volume") or 0,
+                     "amount": snapshot.get("amount"),
+                     "amplitude_pct": ((snapshot.get("high", latest) - snapshot.get("low", latest)) / previous_close * 100)
+                     if previous_close else None, "market_status": metadata["market_status"],
+                     "quote_time": snapshot.get("quote_time"), "source": snapshot.get("source", "tencent"),
+                     "status": snapshot.get("status", "success")}
         return {"symbol": symbol, "timeframe": "1", "adjustflag": adjustflag, "bars": page,
                 "previous_close": previous_close, "quote": quote, "intraday_refresh": metadata,
                 "indicators": {

@@ -76,27 +76,15 @@ def test_non_reverse_or_unconfirmed_center_never_closes_movement(change):
 def test_three_finished_variable_length_movements_form_parent_and_tail_does_not():
     units, centers = structural_stream(4)
     result = build_hierarchy(units, centers)
-    parent = next(center for center in result["centers"] if center["level"] == 2)
-    assert parent["status"] == "confirmed" and parent["progress"] == "3/3"
-    by_id = {item["id"]: item for item in result["movements"]}
-    children = [by_id[child] for child in parent["child_movement_ids"]]
-    assert len(children) == 3 and all(child["status"] == "confirmed" for child in children)
-    assert all(len(child["source_unit_ids"]) == 5 for child in children)
-    assert parent["confirmed_at"] == max(child["confirmed_at"] for child in children)
-    assert not any(center["level"] > 2 for center in result["centers"])
-    assert all(item["status"] == "provisional" for item in result["movements"] if item["level"] == 2)
+    assert not any(center["level"] > 1 for center in result["centers"])
     assert {item["id"] for item in centers} <= {item["id"] for item in result["centers"]}
 
 
 def test_parent_candidate_id_stays_stable_when_third_movement_finishes():
     units, centers = structural_stream(4)
     movements = build_hierarchy_components(units, centers, 1)["movements"]
-    candidate = _parent_centers(movements[:2], 2, "system", centers)[0]
-    confirmed = _parent_centers(movements[:3], 2, "system", centers)[0]
-    assert candidate["status"] == "provisional" and candidate["progress"] == "2/3"
-    assert candidate["confirmed_at"] is None
-    assert candidate["id"] == confirmed["id"]
-    assert confirmed["status"] == "confirmed"
+    assert _parent_centers(movements[:2], 2, "system", centers) == []
+    assert _parent_centers(movements[:3], 2, "system", centers) == []
 
 
 def test_parent_requires_actual_reverse_evidence_even_when_status_claims_confirmed():
@@ -153,5 +141,46 @@ def test_second_level_confirmed_movements_can_construct_third_level_center():
         center["level"] = 2
     for movement in movements:
         movement["level"] = 2
-    parent = _parent_centers(movements, 3, "system", centers)[0]
-    assert parent["level"] == 3 and parent["status"] == "confirmed"
+    assert _parent_centers(movements, 3, "system", centers) == []
+
+
+def test_parent_center_uses_four_completed_units_and_retains_two_of_three_candidate():
+    dates = [date(2026, 2, 1) + timedelta(days=index) for index in range(6)]
+    prices = [(0, 10), (10, 4), (4, 9), (9, 5)]
+    movements = []
+    centers = []
+    for index, (start, end) in enumerate(prices):
+        center_direction = "up" if end > start else "down"
+        centers.append({
+            "id": f"child-{index}", "level": 1, "status": "confirmed",
+            "direction": center_direction, "start_date": dates[index].isoformat(),
+            "end_date": dates[index + 1].isoformat(), "confirmed_at": dates[index + 1].isoformat(),
+            "zd": 5 if index % 2 == 0 else 1, "zg": 9 if index % 2 == 0 else 4,
+            "dd": 0, "gg": 11, "owned_unit_ids": [f"leaf-{index}"],
+            "source_unit_ids": [f"leaf-{index}"], "continuous_range_id": 0,
+            "sequence_id": 0, "structure_sequence_id": "same-stream",
+        })
+        movements.append({
+            "id": f"movement-{index}", "kind": "movement", "level": 1,
+            "role": "hierarchy_component", "status": "confirmed", "state": "formed",
+            "direction": center_direction, "classification": "consolidation",
+            "start_date": dates[index].isoformat(), "end_date": dates[index + 1].isoformat(),
+            "start_price": start, "end_price": end, "low": min(start, end), "high": max(start, end),
+            "source_unit_ids": [f"leaf-{index}"], "center_ids": [f"child-{index}"],
+            "confirmation_center_id": f"child-{index + 1}",
+            "confirmed_at": (dates[index + 3] if index + 3 < len(dates) else dates[-1]).isoformat(),
+            "termination_reason": "reverse_independent_center", "recursive_eligible": True,
+            "continuous_range_id": 0, "sequence_id": 0, "structure_sequence_id": "same-stream",
+        })
+
+    centers.append(dict(centers[0], id="child-4", owned_unit_ids=["leaf-4"], source_unit_ids=["leaf-4"], confirmed_at=dates[-1].isoformat()))
+    candidate = _parent_centers(movements[:3], 2, "system", centers)
+    confirmed = _parent_centers(movements, 2, "system", centers)
+    assert len(candidate) == 1
+    assert candidate[0]["status"] == "provisional"
+    assert candidate[0]["progress"] == "2/3"
+    assert len(confirmed) == 1
+    assert confirmed[0]["status"] == "confirmed"
+    assert confirmed[0]["id"] == candidate[0]["id"]
+    assert confirmed[0]["core_unit_ids"] == ["movement-1", "movement-2", "movement-3"]
+    assert confirmed[0]["child_movement_ids"] == [f"movement-{index}" for index in range(4)]

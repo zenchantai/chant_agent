@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import intraday, main
-from app.intraday import IntradayService, TZ, session_state, validate_rows
+from app.intraday import IntradayService, TZ, period_key, session_state, validate_period_rows, validate_rows
 from app.store import Store
 from app.sync import SyncService
 
@@ -31,7 +31,8 @@ def service(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("clock,phase,next_clock", [
-    ("09:29:59", "closed", "09:30"), ("09:30:00", "trading", "11:30"),
+    ("09:14:59", "closed", "09:15"), ("09:15:00", "auction", "09:30"),
+    ("09:29:59", "auction", "09:30"), ("09:30:00", "trading", "11:30"),
     ("11:29:59", "trading", "11:30"), ("11:30:00", "lunch", "13:00"),
     ("12:59:59", "lunch", "13:00"), ("13:00:00", "trading", "15:00"),
     ("14:59:59", "trading", "15:00"), ("15:00:00", "closed", "09:30"),
@@ -127,6 +128,114 @@ def test_concurrent_live_and_scheduled_refresh_share_request(service, monkeypatc
     assert service.store.db.execute("SELECT COUNT(*) FROM period_structure_runs").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize(("timeframe", "now_clock", "valid_stamps", "future_stamp"), [
+    ("5", "10:12:00", ["2026-09-16 10:10:00", "2026-09-16 10:15:00"], "2026-09-16 10:20:00"),
+    ("15", "10:12:00", ["2026-09-16 10:00:00", "2026-09-16 10:15:00"], "2026-09-16 10:30:00"),
+    ("30", "10:12:00", ["2026-09-16 10:00:00", "2026-09-16 10:30:00"], "2026-09-16 11:00:00"),
+    ("60", "10:12:00", ["2026-09-16 10:30:00"], "2026-09-16 11:30:00"),
+    ("120", "10:12:00", ["2026-09-16 11:30:00"], "2026-09-16 15:00:00"),
+])
+def test_validate_period_rows_keeps_current_day_and_current_forming_bar(
+        timeframe, now_clock, valid_stamps, future_stamp):
+    now = datetime.fromisoformat(f"2026-09-16T{now_clock}+08:00")
+    rows = [bar("2026-09-15 15:00:00"), *(bar(stamp) for stamp in valid_stamps), bar(future_stamp)]
+
+    accepted = validate_period_rows(rows, timeframe, now)
+
+    assert [row["trade_date"] for row in accepted] == valid_stamps
+    assert all(row["source"] == "tencent" for row in accepted)
+
+
+@pytest.mark.parametrize(("timeframe", "invalid"), [
+    ("5", bar("2026-09-16 10:12:00")),
+    ("30", bar("2026-09-16 10:15:00")),
+    ("5", {**bar("2026-09-16 10:10:00"), "low": 11.5}),
+    ("30", {**bar("2026-09-16 10:00:00"), "volume": -1}),
+    ("15", bar("2026-09-16 10:12:00")),
+    ("60", bar("2026-09-16 10:00:00")),
+    ("120", bar("2026-09-16 10:30:00")),
+])
+def test_validate_period_rows_rejects_bad_grid_ohlc_and_volume(service, timeframe, invalid):
+    with pytest.raises(ValueError, match="无效周期数据"):
+        validate_period_rows([invalid], timeframe, service.clock())
+
+
+@pytest.mark.parametrize(("timeframe", "confirmed_stamp", "forming_stamp", "before", "finalized"), [
+    ("5", "2026-09-16 10:10:00", "2026-09-16 10:15:00", "2026-09-16T10:14:50+08:00", "2026-09-16T10:15:15+08:00"),
+    ("30", "2026-09-16 10:00:00", "2026-09-16 10:30:00", "2026-09-16T10:29:50+08:00", "2026-09-16T10:30:15+08:00"),
+    ("15", "2026-09-16 10:00:00", "2026-09-16 10:15:00", "2026-09-16T10:14:50+08:00", "2026-09-16T10:15:15+08:00"),
+    ("60", "2026-09-16 10:30:00", "2026-09-16 11:30:00", "2026-09-16T11:29:50+08:00", "2026-09-16T11:30:15+08:00"),
+    ("120", "2026-09-16 11:30:00", "2026-09-16 15:00:00", "2026-09-16T14:59:50+08:00", "2026-09-16T15:00:15+08:00"),
+])
+def test_period_refresh_preserves_history_and_persists_only_after_boundary(
+        service, monkeypatch, timeframe, confirmed_stamp, forming_stamp, before, finalized):
+    clock = [datetime.fromisoformat(before)]
+    service.clock = lambda: clock[0]
+    historical = bar("2026-09-15 15:00:00", 8)
+    old_confirmed = bar(confirmed_stamp, 10)
+    service.store.upsert_bars("000001", timeframe, "2", [historical, old_confirmed])
+    supplied = [bar(confirmed_stamp, 11), bar(forming_stamp, 12)]
+    calls = []
+    monkeypatch.setattr(intraday, "fetch_tencent", lambda *args: calls.append(args) or supplied)
+
+    first = service.refresh_period("000001", timeframe)
+
+    assert first["result"] == "success"
+    assert service.forming_bar("000001", timeframe) == {
+        "trade_date": forming_stamp,
+        "is_forming": True,
+        "status": "provisional",
+        "finalize_at": finalized,
+    }
+    stored = service.store.market_bars("000001", timeframe, "2")
+    assert [row["trade_date"] for row in stored] == [historical["trade_date"], confirmed_stamp]
+    assert stored[-1]["close"] == 11
+    assert service.store.db.execute("SELECT COUNT(*) FROM market_data_conflicts").fetchone()[0] == 1
+
+    clock[0] = datetime.fromisoformat(finalized)
+    second = service.refresh_period("000001", timeframe)
+
+    assert len(calls) == 2
+    assert second["finalized_count"] == 2
+    assert service.forming_bar("000001", timeframe) is None
+    assert service.live_rows("000001", timeframe) == []
+    stored = service.store.market_bars("000001", timeframe, "2")
+    assert [row["trade_date"] for row in stored] == [historical["trade_date"], confirmed_stamp, forming_stamp]
+    assert stored[-1]["close"] == 12
+
+
+@pytest.mark.parametrize(("timeframe", "stamp", "now"), [
+    ("5", "2026-09-16 10:15:00", "2026-09-16T10:14:50+08:00"),
+    ("30", "2026-09-16 10:30:00", "2026-09-16T10:29:50+08:00"),
+    ("15", "2026-09-16 10:15:00", "2026-09-16T10:14:50+08:00"),
+    ("60", "2026-09-16 10:30:00", "2026-09-16T10:29:50+08:00"),
+    ("120", "2026-09-16 11:30:00", "2026-09-16T11:29:50+08:00"),
+])
+def test_concurrent_period_refresh_is_deduplicated_per_symbol_timeframe(
+        service, monkeypatch, timeframe, stamp, now):
+    service.clock = lambda: datetime.fromisoformat(now)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def fetch(*args):
+        calls.append(args)
+        entered.set()
+        assert release.wait(3)
+        return [bar(stamp)]
+
+    monkeypatch.setattr(intraday, "fetch_tencent", fetch)
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        requests = [executor.submit(service.refresh_period, "000001", timeframe) for _ in range(3)]
+        assert entered.wait(3)
+        release.set()
+        assert [request.result()["result"] for request in requests] == ["success"] * 3
+
+    assert len(calls) == 1
+    assert service.forming_bar("000001", timeframe)["trade_date"] == stamp
+    assert service.store.market_bars("000001", timeframe, "2") == []
+
+
 def test_calendar_failure_retries_calendar_without_repeated_quotes(service, monkeypatch):
     service.store.db.execute("DELETE FROM trade_calendar")
     service.store.db.commit()
@@ -168,8 +277,9 @@ def test_api_lightweight_quote_and_parameter_validation(service, monkeypatch):
     monkeypatch.setattr(intraday, "fetch_tencent", lambda *args: [bar()])
     service.store.upsert_bars("000001", "d", "2", [bar("2026-09-15", 10)])
     client = TestClient(main.app)
-    assert client.get("/api/chart-data/000001?timeframe=d&refresh=true").status_code == 400
+    assert client.get("/api/chart-data/000001?timeframe=unknown&refresh=true").status_code == 400
     assert client.get("/api/chart-data/000001?timeframe=1&refresh=true&before=").status_code == 400
+    assert client.get("/api/chart-data/000001?timeframe=5&refresh=true&before=2026-09-16%2010:00:00").status_code == 400
     cached = client.get("/api/chart-data/000001?timeframe=1").json()
     assert cached["bars"] == []
     fresh = client.get("/api/chart-data/000001?timeframe=1&refresh=true").json()
@@ -182,6 +292,49 @@ def test_api_lightweight_quote_and_parameter_validation(service, monkeypatch):
     assert len(fresh["indicators"]["macd"]) == len(fresh["bars"])
     assert fresh["pens"] == fresh["centers"] == fresh["movements"] == []
     assert service.store.db.execute("SELECT COUNT(*) FROM period_structure_runs").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(("timeframe", "stamp"), [
+    ("d", "2026-09-16"), ("w", "2026-09-16"),
+    ("m", "2026-09-16"), ("y", "2026-09-16"),
+])
+def test_calendar_period_rows_only_keep_current_period(service, timeframe, stamp):
+    previous = {"d":"2026-09-15", "w":"2026-09-11", "m":"2026-08-31", "y":"2025-12-31"}[timeframe]
+    rows = validate_period_rows([bar(previous), bar(stamp)], timeframe, service.clock())
+    assert [row["trade_date"] for row in rows] == [stamp]
+    assert period_key(stamp, timeframe) == period_key(service.clock(), timeframe)
+
+
+def test_daily_weekly_monthly_yearly_finalization_uses_next_trading_period(service):
+    calendar = service.calendar(False)
+    daily = bar("2026-09-16")
+    weekly = bar("2026-09-16")
+    assert service.period_finalize_at(daily, "d", calendar).isoformat() == "2026-09-16T15:00:15+08:00"
+    assert service.period_finalize_at(weekly, "w", calendar) is None
+    friday = bar("2026-09-18")
+    assert service.period_finalize_at(friday, "w", calendar).isoformat() == "2026-09-18T15:00:15+08:00"
+    service.store.upsert_trade_calendar([
+        {"trade_date":"2026-09-30", "is_trading_day":True},
+        {"trade_date":"2026-10-08", "is_trading_day":True},
+        {"trade_date":"2026-12-31", "is_trading_day":True},
+        {"trade_date":"2027-01-04", "is_trading_day":True},
+    ])
+    calendar = service.calendar(False)
+    assert service.period_finalize_at(bar("2026-09-30"), "m", calendar).isoformat() == "2026-09-30T15:00:15+08:00"
+    assert service.period_finalize_at(bar("2026-12-31"), "y", calendar).isoformat() == "2026-12-31T15:00:15+08:00"
+
+
+def test_auction_refreshes_quote_without_creating_bar(service, monkeypatch):
+    service.clock = lambda: datetime(2026, 9, 16, 9, 20, tzinfo=TZ)
+    monkeypatch.setattr(intraday, "fetch_tencent", lambda *args: pytest.fail("集合竞价不得制造K线"))
+    monkeypatch.setattr(intraday, "fetch_tencent_quotes", lambda symbols: [{
+        "symbol":"000001", "latest":10.5, "previous_close":10, "change":.5, "change_pct":5,
+        "quote_time":"20260916092000", "source":"tencent", "status":"success", "error":None,
+    }])
+    result = service.refresh_period("000001", "d", include_quote=True)
+    assert result["result"] == "success"
+    assert service.live_rows("000001", "d") == []
+    assert service.latest_quote("000001")["latest"] == 10.5
 
 
 def test_previous_close_requires_confirmed_previous_trading_date(service):

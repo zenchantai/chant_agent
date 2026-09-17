@@ -20,8 +20,9 @@ from .period_structure import PeriodStructureService
 from .sync import SyncService
 from .rules import DEFINITION_VERSION, PERIOD_DEFINITION_VERSION
 from .securities import SecurityCatalogService
-from .intraday import IntradayService
+from .intraday import LIVE_STRUCTURE_PERIODS, IntradayService, merge_period_rows
 from .watchlist_quotes import WatchlistQuoteService
+from .indicators import calculate_bollinger, calculate_macd, calculate_moving_averages
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
@@ -167,8 +168,10 @@ def health():
     max_level = store.highest_active_center_level(PERIOD_DEFINITION_VERSION)
     return {"ok": True, "mode": "paper_only", "definition_version": PERIOD_DEFINITION_VERSION,
             "calculator_fingerprint": period_structure_service.calculator_fingerprint,
-            "timeframes": list(TIMEFRAMES), "structure_mode": "formal_hierarchy",
+            "timeframes": list(TIMEFRAMES),
+            "structure_mode": "formal_hierarchy",
             "movement_confirmation_mode": "reverse_independent_center",
+            "center_construction_mode": "unified_directional_ownership",
             "max_center_level": max_level,
             "movement_mode": "hierarchy_component"}
 
@@ -256,8 +259,8 @@ def order_watchlist_sections(request: WatchlistSectionOrderRequest):
 
 
 @app.get("/api/watchlist/quotes")
-def watchlist_quotes():
-    return watchlist_quote_service.snapshot()
+def watchlist_quotes(current_symbol: str | None = None):
+    return watchlist_quote_service.snapshot(current_symbol=current_symbol)
 
 
 @app.post("/api/watchlist-groups")
@@ -425,16 +428,85 @@ def market_data(symbol: str, timeframe: str = "d", adjustflag: str = "2", start_
 def chart_data(symbol: str, timeframe: str = "d", adjustflag: str = "2", before: str | None = None, limit: int = 300, ma_periods: str = "5,10,20,60", boll_period: int = 20, boll_multiplier: float = 2.0, structure_level: int = 1, refresh: bool = False):
     if timeframe not in TIMEFRAMES:
         raise HTTPException(status_code=400, detail=f"不支持的周期: {timeframe}")
-    if refresh and (timeframe != "1" or before is not None):
-        raise HTTPException(status_code=400, detail="仅最新分时图支持实时刷新")
+    if refresh and before is not None:
+        raise HTTPException(status_code=400, detail="实时刷新不支持历史分页参数 before")
     periods = tuple(sorted({int(item) for item in ma_periods.split(",") if item.strip()})) or (5, 10, 20, 60)
     periods = tuple(item for item in periods if 1 <= item <= 1000)[:10] or (5, 10, 20, 60)
     if timeframe == "1":
         if refresh:
-            intraday_service.refresh(symbol, adjustflag)
+            intraday_service.refresh_period(symbol, timeframe, adjustflag, include_quote=True)
         return intraday_service.chart_page(symbol, adjustflag, before, min(max(limit, 1), 300), periods,
                                           max(1, min(boll_period, 1000)), max(0.01, boll_multiplier))
+    if refresh:
+        attempt = intraday_service.refresh_period(symbol, timeframe, adjustflag, include_quote=True)
+    else:
+        attempt = None
+    if attempt and attempt.get("finalized_count") and timeframe in LIVE_STRUCTURE_PERIODS:
+        period_structure_service.ensure(symbol, timeframe, adjustflag, True)
     result = period_structure_service.chart_page(symbol, timeframe, adjustflag, before, min(max(limit, 1), 300), periods, max(1, min(boll_period, 1000)), max(0.01, boll_multiplier))
+    if refresh or intraday_service.live_rows(symbol, timeframe, adjustflag):
+        live_rows = intraday_service.live_rows(symbol, timeframe, adjustflag)
+        stored_rows = store.market_bars(symbol, timeframe, adjustflag, "0000-01-01")
+        all_rows = merge_period_rows(stored_rows, live_rows, timeframe)
+        page = [row for row in all_rows if before is None or row["trade_date"] < before][-min(max(limit, 1), 300):]
+        forming = intraday_service.forming_bar(symbol, timeframe, adjustflag)
+        if forming:
+            page = [{**row, "is_forming": row["trade_date"] == forming["trade_date"],
+                     "status": "provisional" if row["trade_date"] == forming["trade_date"] else "confirmed"}
+                    for row in page]
+        page_stamps = {row["trade_date"] for row in page}
+        result["bars"] = page
+        result["has_more"] = len(all_rows) > len(page)
+        result["next_before"] = page[0]["trade_date"] if page else None
+        result["indicators"] = {
+            "macd": [item for item in calculate_macd(all_rows) if item["trade_date"] in page_stamps],
+            "ma": [{**item, "values": {str(period): item.get(f"ma{period}") for period in periods}}
+                   for item in calculate_moving_averages(all_rows, periods) if item["trade_date"] in page_stamps],
+            "boll": [item for item in calculate_bollinger(all_rows, boll_period, boll_multiplier) if item["trade_date"] in page_stamps],
+        }
+        if all_rows:
+            latest = all_rows[-1]
+            day = latest["trade_date"][:10]
+            today_rows = [row for row in all_rows if row["trade_date"][:10] == day]
+            daily = store.market_bars(symbol, "d", adjustflag, "0000-01-01", day)
+            previous_close = next((row["close"] for row in reversed(daily) if row["trade_date"][:10] < day), None)
+            snapshot = intraday_service.latest_quote(symbol, adjustflag)
+            quote_latest = float(snapshot["latest"]) if snapshot and snapshot.get("latest") is not None else latest["close"]
+            previous_close = snapshot.get("previous_close") if snapshot else previous_close
+            change = snapshot.get("change") if snapshot else (quote_latest - previous_close if previous_close else None)
+            high, low = max(row["high"] for row in today_rows), min(row["low"] for row in today_rows)
+            metadata = intraday_service.period_metadata(symbol, timeframe, adjustflag)
+            result["quote"] = {"trade_date": latest["trade_date"], "latest": quote_latest,
+                               "previous_close": previous_close, "change": change,
+                               "change_pct": snapshot.get("change_pct") if snapshot else (change / previous_close * 100 if previous_close else None),
+                               "open": today_rows[0]["open"], "high": high, "low": low,
+                               "volume": sum(row["volume"] for row in today_rows),
+                               "amount": sum(row["amount"] for row in today_rows) if any(row["amount"] for row in today_rows) else None,
+                               "amplitude_pct": (high - low) / previous_close * 100 if previous_close else None,
+                               "market_status": metadata["market_status"],
+                               "quote_time": snapshot.get("quote_time") if snapshot else metadata.get("latest_data_at"),
+                               "source": snapshot.get("source", "tencent") if snapshot else "tencent",
+                               "status": snapshot.get("status", "success") if snapshot else "success"}
+        if forming:
+            if timeframe in LIVE_STRUCTURE_PERIODS:
+                preview = period_structure_service.preview_period(symbol, timeframe, adjustflag, all_rows)
+                for key in ("pens", "centers", "pen_centers", "center_relations", "movements", "pen_diagnostics", "center_levels", "movement_levels"):
+                    if key in preview:
+                        result[key] = preview[key]
+                result.update({"structure_preview": True,
+                               "preview_structure_version": preview.get("preview_structure_version"),
+                               "structure_as_of": preview.get("structure_as_of")})
+            else:
+                result.update({"structure_preview": False, "preview_structure_version": None,
+                               "structure_as_of": None})
+            result.update({"structure_persisted": False, "forming_bar": forming,
+                           "forming_bar_trade_date": forming["trade_date"]})
+        else:
+            result.update({"structure_preview": False,
+                           "structure_persisted": bool(timeframe in LIVE_STRUCTURE_PERIODS and attempt and attempt.get("finalized_count")),
+                           "preview_structure_version": None, "structure_as_of": None,
+                           "forming_bar": None, "forming_bar_trade_date": None})
+        result["intraday_refresh"] = intraday_service.period_metadata(symbol, timeframe, adjustflag)
     result["active_structure_level"] = 1
     result["coverage_required"] = True
     result["coverage_timeframe"] = timeframe

@@ -4,7 +4,7 @@ import { chartDates, intradayCoordinate, intradayPointDates } from "./intradayTi
 import { mergeIntradayData, startIntradayRefresh } from "./intradayRefresh";
 import { groupDropPosition, normalizeSectionOrder, reorderWatchlistSections } from "./watchlistGroupOrder";
 import type { GroupDropPosition } from "./watchlistGroupOrder";
-import { mergeWatchlistQuotes, startWatchlistQuoteRefresh, watchlistQuoteLabel } from "./watchlistQuotes";
+import { chartQuoteToWatchlistQuote, mergeWatchlistQuotes, startWatchlistQuoteRefresh, watchlistQuoteLabel } from "./watchlistQuotes";
 import type { WatchlistQuote, WatchlistQuoteResponse } from "./watchlistQuotes";
 import * as echarts from "echarts/core";
 import { BarChart, CandlestickChart, LineChart, ScatterChart } from "echarts/charts";
@@ -75,6 +75,7 @@ import {
   movementEndpointMarkers as movementEndpointMarkersBuilder,
   movementLineEndpoints as movementLineEndpointsBuilder,
   movementVisualStyle as movementVisualStyleBuilder,
+  movementClassificationLabel,
 } from "./chartBuilders";
 
 export {
@@ -265,7 +266,7 @@ export const formatKlineTooltip = (bar?: Bar, previousClose?: number) => {
   const toneAttr = tone ? ` class="${tone}"` : "";
   const price = (label: string, value: number) => `<span>${label}：<b${toneAttr}>${formatPrice(value)}</b></span>`;
   return [
-    `<b>${formatTradeDate(bar.trade_date)}</b>`,
+    `<b>${formatTradeDate(bar.trade_date)}${bar.is_forming ? "（未完成）" : ""}</b>`,
     price("开盘", bar.open),
     price("收盘", bar.close),
     price("最低", bar.low),
@@ -301,7 +302,7 @@ export const formatMovementTooltip = (movement: Node, chartTimeframe?: string) =
   const appearance = chartTimeframe ? levelStructureAppearance("dark", chartTimeframe, level) : null;
   const direction = movement.direction || (Number(movement.end_price) >= Number(movement.start_price) ? "up" : "down");
   return [
-    `<b>${movement.classification === "trend" ? "趋势" : "盘整走势"} · ${direction === "up" ? "向上" : "向下"}</b>`,
+    `<b>${movementClassificationLabel(movement.classification)} · ${direction === "up" ? "向上" : "向下"}</b>`,
     ...(chartTimeframe ? [
       `结构级别：L${level}`,
       `配色参考（非结构周期）：${displayPeriodLabel(movement.display_period || appearance?.displayPeriod)}`,
@@ -549,8 +550,10 @@ function Chart({
     try {
       if (isChartDisposed(instance) || echarts.getInstanceByDom(element) !== instance) return;
       instance.setOption(artifacts.option, { notMerge: true, lazyUpdate: false });
-      if (builderData.timeframe === "1" && hoveredIndexRef.current !== null && hoveredIndexRef.current < bars.length) {
-        instance.dispatchAction({ type: "showTip", seriesIndex: 0, dataIndex: builderPointDates.indexOf(bars[hoveredIndexRef.current].trade_date) });
+      if (hoveredIndexRef.current !== null && hoveredIndexRef.current < bars.length) {
+        const hoveredDate = bars[hoveredIndexRef.current].trade_date;
+        const dataIndex = builderData.timeframe === "1" ? builderPointDates.indexOf(hoveredDate) : builderDates.indexOf(hoveredDate);
+        if (dataIndex >= 0) instance.dispatchAction({ type: "showTip", seriesIndex: 0, dataIndex });
       }
       setRenderError(null);
     } catch (error) {
@@ -1054,10 +1057,12 @@ export function App() {
     const symbols = quoteSymbolsKey.split(",");
     return startWatchlistQuoteRefresh({
       visibility: document,
-      fetch: (signal) => api<WatchlistQuoteResponse>("/api/watchlist/quotes", {signal}),
+      fetch: (signal) => api<WatchlistQuoteResponse>(`/api/watchlist/quotes?current_symbol=${encodeURIComponent(symbol)}`, {signal}),
       onQuotes: (response) => {
-        setWatchlistQuotes((current) => mergeWatchlistQuotes(current, response.quotes, symbols));
-        setQuoteStatus(`${response.market_status} · ${response.refresh_after_ms === 10_000 ? "10秒刷新" : "低频更新"}`);
+        const backgroundSymbols = symbols.filter((code) => code !== symbol);
+        setWatchlistQuotes((current) => mergeWatchlistQuotes(current,
+          response.quotes.filter((quote) => quote.symbol !== symbol), backgroundSymbols));
+        setQuoteStatus(`${response.market_status} · ${response.refresh_after_ms === 15_000 ? "15秒刷新" : "低频更新"}`);
       },
       onError: () => {
         setQuoteStatus("行情更新失败，已保留有效报价");
@@ -1210,31 +1215,32 @@ export function App() {
     loadingOlder.current = false;
   }, [symbol, timeframe]);
   const [intradayError, setIntradayError] = useState("");
-  const intradayReady = !loading && data?.symbol === symbol && data?.timeframe === "1";
+  const realtimePeriod = Boolean(periodLabels[timeframe]);
+  const intradayReady = !loading && data?.symbol === symbol && data?.timeframe === timeframe && realtimePeriod;
   const intradayState = useRef(data?.intraday_refresh);
   intradayState.current = data?.intraday_refresh;
   useEffect(() => {
     setIntradayError("");
-    if (!symbol || timeframe !== "1" || !intradayReady) return;
+    if (!symbol || !realtimePeriod || !intradayReady) return;
     return startIntradayRefresh({
       visibility: document,
       initial: intradayState.current,
       onError: () => setIntradayError("分时刷新失败，已保留上次数据"),
       fetch: async (signal) => {
-        const params = new URLSearchParams({ timeframe: "1", adjustflag: "2", refresh: "true", limit: "300",
+        const params = new URLSearchParams({ timeframe, adjustflag: "2", refresh: "true", limit: "300",
           ma_periods: mainIndicator.maPeriods.join(","), boll_period: String(mainIndicator.bollPeriod),
           boll_multiplier: String(mainIndicator.bollMultiplier) });
         const response = await api<ChartData>(`/api/chart-data/${encodeURIComponent(symbol)}?${params}`, { signal });
         const fresh = normalizeChartData(response);
-        if (!fresh?.intraday_refresh || fresh.symbol !== symbol || fresh.timeframe !== "1") throw new Error("分时响应无效");
+        if (!fresh?.intraday_refresh || fresh.symbol !== symbol || fresh.timeframe !== timeframe) throw new Error("实时行情响应无效");
         if (!signal.aborted) {
-          setData((current) => current?.symbol === symbol && current.timeframe === "1" ? mergeIntradayData(current, fresh) : current);
+          setData((current) => current?.symbol === symbol && current.timeframe === timeframe ? mergeIntradayData(current, fresh) : current);
           setIntradayError(fresh.intraday_refresh.error || fresh.intraday_refresh.calendar_error || "");
         }
         return fresh.intraday_refresh;
       },
     });
-  }, [symbol, timeframe, mainIndicator, intradayReady]);
+  }, [symbol, timeframe, mainIndicator, intradayReady, realtimePeriod]);
   useEffect(() => {
     nextBefore.current = undefined;
     setSelected(null);
@@ -1706,7 +1712,8 @@ export function App() {
   />;
   const renderStockRows = (items: Stock[], viewKey: string, groupId: number | null, canReorder: boolean) => items.map((stock) => {
     const menuKey = `${viewKey}:${stock.symbol}`;
-    const quote = watchlistQuotes[stock.symbol];
+    const quote = stock.symbol === symbol && data?.symbol === symbol
+      ? chartQuoteToWatchlistQuote(symbol, data.quote) : watchlistQuotes[stock.symbol];
     const quoteChange = quote?.change_pct;
     return <div key={menuKey} draggable={canReorder} className={`stock-row ${symbol === stock.symbol ? "active" : ""}`}
       onDragStart={(event) => {
@@ -1910,15 +1917,17 @@ export function App() {
           </div>
           <div className="quote">
             <div className="quote-summary">
-              <span className="quote-date">{quote?.trade_date || last?.trade_date || "暂无行情"}</span>
+              <span className="quote-date">{quote?.quote_time?.replace("T", " ").slice(0, 19) || quote?.trade_date || last?.trade_date || "暂无行情"}</span>
               {(quote || last) && <>
                 <strong className={`quote-last ${quoteTone}`}>{formatPrice(quote?.latest ?? last?.close)}</strong>
                 <span className={`quote-change-amount ${quoteTone}`}>{changeAmount === null ? "--" : `${changeAmount >= 0 ? "+" : ""}${formatPrice(changeAmount)}`}</span>
                 <span className={`quote-change ${quoteTone}`}><small>涨跌幅</small>{formattedChange}</span>
               </>}
             </div>
-            {timeframe === "1" && data?.intraday_refresh && <div className="intraday-refresh-status" role="status">
+            {data?.intraday_refresh && <div className="intraday-refresh-status" role="status">
               {data.intraday_refresh.market_status} · 数据：{data.intraday_refresh.latest_data_at || "暂无数据"}
+              {timeframe !== "1" && ["5", "30", "d", "w", "m"].includes(timeframe) && ` · ${data.structure_preview ? "实时预览" : "正式结构"}`}
+              {data.forming_bar?.is_forming && " · 最后一根未完成"}
               {!data.intraday_refresh.is_today && data.intraday_refresh.data_date && "（非今日行情）"}
               {data.intraday_refresh.last_success_at && ` · 获取：${data.intraday_refresh.last_success_at.slice(11, 19)}`}
               {intradayError && ` · ${intradayError}`}
@@ -2055,12 +2064,13 @@ export function App() {
                     </>; })()}
                   </>}
                   {selected.direction && <><dt>方向</dt><dd>{selected.direction === "up" ? "向上" : "向下"}</dd></>}
-                  {selected.kind === "movement" && <><dt>走势类型</dt><dd>{selected.classification === "trend" ? "趋势" : "盘整"}</dd></>}
+                  {selected.kind === "movement" && <><dt>走势类型</dt><dd>{movementClassificationLabel(selected.classification)}{selected.status === "provisional" ? "（未完成）" : ""}</dd></>}
                   {selected.kind === "movement" && <><dt>结构来源</dt><dd>正式层级</dd></>}
                   {selected.kind === "movement" && <><dt>参考中枢类型</dt><dd>正式层级中枢</dd></>}
                   {selected.kind === "movement" && <><dt>参考中枢 ID</dt><dd>{selected.center_ids?.length ? selected.center_ids.join(" / ") : "--"}</dd></>}
                   {selected.kind === "movement" && <><dt>实际边界</dt><dd>{formatPrice(selected.start_price)} → {formatPrice(selected.end_price)}</dd></>}
                   {selected.kind === "movement" && selected.confirmation_center_id && <><dt>确认中枢</dt><dd>{selected.confirmation_center_id}</dd></>}
+                  {selected.kind === "movement" && <><dt>结束原因</dt><dd>{selected.termination_reason || "provisional_tail"}</dd></>}
                   {selected.kind === "movement" && selected.candidate_extreme_date && <><dt>候选极值</dt><dd>{selected.candidate_extreme_date}<br />{formatPrice(selected.candidate_extreme_price)}</dd></>}
                   {selected.entry_pen_id && <><dt>进入笔</dt><dd>{selected.entry_pen_id}</dd></>}
                   {!!selected.core_pen_ids?.length && <><dt>核心三笔</dt><dd>{selected.core_pen_ids.join(" / ")}</dd></>}

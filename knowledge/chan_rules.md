@@ -1,6 +1,6 @@
 # 各周期笔与方向性 L1 中枢规则
 
-正式版本：`chan-period-standard-pen-right-extreme-v19`。
+正式版本：`chan-period-unified-directional-center-ownership-v20`。
 
 ## 运行链路
 
@@ -35,7 +35,7 @@
 
 ## 正式递归确认
 
-只有三个连续、交替、共享真实端点且具有反向确认中枢证据的低一级正式走势严格重叠时，才确认父级中枢；两个合格走势生成 `provisional / 2/3` 候选。`extension_3x3` 是符合旧三单位构成的特例标签，`expansion` 是子中枢核心分离且外围未严格分离的路径标签，其余合法组合为 `recursive_three`。标签不替代完成证据，不限制正式低级走势的长度。递归最高 L8。
+所有级别统一使用 `U0` 进入单位加 `U1/U2/U3` 三个核心单位。已有进入单位和两根核心单位时保留 `provisional / 2/3` 候选，只有四个连续、交替、严格重叠且归属同一结构序列的单位才确认父级中枢。`extension_3x3` 不再作为父级成枢分支，`expansion` 只保留为中枢关系描述，不能替代统一成枢条件。低级走势必须先由反向独立中枢确认，未确认走势不得参与高级递归。递归最高 L8。
 
 `formed` 表示已形成；`status=provisional` 表示未结束，`status=confirmed` 表示反向确认已发生。未完成走势绘制当前方向候选极值，同时保留真实尾部；不因回撤反转方向。中断区间仅标记 `sequence_boundary/data_boundary`，不伪造完成。
 

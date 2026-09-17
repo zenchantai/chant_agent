@@ -93,6 +93,26 @@ def test_calculator_fingerprint_invalidates_cached_snapshot(tmp_path):
     assert rebuilt["run_id"] != active["id"]
 
 
+def test_realtime_preview_does_not_write_or_activate_structure_snapshot(tmp_path):
+    store = Store(str(tmp_path / "preview.db"))
+    rows = session_rows(3)
+    seed(store, "000001", rows)
+    service = PeriodStructureService(store, calculator_fingerprint="preview-test")
+    formal = service.ensure("000001", "5", force=True)
+    before_count = store.db.execute("SELECT COUNT(*) FROM period_structure_runs").fetchone()[0]
+    before_active = store.active_period_structure_run("000001", "5")["id"]
+    next_day = date.fromisoformat(rows[-1]["trade_date"][:10]) + timedelta(days=1)
+    preview_rows = [*rows, {**rows[-1], "trade_date": f"{next_day.isoformat()} 09:35:00", "close": rows[-1]["close"] + 0.2}]
+
+    preview = service.preview_period("000001", "5", "2", preview_rows)
+
+    assert preview["structure_preview"] is True
+    assert preview["structure_persisted"] is False
+    assert preview["preview_structure_version"]
+    assert store.db.execute("SELECT COUNT(*) FROM period_structure_runs").fetchone()[0] == before_count
+    assert store.active_period_structure_run("000001", "5")["id"] == before_active == formal["run_id"]
+
+
 def test_failed_snapshot_write_does_not_switch_active_run(tmp_path):
     store = Store(str(tmp_path / "transaction.db"))
     seed(store, "000001", session_rows())
@@ -310,4 +330,7 @@ def test_directional_pen_center_rejects_single_point_touch_and_provisional_pen()
     assert build_pen_centers([pen(0, 1, 6), pen(1, 6, 5), pen(2, 2, 5), pen(3, 5, 3)]) == []
     values = [pen(0, 1, 6), pen(1, 6, 2), pen(2, 2, 7), pen(3, 7, 3)]
     values[-1]["status"] = "provisional"
-    assert build_pen_centers(values) == []
+    candidates = build_pen_centers(values)
+    assert len(candidates) == 1
+    assert candidates[0]["status"] == "provisional"
+    assert candidates[0]["progress"] == "2/3"
