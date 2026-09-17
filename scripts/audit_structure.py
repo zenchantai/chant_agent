@@ -235,8 +235,11 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
     centers = payloads(connection, "period_pen_centers", run["id"])
     relations = payloads(connection, "period_center_relations", run["id"])
     movements = payloads(connection, "period_movements", run["id"])
+    components = payloads(connection, "period_structure_components", run["id"])
+    buy_sell_points = payloads(connection, "period_buy_sell_points", run["id"])
     from app.structure_validation import structure_ownership_errors
-    problems.extend(structure_ownership_errors({"pens": pens, "centers": centers, "movements": movements}))
+    problems.extend(structure_ownership_errors({"pens": pens, "centers": centers, "movements": movements,
+                                                "components": components, "buy_sell_points": buy_sell_points}))
     center_ids = ids(centers)
     for relation in relations:
         if relation.get("relation") not in ALLOWED_CENTER_RELATIONS:
@@ -251,6 +254,22 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
         problems.append(f"center_level_counts 不一致: 实际={dict(center_counts)} 存储={stored_centers}")
     if dict(movement_counts) != dict(stored_movements):
         problems.append(f"movement_level_counts 不一致: 实际={dict(movement_counts)} 存储={stored_movements}")
+    if int(run.get("component_count", 0)) != len(components):
+        problems.append(f"component_count 不一致: 实际={len(components)} 存储={run.get('component_count')}")
+    if int(run.get("point_count", 0)) != len(buy_sell_points):
+        problems.append(f"point_count 不一致: 实际={len(buy_sell_points)} 存储={run.get('point_count')}")
+    point_ids = ids(buy_sell_points)
+    for point in buy_sell_points:
+        if point.get("status") not in {"candidate", "confirmed", "invalidated"}:
+            problems.append(f"point:{point.get('id')} 状态非法")
+        if point.get("center_id") and point.get("center_id") not in center_ids:
+            problems.append(f"point:{point.get('id')} 引用不存在的中枢")
+        if point.get("status") == "confirmed" and not point.get("confirmed_at"):
+            problems.append(f"point:{point.get('id')} confirmed 缺少 confirmed_at")
+    for movement in movements:
+        for event in movement.get("confirmation_events", []):
+            if event.get("signal_id") and event["signal_id"] not in point_ids:
+                problems.append(f"movement:{movement.get('id')} 引用不存在的买卖点事件")
     result.update({
         "center_count": len(centers), "movement_count": len(movements),
         "relation_count": len(relations), "center_level_counts": dict(center_counts),

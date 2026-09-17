@@ -65,7 +65,7 @@ def _structure_version(payload: dict[str, Any]) -> str:
             key: payload[key]
             for key in (
                 "processed_bars", "fractals", "pens", "centers",
-                "center_relations", "movements",
+                "center_relations", "movements", "components", "buy_sell_points",
             )
         },
     }
@@ -132,17 +132,20 @@ def analyze_period(
     pen_diagnostics: list[dict[str, Any]] = []
     pens = [asdict(p) for p in build_pens(fractals, processed, gaps, symbol, bars, timeframe=timeframe, diagnostics=pen_diagnostics)]
     centers = build_pen_centers(pens)
-    hierarchy = build_hierarchy(pens, centers)
+    macd = calculate_macd([b.json() | {"amount": getattr(b, "amount", 0)} for b in bars])
+    hierarchy = build_hierarchy(pens, centers, macd=macd)
     payload = {"symbol": symbol, "timeframe": timeframe, "definition_version": PERIOD_DEFINITION_VERSION,
                "calculator_fingerprint": fingerprint,
                "structure_mode": "formal_hierarchy",
-               "movement_confirmation_mode": "reverse_independent_center",
-               "center_construction_mode": "unified_directional_ownership",
+               "movement_confirmation_mode": "earliest_valid_structural_evidence",
+               "center_construction_mode": "center_free_component_directional",
+               "buy_sell_point_mode": "macd_divergence_and_structural_retest",
                "bars": [b.json() | {"amount": getattr(b, "amount", 0)} for b in bars],
                "processed_bars": [asdict(x) for x in processed], "fractals": [asdict(x) for x in fractals],
                "pens": pens, "pen_diagnostics": pen_diagnostics,
                "pen_centers": hierarchy["centers"], "centers": hierarchy["centers"],
                "center_relations": hierarchy["center_relations"], "movements": hierarchy["movements"],
+               "components": hierarchy["components"], "buy_sell_points": hierarchy["buy_sell_points"],
                "max_confirmed_center_level": hierarchy["max_confirmed_center_level"],
                "max_available_center_level": hierarchy["max_available_center_level"]}
     assert_valid_structure(payload)
@@ -198,17 +201,17 @@ def analyze_period_ranges(rows: list[dict[str, Any]], symbol: str, timeframe: st
             center["continuous_range_id"] = range_index
         for key in merged:
             merged[key].extend(part[key])
-    # Each per-range analysis already contains recursively derived centers.
-    # Re-enter the hierarchy engine only with the directional L1 seeds;
-    # feeding L2/L3 back as L1 causes repeated R0 prefixes and empty sources.
-    l1_seeds = [center for center in merged["pen_centers"]
-                if int(center.get("level", 1)) == 1
-                and center.get("kind") in {"pen_center", "center"}]
-    hierarchy = build_hierarchy(merged["pens"], l1_seeds)
+    # Rebuild L1 after range IDs have been assigned so component IDs and all
+    # flattened pen references share the same stable namespace.
+    l1_seeds = build_pen_centers(merged["pens"])
+    macd = calculate_macd(merged["bars"], ranges)
+    hierarchy = build_hierarchy(merged["pens"], l1_seeds, macd=macd)
     merged["pen_centers"] = hierarchy["centers"]
     merged["centers"] = hierarchy["centers"]
     merged["center_relations"] = hierarchy["center_relations"]
     merged["movements"] = hierarchy["movements"]
+    merged["components"] = hierarchy["components"]
+    merged["buy_sell_points"] = hierarchy["buy_sell_points"]
     for key in ("pens", "pen_centers", "movements"):
         for ordinal, item in enumerate(merged[key]):
             item["ordinal"] = ordinal
@@ -218,8 +221,9 @@ def analyze_period_ranges(rows: list[dict[str, Any]], symbol: str, timeframe: st
                "definition_version": PERIOD_DEFINITION_VERSION,
                "calculator_fingerprint": fingerprint,
                "structure_mode": "formal_hierarchy",
-               "movement_confirmation_mode": "reverse_independent_center",
-               "center_construction_mode": "unified_directional_ownership",
+               "movement_confirmation_mode": "earliest_valid_structural_evidence",
+               "center_construction_mode": "center_free_component_directional",
+               "buy_sell_point_mode": "macd_divergence_and_structural_retest",
                **merged,
                "unassigned_by_level": hierarchy["unassigned_by_level"],
                "hierarchy_issues": hierarchy["hierarchy_issues"],
@@ -282,6 +286,7 @@ class PeriodStructureService:
                     "calculator_fingerprint": self.calculator_fingerprint,
                     "coverage": self.coverage(symbol, timeframe, adjustflag),
                     "pens": [], "centers": [], "pen_centers": [], "center_relations": [], "movements": [],
+                    "components": [], "buy_sell_points": [],
                     "processed_bars": [], "fractals": [], "max_confirmed_center_level": 0,
                     "max_available_center_level": 0}
         market_version = self.market_version(rows)
@@ -305,6 +310,7 @@ class PeriodStructureService:
                     "calculator_fingerprint": self.calculator_fingerprint,
                     "coverage": coverage,
                     "pens": [], "centers": [], "pen_centers": [], "center_relations": [], "movements": [],
+                    "components": [], "buy_sell_points": [],
                     "max_confirmed_center_level": 0, "max_available_center_level": 0}
         result = analyze_period_ranges(
             rows, symbol, timeframe, analysis_ranges,
@@ -335,7 +341,11 @@ class PeriodStructureService:
         return {"symbol": symbol, "timeframe": timeframe, "available": True,
                 "definition_version": active["definition_version"], "market_version": mv,
                 "calculator_fingerprint": active.get("calculator_fingerprint", ""),
-                                "coverage_version": active["coverage_version"],
+                "coverage_version": active["coverage_version"],
+                "structure_mode": "formal_hierarchy",
+                "movement_confirmation_mode": "earliest_valid_structural_evidence",
+                "center_construction_mode": "center_free_component_directional",
+                "buy_sell_point_mode": "macd_divergence_and_structural_retest",
                 "structure_version": active["structure_version"], "run_id": run_id,
                 "coverage": cov["payload"] if cov else {},
                 "processed_bars": self.store.period_rows("period_processed_bars", run_id),
@@ -344,6 +354,8 @@ class PeriodStructureService:
                 "centers": centers, "pen_centers": centers,
                 "center_relations": self.store.period_rows("period_center_relations", run_id),
                 "movements": self.store.period_rows("period_movements", run_id),
+                "components": self.store.period_rows("period_structure_components", run_id),
+                "buy_sell_points": self.store.period_rows("period_buy_sell_points", run_id),
                 **json.loads(active.get("structure_metadata", "{}") or "{}"),
                 "max_confirmed_center_level": int(active.get("max_confirmed_center_level", 0)),
                 "max_available_center_level": int(active.get("max_available_center_level", 0)),
@@ -393,7 +405,7 @@ class PeriodStructureService:
             "system_structure_version", "effective_structure_version", "override_version",
             "overrides", "override_conflicts", "drawings", "drawings_version",
             "structure_overrides_enabled", "structure_mode", "movement_confirmation_mode",
-            "center_construction_mode",
+            "center_construction_mode", "buy_sell_point_mode", "components", "buy_sell_points",
             "unassigned_by_level", "hierarchy_issues", "pen_diagnostics",
             "center_level_counts", "movement_level_counts", "max_confirmed_center_level",
             "max_available_center_level",
@@ -401,7 +413,9 @@ class PeriodStructureService:
         out["center_levels"] = sorted({int(item.get("level", 1)) for item in data.get("centers", [])})
         out["movement_levels"] = sorted({int(item.get("level", 1)) for item in data.get("movements", [])})
         if not data.get("available"):
-            return out | {"pens": [], "centers": [], "pen_centers": [], "center_relations": [], "movements": [], "pen_diagnostics": []}
+            return out | {"pens": [], "centers": [], "pen_centers": [], "center_relations": [], "movements": [],
+                          "components": [], "context_components": [], "buy_sell_points": [],
+                          "context_buy_sell_points": [], "pen_diagnostics": []}
         start, end = (page[0]["trade_date"], page[-1]["trade_date"]) if page else ("", "9999")
         intersects = lambda item: max(item.get("end_date", item.get("trade_date", "")), item.get("tail_end_date", "")) >= start and item.get("start_date", item.get("trade_date", "")) <= end
         out["pen_diagnostics"] = [item for item in data.get("pen_diagnostics", []) if intersects(item)]
@@ -422,7 +436,29 @@ class PeriodStructureService:
         pens = [item for item in data["pens"] if intersects(item) or item["id"] in context_pen_ids]
         context_ids = {center_id for movement in movements for center_id in [*movement.get("center_ids", []), movement.get("confirmation_center_id")] if center_id}
         context_centers = [center for center in data.get("centers", []) if center["id"] in context_ids - visible_center_ids]
-        return out | {"pens": pens, "centers": centers, "pen_centers": centers, "center_relations": relations, "movements": movements, "context_centers": context_centers}
+        visible_points = [point for point in data.get("buy_sell_points", []) if start <= point.get("point_date", "") <= end]
+        visible_point_ids = {point["id"] for point in visible_points}
+        referenced_point_ids = {
+            identifier for movement in movements
+            for identifier in [movement.get("confirmation_point_id"), *[event.get("signal_id") for event in movement.get("confirmation_events", [])]]
+            if identifier
+        }
+        context_points = [point for point in data.get("buy_sell_points", []) if point["id"] in referenced_point_ids - visible_point_ids]
+        referenced_component_ids = {
+            identifier for center in [*centers, *context_centers]
+            for field in ("formation_component_ids", "extension_component_ids", "peripheral_component_ids", "departure_component_ids", "retest_component_ids")
+            for identifier in center.get(field, [])
+        } | {
+            identifier for point in [*visible_points, *context_points]
+            for identifier in point.get("source_component_ids", [])
+        }
+        visible_components = [component for component in data.get("components", []) if intersects(component)]
+        visible_component_ids = {component["id"] for component in visible_components}
+        context_components = [component for component in data.get("components", []) if component["id"] in referenced_component_ids - visible_component_ids]
+        return out | {"pens": pens, "centers": centers, "pen_centers": centers, "center_relations": relations,
+                      "movements": movements, "context_centers": context_centers,
+                      "components": visible_components, "context_components": context_components,
+                      "buy_sell_points": visible_points, "context_buy_sell_points": context_points}
 
     def preview_period(self, symbol: str, timeframe: str, adjustflag: str,
                        rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -482,7 +518,10 @@ class PeriodStructureService:
         data.update({
             "overrides": self.store.structure_overrides(symbol, timeframe, adjustflag),
             "override_conflicts": [], "structure_overrides_enabled": False,
-            "movement_confirmation_mode": "reverse_independent_center",
+            "movement_confirmation_mode": "earliest_valid_structural_evidence",
+            "center_construction_mode": "center_free_component_directional",
+            "buy_sell_point_mode": "macd_divergence_and_structural_retest",
+            "structure_mode": "formal_hierarchy",
             "drawings": self.store.drawings(symbol, timeframe),
             "drawings_version": self.store.drawings_version(symbol, timeframe),
             "system_structure_version": data.get("structure_version", ""),

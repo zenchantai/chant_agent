@@ -10,6 +10,7 @@ import {
   buildEndpointLabels,
   buildMovementSeries,
   buildCenterAreas,
+  buildComponentSeries,
   normalizeChartData,
   paneLayoutStorageKey,
   parseStoredPaneRatios,
@@ -301,6 +302,29 @@ describe("chart builders", () => {
     const mark = option?.series.find((item: any) => item.name === "K线")?.markArea?.data?.[0]?.[0];
     expect(mark?.itemStyle?.borderType).toBe("dashed");
     expect(mark?.label?.formatter).toContain("2/3");
+  });
+
+  it("renders confirmed and candidate buy-sell points with distinct fills", () => {
+    const data = base({ buy_sell_points: [
+      { id: "p1", ordinal: 0, kind: "buy_sell_point", level: 1, point_type: "third_buy", status: "confirmed", start_date: "2026-01-02", end_date: "2026-01-02", point_date: "2026-01-02", point_price: 10.2 },
+      { id: "p2", ordinal: 1, kind: "buy_sell_point", level: 1, point_type: "first_sell", status: "candidate", start_date: "2026-01-03", end_date: "2026-01-03", point_date: "2026-01-03", point_price: 10.8 },
+      { id: "p3", ordinal: 2, kind: "buy_sell_point", level: 1, point_type: "third_sell", status: "invalidated", start_date: "2026-01-03", end_date: "2026-01-03", point_date: "2026-01-03", point_price: 10.7 },
+    ] });
+    const option = buildChartOption({ data, theme: "dark" });
+    const series = option?.series.find((item: any) => item.id === "buy-sell-points");
+    expect(series.data).toHaveLength(2);
+    expect(series.data[0].itemStyle.color).not.toBe("transparent");
+    expect(series.data[1].itemStyle.color).toBe("transparent");
+  });
+
+  it("keeps components hidden by default and highlights selected center roles", () => {
+    const component = { id: "component-1", ordinal: 0, kind: "center_free_component", level: 1, direction: "up", status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-02", start_price: 9, end_price: 11 };
+    const center = { id: "center-1", ordinal: 0, kind: "center", level: 1, status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", zd: 9.5, zg: 10.5, formation_component_ids: [component.id] };
+    const data = base({ components: [component], centers: [center] });
+    expect(buildComponentSeries({ data, visible: { components: false } }, ["2026-01-01", "2026-01-02", "2026-01-03"]).series).toHaveLength(0);
+    const selected = buildComponentSeries({ data, visible: { components: false }, selectedStructureId: center.id }, ["2026-01-01", "2026-01-02", "2026-01-03"]);
+    expect(selected.series).toHaveLength(1);
+    expect(selected.series[0].lineStyle.width).toBe(3.2);
   });
 
   it("returns an explicit empty artifact without constructing ECharts series", () => {

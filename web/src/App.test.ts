@@ -120,7 +120,7 @@ describe("走势 tooltip", () => {
     }, "d");
     expect(html).toContain("结构级别：L1");
     expect(html).toContain("计算来源：日线独立结构");
-    expect(html).toContain("语义对应：日线内部 L1 走势（反向独立中枢确认结束）");
+    expect(html).toContain("语义对应：日线内部 L1 走势（最早有效结构证据确认）");
     expect(html).not.toContain("简化的周线一笔");
   });
 });

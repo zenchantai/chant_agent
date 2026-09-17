@@ -170,8 +170,9 @@ def health():
             "calculator_fingerprint": period_structure_service.calculator_fingerprint,
             "timeframes": list(TIMEFRAMES),
             "structure_mode": "formal_hierarchy",
-            "movement_confirmation_mode": "reverse_independent_center",
-            "center_construction_mode": "unified_directional_ownership",
+            "movement_confirmation_mode": "earliest_valid_structural_evidence",
+            "center_construction_mode": "center_free_component_directional",
+            "buy_sell_point_mode": "macd_divergence_and_structural_retest",
             "max_center_level": max_level,
             "movement_mode": "hierarchy_component"}
 

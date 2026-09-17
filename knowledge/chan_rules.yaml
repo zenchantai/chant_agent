@@ -1,4 +1,4 @@
-version: chan-period-unified-directional-center-ownership-v20
+version: chan-period-center-free-components-buy-sell-points-v22
 source:
   title: 读缠论108课札记
   file: ../读缠论108课札记.pdf
@@ -32,3 +32,10 @@ rules:
   - {id: CONFIRM-001, section: confirmation, assertion: "所有结构保存confirmed或provisional；确认时间取完成规则所需最后事件时间，禁止未来函数。", source_lessons: [65, 67, 77, 78], source_pages: [411, 418, 482, 489]}
   - {id: LEGACY-RECURSIVE, section: legacy, runtime: false, assertion: "旧版单层走势仅保留为历史快照审计；当前版本启用正式层级递归、级别显示颜色映射和计算器指纹快照失效。"}
   - {id: CENTER-HIERARCHY-THREE-001, section: hierarchy, priority: product_override, assertion: "所有级别统一使用U0进入单位加U1/U2/U3三个核心单位；U0-U2为2/3候选，U0-U3才确认父级中枢。低级走势必须已由反向独立中枢确认。"}
+  - {id: COMPONENT-CENTER-FREE-001, section: components, priority: product_override, assertion: "进入、核心、离开和回试统一使用无同级中枢的次级别走势组件；组件可以退化为一个单位，或由三个及以上奇数个连续交替单位组成，内部不得形成同级中枢。"}
+  - {id: CENTER-COMPONENT-ENTRY-001, section: centers, priority: product_override, assertion: "所有级别中枢均由进入组件E与核心组件C1/C2/C3构成，中枢方向永久取E的方向；中枢只引用组件，不取得底层单位所有权。"}
+  - {id: CENTER-COMPONENT-CORE-001, section: centers, priority: product_override, assertion: "核心组件C1/C2/C3严格重叠后固定ZD/ZG；核心第三组件可以同时作为首个离开组件，后续严格重叠只延伸原中枢。"}
+  - {id: POINT-FIRST-MACD-DUAL-001, section: buy_sell_points, priority: product_override, assertion: "一买一卖必须同时满足同一连续结构序列内价格创新极值、同向MACD柱面积缩小和DIF极值改善；缺一条件只保留候选。"}
+  - {id: POINT-SECOND-RETEST-001, section: buy_sell_points, priority: product_override, assertion: "二买二卖必须依赖正式一买一卖，回试不得越过一买一卖价位，并由后续反向组件确认；只追加证据，不移动已锁定走势边界。"}
+  - {id: POINT-THIRD-RETEST-001, section: buy_sell_points, priority: product_override, assertion: "三买三卖可独立成立；离开组件严格越过ZG/ZD后，反向回试组件仍严格位于核心外侧并完成时确认。"}
+  - {id: MOVEMENT-POINT-CONFIRMATION-001, section: movements, priority: product_override, assertion: "正式一买一卖、三买三卖和反向独立中枢均可确认走势；最早confirmed_at锁定边界，二买二卖和后续证据只追加到confirmation_events。"}

@@ -176,7 +176,7 @@ def test_period_snapshot_is_persisted_and_reproducible(tmp_path):
     second = PeriodStructureService(second_store).ensure("000001", "5", force=True)
     assert first["available"] is True
     assert first["structure_version"] == second["structure_version"]
-    for key in ("processed_bars", "fractals", "pens", "pen_centers", "movements"):
+    for key in ("processed_bars", "fractals", "pens", "pen_centers", "movements", "components", "buy_sell_points"):
         assert first[key] == second[key]
     active = first_store.active_period_structure_run("000001", "5")
     assert active["structure_version"] == first["structure_version"]
@@ -184,7 +184,11 @@ def test_period_snapshot_is_persisted_and_reproducible(tmp_path):
     assert first["max_available_center_level"] >= 1
     assert first["center_relations"] == second["center_relations"]
     assert first_store.period_rows("period_movements", active["id"]) == first["movements"]
+    assert first_store.period_rows("period_structure_components", active["id"]) == first["components"]
+    assert first_store.period_rows("period_buy_sell_points", active["id"]) == first["buy_sell_points"]
     assert active["movement_count"] == len(first["movements"])
+    assert active["component_count"] == len(first["components"])
+    assert active["point_count"] == len(first["buy_sell_points"])
     assert first_store.period_rows("period_center_relations", active["id"]) == first["center_relations"]
     assert json.loads(active["center_level_counts"]) == {
         str(level): sum(item["level"] == level for item in first["centers"])

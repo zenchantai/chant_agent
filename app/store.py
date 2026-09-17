@@ -110,11 +110,12 @@ class Store:
                 coverage_version TEXT NOT NULL DEFAULT '', structure_version TEXT NOT NULL DEFAULT '',
                 calculator_fingerprint TEXT NOT NULL DEFAULT '',
                 error TEXT NOT NULL DEFAULT '', movement_count INTEGER NOT NULL DEFAULT 0,
+                component_count INTEGER NOT NULL DEFAULT 0, point_count INTEGER NOT NULL DEFAULT 0,
                 center_level_counts TEXT NOT NULL DEFAULT '{}', movement_level_counts TEXT NOT NULL DEFAULT '{}',
                 max_confirmed_center_level INTEGER NOT NULL DEFAULT 0,
                 max_available_center_level INTEGER NOT NULL DEFAULT 0)""")
             self.db.execute("CREATE INDEX IF NOT EXISTS idx_period_runs_lookup ON period_structure_runs(symbol,timeframe,adjustflag,id DESC)")
-            for table in ("period_processed_bars", "period_fractals", "period_pens", "period_pen_centers", "period_center_relations", "period_movements"):
+            for table in ("period_processed_bars", "period_fractals", "period_pens", "period_pen_centers", "period_center_relations", "period_movements", "period_structure_components", "period_buy_sell_points"):
                 self.db.execute(f"""CREATE TABLE IF NOT EXISTS {table} (
                     run_id INTEGER NOT NULL, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
                     adjustflag TEXT NOT NULL, definition_version TEXT NOT NULL, ordinal INTEGER NOT NULL,
@@ -128,6 +129,10 @@ class Store:
                 self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN calculator_fingerprint TEXT NOT NULL DEFAULT ''")
             if "movement_count" not in run_columns:
                 self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN movement_count INTEGER NOT NULL DEFAULT 0")
+            if "component_count" not in run_columns:
+                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN component_count INTEGER NOT NULL DEFAULT 0")
+            if "point_count" not in run_columns:
+                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN point_count INTEGER NOT NULL DEFAULT 0")
             if "center_level_counts" not in run_columns:
                 self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN center_level_counts TEXT NOT NULL DEFAULT '{}'")
             if "movement_level_counts" not in run_columns:
@@ -714,7 +719,9 @@ class Store:
         return (("period_processed_bars", "processed_bars"), ("period_fractals", "fractals"),
                 ("period_pens", "pens"), ("period_pen_centers", "centers"),
                 ("period_center_relations", "center_relations"),
-                ("period_movements", "movements"))
+                ("period_movements", "movements"),
+                ("period_structure_components", "components"),
+                ("period_buy_sell_points", "buy_sell_points"))
 
     @staticmethod
     def _prepare_period_structure_snapshot(item: dict[str, Any]) -> dict[str, Any]:
@@ -761,6 +768,8 @@ class Store:
             "center_level_counts": center_level_counts,
             "movement_level_counts": movement_level_counts,
             "movement_count": len(result.get("movements", [])),
+            "component_count": len(result.get("components", [])),
+            "point_count": len(result.get("buy_sell_points", [])),
         }
 
     def _insert_period_structure_snapshot(self, prepared: dict[str, Any]) -> int:
@@ -791,10 +800,11 @@ class Store:
                     values,
                 )
         self.db.execute("""UPDATE period_structure_runs SET finished_at=?,status='success',
-            structure_version=?,center_level_counts=?,movement_count=?,movement_level_counts=?,
+            structure_version=?,center_level_counts=?,movement_count=?,component_count=?,point_count=?,movement_level_counts=?,
             max_confirmed_center_level=?,max_available_center_level=? WHERE id=?""",
             (datetime.now(timezone.utc).isoformat(), result.get("structure_version", ""),
              json.dumps(prepared["center_level_counts"], sort_keys=True), prepared["movement_count"],
+             prepared["component_count"], prepared["point_count"],
              json.dumps(prepared["movement_level_counts"], sort_keys=True),
              int(result.get("max_confirmed_center_level", 0)),
              int(result.get("max_available_center_level", 0)), run_id))
@@ -868,7 +878,7 @@ class Store:
         return batch["runs"][0]
 
     def period_rows(self, table: str, run_id: int, start_date: str | None = None, end_date: str | None = None):
-        allowed = {"period_processed_bars", "period_fractals", "period_pens", "period_pen_centers", "period_center_relations", "period_movements"}
+        allowed = {"period_processed_bars", "period_fractals", "period_pens", "period_pen_centers", "period_center_relations", "period_movements", "period_structure_components", "period_buy_sell_points"}
         if table not in allowed: raise ValueError("invalid period table")
         params: list[Any] = [run_id]; sql = f"SELECT payload FROM {table} WHERE run_id=?"
         if start_date is not None and end_date is not None:

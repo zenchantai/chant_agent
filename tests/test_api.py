@@ -37,12 +37,14 @@ def test_period_api_exposes_formal_hierarchy_without_segments(tmp_path, monkeypa
     assert len(health["calculator_fingerprint"]) == 64
     assert health["max_center_level"] >= 0
     assert health["structure_mode"] == "formal_hierarchy"
-    assert health["movement_confirmation_mode"] == "reverse_independent_center"
+    assert health["movement_confirmation_mode"] == "earliest_valid_structural_evidence"
+    assert health["center_construction_mode"] == "center_free_component_directional"
+    assert health["buy_sell_point_mode"] == "macd_divergence_and_structural_retest"
     chart=client.get("/api/chart-data/000001",params={"timeframe":"5", "structure_level": 1})
     payload = chart.json()
     assert chart.status_code==200 and all(key in payload for key in (
         "pens", "centers", "pen_centers", "center_relations", "movements",
-        "center_levels", "movement_levels",
+        "center_levels", "movement_levels", "components", "buy_sell_points",
         "calculator_fingerprint",
     ))
     assert payload["calculator_fingerprint"] == service.calculator_fingerprint

@@ -19,6 +19,7 @@ export type ChartBuildContext = {
     pens?: boolean;
     centers?: boolean;
     movements?: boolean;
+    components?: boolean;
     centerLevels?: Record<string, boolean>;
     movementLevels?: Record<string, boolean>;
   };
@@ -100,6 +101,7 @@ export type ChartBuildArtifacts = {
   issues: ChartBuildIssue[];
   visibleCenters: Node[];
   visibleMovements: Node[];
+  visibleComponents: Node[];
 };
 
 export type ChartPaneLayout = {
@@ -660,7 +662,7 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
   }).filter(Boolean) as Record<string, any>[];
 };
 
-const buildStructureHitSeries = (context: ChartBuildContext, dates: string[], centers: Node[], movements: Node[], pens: Node[]) => {
+const buildStructureHitSeries = (context: ChartBuildContext, dates: string[], centers: Node[], movements: Node[], pens: Node[], components: Node[]) => {
   if (context.data.timeframe === "1") return [] as Record<string, any>[];
   const hitStyle = { color: "#000", opacity: 0 };
   const lineHit = (node: Node, kind: "pen" | "movement", width: number) => {
@@ -675,7 +677,29 @@ const buildStructureHitSeries = (context: ChartBuildContext, dates: string[], ce
     const start = nearestDate(dates, center.start_date), end = nearestDate(dates, center.end_date);
     return { id: `center-hit-${center.id}`, name: "center-hit", type: "line", data: [[start, zd], [end, zd], [end, zg], [start, zg], [start, zd]].map((value) => ({ value, centerId: center.id })), showSymbol: false, lineStyle: { ...hitStyle, width: 18 }, areaStyle: { color: "#000", opacity: 0 }, markArea: { silent: false, itemStyle: { color: "#000", opacity: 0 }, data: [[{ coord: [start, zd], centerId: center.id }, { coord: [end, zg], centerId: center.id }]] }, silent: false, tooltip: { show: false }, z: 12 };
   }).filter(Boolean) as Record<string, any>[];
-  return [...pens.map((node) => lineHit(node, "pen", 14)), ...movements.map((node) => lineHit(node, "movement", 18)), ...centerHits].filter(Boolean) as Record<string, any>[];
+  return [...components.map((node) => lineHit(node, "pen", 12)), ...pens.map((node) => lineHit(node, "pen", 14)), ...movements.map((node) => lineHit(node, "movement", 18)), ...centerHits].filter(Boolean) as Record<string, any>[];
+};
+
+export const buildComponentSeries = (context: ChartBuildContext, dates: string[]) => {
+  if (context.data.timeframe === "1") return { series: [] as Record<string, any>[], visibleComponents: [] as Node[] };
+  const selected = [...(context.data.centers || []), ...(context.data.buy_sell_points || [])].find((item) => item.id === context.selectedStructureId);
+  const referenced = new Set<string>([
+    ...(selected?.formation_component_ids || []), ...(selected?.extension_component_ids || []),
+    ...(selected?.peripheral_component_ids || []), ...(selected?.departure_component_ids || []),
+    ...(selected?.retest_component_ids || []), ...((selected as any)?.source_component_ids || []),
+  ]);
+  const visible = (context.data.components || []).filter((component) => context.visible?.components || referenced.has(component.id));
+  const series = visible.map((component) => {
+    const boundary = clippedBoundary(component, dates);
+    if (!boundary) return null;
+    const selectedRole = referenced.has(component.id);
+    return { id: `component-${component.id}`, name: "无中枢组件", type: "line",
+      data: [{ value: [boundary.startDate, boundary.startPrice], componentId: component.id }, { value: [boundary.endDate, boundary.endPrice], componentId: component.id }],
+      showSymbol: true, symbolSize: selectedRole ? 7 : 4,
+      lineStyle: { width: selectedRole ? 3.2 : 1.3, type: "dotted", color: selectedRole ? "#d97706" : "#7c8b96", opacity: selectedRole ? 1 : 0.48 },
+      itemStyle: { color: selectedRole ? "#d97706" : "#7c8b96" }, z: selectedRole ? 10 : 3 };
+  }).filter(Boolean) as Record<string, any>[];
+  return { series, visibleComponents: visible };
 };
 
 const buildMovementSeriesForRole = (context: ChartBuildContext, dates: string[], issues: ChartBuildIssue[], role: "hierarchy_component") => {
@@ -698,6 +722,40 @@ const buildMovementSeriesForRole = (context: ChartBuildContext, dates: string[],
 
 export const buildMovementSeries = (context: ChartBuildContext, dates: string[], issues: ChartBuildIssue[] = []) =>
   buildMovementSeriesForRole(context, dates, issues, "hierarchy_component");
+
+const pointLabel = (pointType?: string) => ({
+  first_buy: "一买", second_buy: "二买", third_buy: "三买",
+  first_sell: "一卖", second_sell: "二卖", third_sell: "三卖",
+}[pointType || ""] || pointType || "买卖点");
+
+export const buildBuySellPointSeries = (context: ChartBuildContext, dates: string[]) => {
+  if (context.data.timeframe === "1") return [] as Record<string, any>[];
+  const theme = context.theme === "light" ? "light" : "dark";
+  const points = (context.data.buy_sell_points || []).filter((point) =>
+    point.status !== "invalidated" && point.point_date && Number.isFinite(Number(point.point_price))
+      && dates[0] <= point.point_date && point.point_date <= dates[dates.length - 1],
+  );
+  if (!points.length) return [] as Record<string, any>[];
+  return [{
+    id: "buy-sell-points", name: "买卖点", type: "scatter",
+    data: points.map((point) => {
+      const confirmed = point.status === "confirmed";
+      const buy = point.point_type?.endsWith("buy");
+      const color = buy ? (theme === "light" ? "#13795b" : "#63d6ad") : (theme === "light" ? "#b13d4a" : "#ff8a8a");
+      return {
+        value: [nearestDate(dates, point.point_date || ""), Number(point.point_price)], pointId: point.id,
+        name: pointLabel(point.point_type),
+        label: { show: true, formatter: pointLabel(point.point_type), position: buy ? "bottom" : "top", color, fontWeight: 700 },
+        itemStyle: { color: confirmed ? color : "transparent", borderColor: color, borderWidth: 2, opacity: confirmed ? 1 : 0.62 },
+      };
+    }),
+    symbol: "circle", symbolSize: 10,
+    tooltip: { trigger: "item", formatter: (params: any) => {
+      const point = points.find((item) => item.id === params?.data?.pointId);
+      return point ? `${pointLabel(point.point_type)}：${point.status === "confirmed" ? "已确认" : "候选"}<br/>${point.point_date} ${formatPrice(Number(point.point_price))}<br/>确认时间：${point.confirmed_at || "等待确认"}` : "";
+    } }, z: 13,
+  }];
+};
 const styleDefaults = (drawing: Drawing, theme: string): DrawingStyle => {
   const color = periodStructureColor(theme === "light" ? "light" : "dark", drawing.timeframe);
   return { color, width: 1.5, line_type: "solid", opacity: 0.9, ...(drawing.object_type === "rectangle" ? { fill_color: color, fill_opacity: theme === "light" ? 0.1 : 0.14 } : {}) };
@@ -820,9 +878,9 @@ export const validateAxes = (axes: { grid?: unknown[]; xAxis?: unknown[]; yAxis?
 
 export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtifacts => {
   const data = normalizeChartData(context.data);
-  if (!data) return { option: null, issues: [{ code: "invalid_chart_data" }], visibleCenters: [], visibleMovements: [] };
+  if (!data) return { option: null, issues: [{ code: "invalid_chart_data" }], visibleCenters: [], visibleMovements: [], visibleComponents: [] };
   const bars = normalizeBars(context.bars === undefined ? data.bars : context.bars);
-  if (!bars.length) return { option: null, issues: [{ code: "empty_bars" }], visibleCenters: [], visibleMovements: [] };
+  if (!bars.length) return { option: null, issues: [{ code: "empty_bars" }], visibleCenters: [], visibleMovements: [], visibleComponents: [] };
   context = { ...context, data, bars };
   const dates = chartDates(data.timeframe, bars);
   const pointDates = data.timeframe === "1" ? intradayPointDates(bars, dates) : dates;
@@ -831,7 +889,9 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
   const { axisCount, subplotAxisIndices, paneLayout: _paneLayout, ...axesOption } = axes;
   const centers = buildCenterAreas({ ...context, bars }, dates, issues);
   const movement = buildMovementSeries({ ...context, bars }, dates, issues);
-  const hitSeries = buildStructureHitSeries({ ...context, bars }, dates, centers.visibleCenters, movement.visibleMovements, (data.pens || []).filter((pen) => pen.status === "confirmed"));
+  const component = buildComponentSeries({ ...context, bars }, dates);
+  const pointSeries = buildBuySellPointSeries({ ...context, bars }, dates);
+  const hitSeries = buildStructureHitSeries({ ...context, bars }, dates, centers.visibleCenters, movement.visibleMovements, (data.pens || []).filter((pen) => pen.status === "confirmed"), component.visibleComponents);
   const marketSeries = [
     ...buildPriceSeries({ ...context, bars }, centers.areas),
     ...buildIndicatorSeries({ ...context, bars }, axes),
@@ -839,7 +899,9 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
   const series = [
     ...(data.timeframe === "1" ? alignIntradaySeries(marketSeries, bars, dates) : marketSeries),
     ...buildPenSeries({ ...context, bars }, dates, issues),
+    ...component.series,
     ...movement.series,
+    ...pointSeries,
     ...hitSeries,
     ...buildDrawingSeries({ ...context, bars }, dates, issues),
   ];
@@ -852,7 +914,7 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
   // of triggering an internal "reading type" exception.
   if (!checkedAxes.valid || !checked.valid.length) {
     issues.push({ code: "chart_option_invalid" });
-    return { option: null, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements };
+    return { option: null, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements, visibleComponents: component.visibleComponents };
   }
   const dark = context.theme !== "light";
   const option: Record<string, any> = {
@@ -882,9 +944,9 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
   };
   if (!valueIsValid(option)) {
     issues.push({ code: "chart_option_invalid" });
-    return { option: null, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements };
+    return { option: null, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements, visibleComponents: component.visibleComponents };
   }
-  return { option, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements };
+  return { option, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements, visibleComponents: component.visibleComponents };
 };
 
 export const buildChartOption = (context: ChartBuildContext) => buildChartArtifacts(context).option;

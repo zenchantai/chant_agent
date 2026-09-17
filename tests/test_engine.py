@@ -206,7 +206,8 @@ def test_l1_extension_keeps_fixed_core_and_updates_envelope():
     center = build_pen_centers(values)[0]
     assert (center["fixed_zd"], center["fixed_zg"]) == (3, 6)
     assert center["extension_pen_ids"] == ["p4", "p5"]
-    assert center["end_date"] == values[-1]["end_date"]
+    assert center["end_date"] == values[3]["end_date"]
+    assert center["extension_end_date"] == values[-1]["end_date"]
     assert (center["dd"], center["gg"]) == (1, 9)
 
 

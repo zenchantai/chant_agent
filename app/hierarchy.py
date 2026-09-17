@@ -4,7 +4,7 @@ import hashlib
 from typing import Any
 
 
-HIERARCHY_VERSION = "center-hierarchy-cache-fingerprint-v20-unified-directional-ownership"
+HIERARCHY_VERSION = "center-hierarchy-cache-fingerprint-v22-center-free-buy-sell-points"
 MAX_CENTER_LEVEL = 8
 EPSILON = 1e-9
 
@@ -86,6 +86,147 @@ def atomic_pen_units(pens: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "sequence_id": int(pen.get("sequence_id", 0)),
         "structure_sequence_id": str(pen.get("structure_sequence_id", "")),
     } for pen in pens]
+
+
+def _component_record(units: list[dict[str, Any]], start: int, end: int, level: int) -> dict[str, Any]:
+    selected = units[start:end]
+    lows, highs = zip(*(_bounds(unit) for unit in selected))
+    direction = "up" if float(selected[-1]["end_price"]) > float(selected[0]["start_price"]) else "down"
+    source_ids = [unit["id"] for unit in selected]
+    low_unit = min(selected, key=lambda unit: (_bounds(unit)[0], unit["start_date"], unit["id"]))
+    high_unit = max(selected, key=lambda unit: (_bounds(unit)[1], unit["start_date"], unit["id"]))
+    low_date = low_unit.get("range_low_date")
+    if not low_date:
+        low_date = low_unit["start_date"] if abs(float(low_unit["start_price"]) - _bounds(low_unit)[0]) <= EPSILON else low_unit["end_date"]
+    high_date = high_unit.get("range_high_date")
+    if not high_date:
+        high_date = high_unit["start_date"] if abs(float(high_unit["start_price"]) - _bounds(high_unit)[1]) <= EPSILON else high_unit["end_date"]
+    return {
+        "id": _stable_id(f"center-free-component-L{level}", [str(_stream_key(selected[0])), *source_ids]),
+        "kind": "center_free_component", "level": level, "status": "confirmed",
+        "direction": direction, "start_date": selected[0]["start_date"],
+        "end_date": selected[-1]["end_date"], "start_price": float(selected[0]["start_price"]),
+        "end_price": float(selected[-1]["end_price"]), "low": min(lows), "high": max(highs),
+        "range_low_date": low_date, "range_high_date": high_date,
+        "source_unit_ids": source_ids, "source_pen_ids": _source_pen_ids(selected),
+        "continuous_range_id": _group_key(selected[0])[0], "sequence_id": _group_key(selected[0])[1],
+        "structure_sequence_id": str(selected[0].get("structure_sequence_id", "")),
+        "confirmed_at": _latest_timestamp(*(unit.get("confirmed_at") for unit in selected), selected[-1]["end_date"]),
+        "unit_start_index": start, "unit_end_index": end,
+        "evidence": ["COMPONENT-CENTER-FREE-001"],
+    }
+
+
+def _valid_center_free_span(units: list[dict[str, Any]], start: int, end: int) -> bool:
+    selected = units[start:end]
+    if not selected or len(selected) % 2 == 0:
+        return False
+    if any(unit.get("status") != "confirmed" for unit in selected):
+        return False
+    if len({_stream_key(unit) for unit in selected}) != 1:
+        return False
+    if any(not _units_are_contiguous(left, right) for left, right in zip(selected, selected[1:])):
+        return False
+    direction = _direction(selected[0])
+    if _direction(selected[-1]) != direction:
+        return False
+    start_price = float(selected[0]["start_price"])
+    end_price = float(selected[-1]["end_price"])
+    if direction == "up":
+        if end_price <= start_price + EPSILON:
+            return False
+        same_extremes = [float(unit["end_price"]) for unit in selected[::2]]
+        if any(right <= left + EPSILON for left, right in zip(same_extremes, same_extremes[1:])):
+            return False
+        if any(_bounds(unit)[0] <= start_price + EPSILON for unit in selected[1::2]):
+            return False
+    else:
+        if end_price >= start_price - EPSILON:
+            return False
+        same_extremes = [float(unit["end_price"]) for unit in selected[::2]]
+        if any(right >= left - EPSILON for left, right in zip(same_extremes, same_extremes[1:])):
+            return False
+        if any(_bounds(unit)[1] >= start_price - EPSILON for unit in selected[1::2]):
+            return False
+    for index in range(max(0, len(selected) - 3)):
+        candidate = selected[index:index + 4]
+        if len(candidate) < 4 or not _alternating(candidate):
+            continue
+        overlap = _strict_overlap(candidate[1:])
+        if overlap is None:
+            continue
+        zd, zg = overlap
+        entry = candidate[0]
+        entered = (
+            float(entry["start_price"]) + EPSILON < zd < float(entry["end_price"]) - EPSILON
+            if _direction(entry) == "up"
+            else float(entry["start_price"]) - EPSILON > zg > float(entry["end_price"]) + EPSILON
+        )
+        if entered:
+            return False
+    return True
+
+
+def _component_candidates(units: list[dict[str, Any]], start: int, level: int) -> list[dict[str, Any]]:
+    candidates = []
+    for end in range(start + 1, len(units) + 1, 2):
+        if _valid_center_free_span(units, start, end):
+            candidates.append(_component_record(units, start, end, level))
+        elif end > start + 1:
+            break
+    return candidates
+
+
+def build_center_free_components(units: list[dict[str, Any]], level: int) -> list[dict[str, Any]]:
+    components: list[dict[str, Any]] = []
+    for segment in _unit_segments(units):
+        cursor = 0
+        while cursor < len(segment):
+            candidates = _component_candidates(segment, cursor, level)
+            component = candidates[-1] if candidates else _component_record(segment, cursor, cursor + 1, level)
+            components.append(component)
+            cursor = int(component["unit_end_index"])
+    for ordinal, component in enumerate(components):
+        component["ordinal"] = ordinal
+    return components
+
+
+def _component_seed(units: list[dict[str, Any]], start: int, level: int, core_count: int = 3):
+    best = None
+
+    def visit(parts: list[dict[str, Any]], cursor: int):
+        nonlocal best
+        if best is not None and cursor > best["end"]:
+            return
+        if len(parts) == core_count + 1:
+            if not _alternating(parts):
+                return
+            overlap = _strict_overlap(parts[1:])
+            if overlap is None:
+                return
+            zd, zg = overlap
+            entry = parts[0]
+            entered = (
+                float(entry["start_price"]) + EPSILON < zd < float(entry["end_price"]) - EPSILON
+                if _direction(entry) == "up"
+                else float(entry["start_price"]) - EPSILON > zg > float(entry["end_price"]) + EPSILON
+            )
+            if not entered:
+                return
+            candidate = {"entry": entry, "core": parts[1:], "zd": zd, "zg": zg,
+                         "direction": _direction(entry), "end": cursor}
+            if best is None or (candidate["end"], sum(len(item["source_unit_ids"]) for item in parts)) < (
+                best["end"], sum(len(item["source_unit_ids"]) for item in [best["entry"], *best["core"]])
+            ):
+                best = candidate
+            return
+        for component in _component_candidates(units, cursor, level):
+            if parts and _direction(parts[-1]) == _direction(component):
+                continue
+            visit([*parts, component], int(component["unit_end_index"]))
+
+    visit([], start)
+    return best
 
 
 def _center_owned_unit_ids(center: dict[str, Any]) -> list[str]:
@@ -194,7 +335,7 @@ def _center_record(units: list[dict[str, Any]], start: int, seed: dict[str, Any]
         "structure_sequence_id": str(entry.get("structure_sequence_id", "")),
         "parent_center_ids": [], "child_movement_ids": source_ids if level > 1 else [],
         "child_center_ids": child_centers if level > 1 else [], "owner_movement_id": None,
-        "construction_mode": "unified_directional_ownership", "upgrade_kind": None if level == 1 else "directional_recursion",
+        "construction_mode": "center_free_component_directional", "upgrade_kind": None if level == 1 else "directional_recursion",
         "evidence": ["CENTER-DIRECTIONAL-ENTRY-001", "CENTER-DIRECTIONAL-CORE-001"],
     }
     if level == 1:
@@ -212,44 +353,117 @@ def _center_record(units: list[dict[str, Any]], start: int, seed: dict[str, Any]
     return record
 
 
+def _flatten_component_units(components: list[dict[str, Any]]) -> list[str]:
+    return list(dict.fromkeys(unit_id for component in components for unit_id in component.get("source_unit_ids", [])))
+
+
+def _component_center_record(
+    units: list[dict[str, Any]], seed: dict[str, Any], level: int,
+    extension_components: list[dict[str, Any]], peripheral_components: list[dict[str, Any]],
+    departure_components: list[dict[str, Any]], confirmed: bool, tail_status: str,
+) -> dict[str, Any]:
+    entry, core = seed["entry"], seed["core"]
+    formation = [entry, *core]
+    owned_components = sorted(
+        {component["id"]: component for component in [*formation, *extension_components, *peripheral_components]}.values(),
+        key=lambda component: (int(component["unit_start_index"]), int(component["unit_end_index"]), component["id"]),
+    )
+    source_ids = _flatten_component_units(owned_components)
+    unit_by_id = {unit["id"]: unit for unit in units}
+    source = [unit_by_id[unit_id] for unit_id in source_ids]
+    lows, highs = zip(*(_bounds(unit) for unit in source))
+    source_pen_ids = _source_pen_ids(source)
+    core_unit_ids = _flatten_component_units(core)
+    entry_unit_ids = list(entry["source_unit_ids"])
+    child_centers = list(dict.fromkeys(center_id for unit in source for center_id in unit.get("center_ids", [])))
+    record = {
+        "id": _stable_id(f"directional-center-L{level}", [str(_stream_key(entry)), entry["id"], core[0]["id"], core[1]["id"]]),
+        "ordinal": 0, "level_ordinal": 0, "kind": "pen_center" if level == 1 else "center",
+        "role": "hierarchy", "level": level, "direction": seed["direction"],
+        "entry_component_id": entry["id"], "entry_component_ids": [entry["id"]],
+        "core_component_ids": [component["id"] for component in core],
+        "formation_component_ids": [component["id"] for component in formation],
+        "extension_component_ids": [component["id"] for component in extension_components],
+        "peripheral_component_ids": [component["id"] for component in peripheral_components],
+        "departure_component_ids": [component["id"] for component in departure_components],
+        "retest_component_ids": [],
+        "entry_unit_ids": entry_unit_ids, "entry_unit_id": entry_unit_ids[0],
+        "core_unit_ids": core_unit_ids,
+        "formation_unit_ids": _flatten_component_units(formation),
+        "extension_unit_ids": _flatten_component_units(extension_components),
+        "peripheral_unit_ids": _flatten_component_units(peripheral_components),
+        "departure_unit_ids": _flatten_component_units(departure_components),
+        "owned_unit_ids": source_ids if confirmed else [], "source_unit_ids": source_ids,
+        "source_pen_ids": source_pen_ids, "pen_ids": source_pen_ids,
+        "start_date": core[0]["start_date"], "end_date": core[-1]["end_date"],
+        "core_start_date": core[0]["start_date"], "core_end_date": core[-1]["end_date"],
+        "extension_end_date": source[-1]["end_date"],
+        "start_price": float(core[0]["start_price"]), "end_price": float(source[-1]["end_price"]),
+        "zd": seed["zd"], "zg": seed["zg"], "fixed_zd": seed["zd"], "fixed_zg": seed["zg"],
+        "dd": min(lows), "gg": max(highs), "low": seed["zd"], "high": seed["zg"],
+        "status": "confirmed" if confirmed else "provisional", "progress": "3/3" if confirmed else "2/3",
+        "confirmed_at": _latest_timestamp(*(component.get("confirmed_at") for component in formation)) if confirmed else None,
+        "tail_status": tail_status, "termination_reason": "independent_center" if tail_status == "confirmed_departure" else "right_edge",
+        "completion_reason": "component_directional_core_with_extension" if confirmed else "pending_third_core_component",
+        "continuous_range_id": _group_key(entry)[0], "sequence_id": _group_key(entry)[1],
+        "structure_sequence_id": str(entry.get("structure_sequence_id", "")),
+        "parent_center_ids": [], "child_movement_ids": source_ids if level > 1 else [],
+        "child_center_ids": child_centers if level > 1 else [], "owner_movement_id": None,
+        "entry_movement_id": None, "exit_movement_id": None, "transition_point_id": None,
+        "transition_role": "continuation", "construction_mode": "center_free_component_directional",
+        "upgrade_kind": None if level == 1 else "directional_recursion",
+        "unit_start_index": int(entry["unit_start_index"]), "unit_end_index": int(seed["end"]),
+        "evidence": ["CENTER-COMPONENT-ENTRY-001", "CENTER-COMPONENT-CORE-001"],
+        "_component_records": list({component["id"]: component for component in [*owned_components, *departure_components]}.values()),
+    }
+    if level == 1:
+        record.update({
+            "entry_pen_id": source_pen_ids[0] if len(entry["source_pen_ids"]) == 1 else None,
+            "entry_pen_ids": list(entry["source_pen_ids"]), "core_pen_ids": _source_pen_ids([unit_by_id[item] for item in core_unit_ids]),
+            "formation_pen_ids": _source_pen_ids([unit_by_id[item] for item in record["formation_unit_ids"]]),
+            "extension_pen_ids": _source_pen_ids([unit_by_id[item] for item in record["extension_unit_ids"]]),
+            "peripheral_pen_ids": _source_pen_ids([unit_by_id[item] for item in record["peripheral_unit_ids"]]),
+            "departure_pen_ids": _source_pen_ids([unit_by_id[item] for item in record["departure_unit_ids"]]),
+            "start_pen": core_unit_ids[0], "end_pen": source_ids[-1],
+            "start_pen_index": int(core[0]["unit_start_index"]), "end_pen_index": int(seed["end"]) - 1,
+        })
+    return record
+
+
 def build_directional_centers(units: list[dict[str, Any]], level: int) -> list[dict[str, Any]]:
     centers = []
     for segment in _unit_segments(units):
         start = 0
         while start + 2 < len(segment):
-            seed = _directional_seed(segment, start)
+            seed = _component_seed(segment, start, level)
             if seed is None:
-                candidate = _directional_seed(segment, start, 2) if start + 3 == len(segment) else None
+                candidate = _component_seed(segment, start, level, 2) if start + 3 >= len(segment) else None
                 if candidate:
-                    centers.append(_center_record(segment, start, candidate, level, [], [], [], False, "pending_third_core_unit"))
+                    centers.append(_component_center_record(segment, candidate, level, [], [], [], False, "pending_third_core_component"))
                 start += 1
                 continue
             extension, peripheral, pending = [], [], []
             next_start = None
-            for cursor in range(start + 4, len(segment)):
-                proposed_start = cursor - 3
-                proposed = _directional_seed(segment, proposed_start) if proposed_start >= start + 4 else None
+            cursor = int(seed["end"])
+            while cursor < len(segment):
+                proposed = _component_seed(segment, cursor, level)
                 if proposed and (proposed["zd"] > seed["zg"] + EPSILON or proposed["zg"] < seed["zd"] - EPSILON):
-                    next_start = proposed_start
-                    extension = [index for index in extension if index < next_start]
-                    peripheral = [index for index in peripheral if index < next_start]
-                    pending = [index for index in pending if index < next_start]
+                    next_start = cursor
                     break
-                low, high = _bounds(segment[cursor])
+                candidates = _component_candidates(segment, cursor, level)
+                component = candidates[-1] if candidates else _component_record(segment, cursor, cursor + 1, level)
+                low, high = _bounds(component)
                 if max(low, seed["zd"]) + EPSILON < min(high, seed["zg"]):
                     peripheral.extend(pending)
                     pending = []
-                    extension.append(cursor)
+                    extension.append(component)
                 else:
-                    pending.append(cursor)
-            departure = [next_start] if next_start is not None else pending
+                    pending.append(component)
+                cursor = int(component["unit_end_index"])
+            departure = ([proposed["entry"]] if next_start is not None and proposed else pending)
             tail_status = "confirmed_departure" if next_start is not None else "provisional_departure" if pending else "active_extension"
-            centers.append(_center_record(segment, start, seed, level, extension, peripheral, departure, True, tail_status))
+            centers.append(_component_center_record(segment, seed, level, extension, peripheral, departure, True, tail_status))
             if next_start is None:
-                candidate_start = len(segment) - 3
-                candidate = _directional_seed(segment, candidate_start, 2) if candidate_start >= start + 4 else None
-                if candidate and (candidate["zd"] > seed["zg"] + EPSILON or candidate["zg"] < seed["zd"] - EPSILON):
-                    centers.append(_center_record(segment, candidate_start, candidate, level, [], [], [], False, "pending_third_core_unit"))
                 break
             start = next_start
     for ordinal, center in enumerate(centers):
@@ -275,6 +489,205 @@ def classify_center_relation(previous: dict[str, Any], current: dict[str, Any]) 
     if current_zg < previous_zd - EPSILON:
         return "newborn_down" if current_gg < previous_dd - EPSILON else "expansion_down"
     return "extension"
+
+
+def _component_extreme(component: dict[str, Any], direction: str) -> dict[str, Any]:
+    if direction == "up":
+        price = float(component["high"])
+        stamp = component.get("range_high_date") or component["end_date"]
+    else:
+        price = float(component["low"])
+        stamp = component.get("range_low_date") or component["end_date"]
+    return {"trade_date": stamp, "price": price}
+
+
+def build_third_buy_sell_points(
+    units: list[dict[str, Any]], centers: list[dict[str, Any]],
+    components: list[dict[str, Any]], level: int,
+) -> list[dict[str, Any]]:
+    component_by_id = {component["id"]: component for component in components}
+    points: list[dict[str, Any]] = []
+    for center in centers:
+        if center.get("status") != "confirmed" or int(center.get("level", 1)) != level:
+            continue
+        core = [component_by_id.get(identifier) for identifier in center.get("core_component_ids", [])]
+        if len(core) != 3 or any(component is None for component in core):
+            continue
+        departure = core[-1]
+        point_type = None
+        if _direction(departure) == "up" and float(departure["end_price"]) > float(center["zg"]) + EPSILON:
+            point_type = "third_buy"
+        elif _direction(departure) == "down" and float(departure["end_price"]) < float(center["zd"]) - EPSILON:
+            point_type = "third_sell"
+        if point_type is None:
+            cursor = int(center.get("unit_end_index", departure["unit_end_index"]))
+            candidates = _component_candidates(units, cursor, level) if cursor < len(units) else []
+            departure = candidates[0] if candidates else None
+            if departure and _direction(departure) == "up" and float(departure["end_price"]) > float(center["zg"]) + EPSILON:
+                point_type = "third_buy"
+            elif departure and _direction(departure) == "down" and float(departure["end_price"]) < float(center["zd"]) - EPSILON:
+                point_type = "third_sell"
+        if point_type is None or departure is None:
+            continue
+        retest_start = int(departure["unit_end_index"])
+        retest_candidates = _component_candidates(units, retest_start, level) if retest_start < len(units) else []
+        retest = next((component for component in retest_candidates if _direction(component) != _direction(departure)), None)
+        status = "candidate"
+        if retest:
+            if point_type == "third_buy" and float(retest["low"]) > float(center["zg"]) + EPSILON:
+                status = "confirmed"
+            elif point_type == "third_sell" and float(retest["high"]) < float(center["zd"]) - EPSILON:
+                status = "confirmed"
+            else:
+                status = "invalidated"
+        extreme = _component_extreme(retest or departure, "down" if point_type == "third_buy" else "up")
+        transition_unit_id = core[0]["source_unit_ids"][0]
+        point = {
+            "id": _stable_id(f"{point_type}-L{level}", [center["id"], departure["id"], retest["id"] if retest else "pending"]),
+            "kind": "buy_sell_point", "level": level, "point_type": point_type, "status": status,
+            "point_date": extreme["trade_date"], "point_price": extreme["price"],
+            "confirmed_at": retest.get("confirmed_at") if status == "confirmed" and retest else None,
+            "center_id": center["id"], "movement_id": None,
+            "source_component_ids": [departure["id"], *([retest["id"]] if retest else [])],
+            "source_unit_ids": _flatten_component_units([departure, *([retest] if retest else [])]),
+            "departure_component_id": departure["id"], "retest_component_id": retest["id"] if retest else None,
+            "transition_unit_id": transition_unit_id,
+            "transition_date": core[0]["start_date"], "transition_price": float(core[0]["start_price"]),
+            "invalidation_price": float(center["zg"] if point_type == "third_buy" else center["zd"]),
+            "divergence_evidence": None,
+            "continuous_range_id": center.get("continuous_range_id", 0),
+            "sequence_id": center.get("sequence_id", 0),
+            "structure_sequence_id": center.get("structure_sequence_id", ""),
+            "evidence": ["POINT-THIRD-RETEST-001"],
+            "_component_records": [departure, *([retest] if retest else [])],
+        }
+        center["departure_component_ids"] = [departure["id"]]
+        center["retest_component_ids"] = [retest["id"]] if retest else []
+        points.append(point)
+    for ordinal, point in enumerate(points):
+        point["ordinal"] = ordinal
+    return points
+
+
+def _macd_component_stats(component: dict[str, Any], macd: list[dict[str, Any]]) -> dict[str, float] | None:
+    values = [item for item in macd if component["start_date"] < item["trade_date"] <= component["end_date"]]
+    if not values:
+        return None
+    direction = _direction(component)
+    histograms = [float(item["histogram"]) for item in values]
+    dif_values = [float(item["dif"]) for item in values]
+    area = sum(abs(value) for value in histograms if value < 0) if direction == "down" else sum(value for value in histograms if value > 0)
+    dif_extreme = min(dif_values) if direction == "down" else max(dif_values)
+    return {"area": area, "dif_extreme": dif_extreme}
+
+
+def build_first_second_buy_sell_points(
+    units: list[dict[str, Any]], centers: list[dict[str, Any]],
+    components: list[dict[str, Any]], macd: list[dict[str, Any]], level: int,
+) -> list[dict[str, Any]]:
+    component_by_id = {component["id"]: component for component in components}
+    ordered_components = sorted(components, key=lambda item: (item["start_date"], item["end_date"], item["id"]))
+    points: list[dict[str, Any]] = []
+    grouped: dict[tuple[int, int, str], list[dict[str, Any]]] = {}
+    for center in centers:
+        if center.get("status") == "confirmed" and int(center.get("level", 1)) == level:
+            grouped.setdefault(_stream_key(center), []).append(center)
+    for stream_centers in grouped.values():
+        stream_centers.sort(key=lambda item: (item["start_date"], item["id"]))
+        for previous, current in zip(stream_centers, stream_centers[1:]):
+            direction = current.get("direction")
+            if direction != previous.get("direction") or direction not in {"up", "down"}:
+                continue
+            separated = (float(current["zg"]) < float(previous["zd"]) - EPSILON if direction == "down"
+                         else float(current["zd"]) > float(previous["zg"]) + EPSILON)
+            if not separated:
+                continue
+            previous_entry = component_by_id.get(previous.get("entry_component_id"))
+            current_entry = component_by_id.get(current.get("entry_component_id"))
+            if not previous_entry or not current_entry:
+                continue
+            price_extreme = (float(current_entry["low"]) < float(previous_entry["low"]) - EPSILON if direction == "down"
+                             else float(current_entry["high"]) > float(previous_entry["high"]) + EPSILON)
+            previous_stats = _macd_component_stats(previous_entry, macd)
+            current_stats = _macd_component_stats(current_entry, macd)
+            divergence = False
+            area_improved = False
+            dif_improved = False
+            if price_extreme and previous_stats and current_stats:
+                area_improved = current_stats["area"] + EPSILON < previous_stats["area"]
+                dif_improved = (current_stats["dif_extreme"] > previous_stats["dif_extreme"] + EPSILON
+                                if direction == "down" else current_stats["dif_extreme"] < previous_stats["dif_extreme"] - EPSILON)
+                divergence = area_improved and dif_improved
+            point_type = "first_buy" if direction == "down" else "first_sell"
+            extreme = _component_extreme(current_entry, direction)
+            core_ids = current.get("core_component_ids", [])
+            confirming = component_by_id.get(core_ids[0]) if core_ids else None
+            point = {
+                "id": _stable_id(f"{point_type}-L{level}", [previous["id"], current["id"], current_entry["id"]]),
+                "kind": "buy_sell_point", "level": level, "point_type": point_type,
+                "status": "confirmed" if divergence and confirming else "candidate",
+                "point_date": extreme["trade_date"], "point_price": extreme["price"],
+                "confirmed_at": confirming.get("confirmed_at") if divergence and confirming else None,
+                "center_id": current["id"], "movement_id": None,
+                "source_component_ids": [previous_entry["id"], current_entry["id"]],
+                "source_unit_ids": _flatten_component_units([previous_entry, current_entry]),
+                "departure_component_id": current_entry["id"], "retest_component_id": None,
+                "transition_unit_id": confirming["source_unit_ids"][0] if confirming else current_entry["source_unit_ids"][-1],
+                "transition_date": current_entry["end_date"], "transition_price": float(current_entry["end_price"]),
+                "invalidation_price": extreme["price"],
+                "divergence_evidence": {
+                    "previous_area": previous_stats["area"] if previous_stats else None,
+                    "current_area": current_stats["area"] if current_stats else None,
+                    "previous_dif_extreme": previous_stats["dif_extreme"] if previous_stats else None,
+                    "current_dif_extreme": current_stats["dif_extreme"] if current_stats else None,
+                    "price_extreme": price_extreme,
+                    "area_improved": bool(area_improved) if previous_stats and current_stats else False,
+                    "dif_improved": bool(dif_improved) if previous_stats and current_stats else False,
+                },
+                "continuous_range_id": current.get("continuous_range_id", 0),
+                "sequence_id": current.get("sequence_id", 0), "structure_sequence_id": current.get("structure_sequence_id", ""),
+                "evidence": ["POINT-FIRST-MACD-DUAL-001"],
+            }
+            points.append(point)
+            if point["status"] != "confirmed":
+                continue
+            entry_end = int(current_entry["unit_end_index"])
+            following = [component for component in ordered_components
+                         if _stream_key(component) == _stream_key(current_entry)
+                         and int(component["unit_start_index"]) >= entry_end]
+            advance = next((component for component in following if _direction(component) != direction), None)
+            retest = next((component for component in following
+                           if advance and int(component["unit_start_index"]) >= int(advance["unit_end_index"])
+                           and _direction(component) == direction), None)
+            confirm = next((component for component in following
+                            if retest and int(component["unit_start_index"]) >= int(retest["unit_end_index"])
+                            and _direction(component) != direction), None)
+            valid_retest = False
+            if retest:
+                valid_retest = (float(retest["low"]) > point["point_price"] + EPSILON if point_type == "first_buy"
+                                else float(retest["high"]) < point["point_price"] - EPSILON)
+            if not retest:
+                continue
+            second_type = "second_buy" if point_type == "first_buy" else "second_sell"
+            second_extreme = _component_extreme(retest, "down" if second_type == "second_buy" else "up")
+            points.append({
+                "id": _stable_id(f"{second_type}-L{level}", [point["id"], retest["id"]]),
+                "kind": "buy_sell_point", "level": level, "point_type": second_type,
+                "status": "confirmed" if valid_retest and confirm else "candidate",
+                "point_date": second_extreme["trade_date"], "point_price": second_extreme["price"],
+                "confirmed_at": confirm.get("confirmed_at") if valid_retest and confirm else None,
+                "center_id": current["id"], "movement_id": None, "parent_point_id": point["id"],
+                "source_component_ids": [advance["id"], retest["id"], *([confirm["id"]] if confirm else [])],
+                "source_unit_ids": _flatten_component_units([advance, retest, *([confirm] if confirm else [])]),
+                "departure_component_id": advance["id"], "retest_component_id": retest["id"],
+                "transition_unit_id": retest["source_unit_ids"][0],
+                "transition_date": retest["start_date"], "transition_price": float(retest["start_price"]),
+                "invalidation_price": point["point_price"], "divergence_evidence": None,
+                "continuous_range_id": current.get("continuous_range_id", 0),
+                "sequence_id": current.get("sequence_id", 0), "structure_sequence_id": current.get("structure_sequence_id", ""),
+                "evidence": ["POINT-SECOND-RETEST-001"],
+            })
+    return points
 
 
 def _center_relation_row(previous: dict[str, Any], current: dict[str, Any], relation: str) -> dict[str, Any]:
@@ -449,11 +862,14 @@ def _movement_classification(centers: list[dict[str, Any]], direction: str) -> s
 def movement_confirmation_errors(movement: dict[str, Any], centers: dict[str, dict[str, Any]]) -> list[str]:
     errors = []
     referenced = movement.get("center_ids") or []
+    turning_referenced = movement.get("turning_center_ids") or []
     source_ids = movement.get("source_unit_ids") or []
     if len(source_ids) != len(set(source_ids)):
         errors.append("走势重复消费源单位")
-    if not referenced or any(center_id not in centers for center_id in referenced):
+    if not referenced and not turning_referenced:
         errors.append("走势缺少真实所属中枢")
+    if any(center_id not in centers for center_id in [*referenced, *turning_referenced]):
+        errors.append("走势引用不存在的中枢")
     for center_id in referenced:
         center = centers.get(center_id)
         if center and not set(_center_owned_unit_ids(center)) <= set(source_ids):
@@ -463,6 +879,18 @@ def movement_confirmation_errors(movement: dict[str, Any], centers: dict[str, di
     if movement.get("status") != "confirmed":
         if movement.get("confirmed_at") or movement.get("confirmation_center_id") or movement.get("recursive_eligible"):
             errors.append("未完成走势含确认信息或递归资格")
+        return errors
+    primary = movement.get("primary_confirmation") or {}
+    if primary.get("type") in {"first_buy", "first_sell", "third_buy", "third_sell"}:
+        if (
+            movement.get("termination_reason") != primary.get("type")
+            or movement.get("confirmation_point_id") != primary.get("signal_id")
+            or not movement.get("confirmed_at")
+            or movement.get("confirmed_at") != primary.get("confirmed_at")
+            or movement.get("state", "formed") != "formed"
+            or not _boundary_matches_direction(float(movement["start_price"]), float(movement["end_price"]), movement["direction"])
+        ):
+            errors.append("买卖点确认的时间、方向或结束原因不一致")
         return errors
     previous = centers.get(referenced[-1]) if referenced else None
     confirmation = centers.get(movement.get("confirmation_center_id"))
@@ -568,7 +996,7 @@ def _movement_from_centers(
         "candidate_extreme_date": candidate_extreme["trade_date"] if candidate_extreme else None,
         "candidate_extreme_price": candidate_extreme["price"] if candidate_extreme else None,
         "tail_end_date": endpoint["trade_date"], "tail_end_price": endpoint["price"],
-        "construction_mode": "unified_directional_ownership", "boundary_mode": "structure_ownership_first",
+        "construction_mode": "center_free_component_directional", "boundary_mode": "earliest_valid_structural_evidence",
         "recursive_eligible": status == "confirmed", "undetermined_reason": issues[0]["code"] if issues else None,
         "evidence": ["MOVEMENT-BOUNDARY-001", "MOVEMENT-SHARED-ENDPOINT-001"], "issues": issues,
     }
@@ -670,6 +1098,187 @@ def build_hierarchy_components(
             "unassigned": [unit["id"] for unit in units if unit["id"] not in covered]}
 
 
+def _interval_classification(centers: list[dict[str, Any]], direction: str) -> str | None:
+    if not centers:
+        return "consolidation"
+    aligned = [center for center in centers if center.get("direction") == direction]
+    if len(aligned) != len(centers):
+        return None
+    return _movement_classification(aligned, direction)
+
+
+def rebuild_movements_with_points(
+    units: list[dict[str, Any]], centers: list[dict[str, Any]], movements: list[dict[str, Any]],
+    points: list[dict[str, Any]], level: int, origin: str = "system",
+) -> list[dict[str, Any]]:
+    confirmed_points = [point for point in points if point.get("status") == "confirmed" and int(point.get("level", 1)) == level]
+    if not confirmed_points:
+        return movements
+    rebuilt: list[dict[str, Any]] = []
+    for segment in _unit_segments(units):
+        unit_index = {unit["id"]: index for index, unit in enumerate(segment)}
+        segment_centers = []
+        spans = {}
+        for center in centers:
+            span = _center_unit_span(center, segment, unit_index)
+            if span is not None and int(center.get("level", 1)) == level:
+                spans[center["id"]] = span
+                segment_centers.append(center)
+        if not segment_centers:
+            continue
+        # First/third points change the movement boundary. Second points are
+        # evidence attached to an already locked movement and must not split it.
+        events = [point for point in confirmed_points
+                  if point.get("point_type") in {"first_buy", "first_sell", "third_buy", "third_sell"}
+                  and point.get("transition_unit_id") in unit_index]
+        original_movements = sorted(
+            (movement for movement in movements if _group_key(movement) == _group_key(segment[0])),
+            key=lambda movement: (movement["start_date"], movement["end_date"], movement["id"]),
+        )
+        if not events:
+            rebuilt.extend(original_movements)
+            continue
+        events.sort(key=lambda point: (point["confirmed_at"], unit_index[point["transition_unit_id"]], point["id"]))
+        first_event = events[0]
+        first_boundary = unit_index[first_event["transition_unit_id"]]
+        target = next((movement for movement in original_movements
+                       if first_event["transition_unit_id"] in movement.get("source_unit_ids", [])), None)
+        if target is None:
+            rebuilt.extend(original_movements)
+            continue
+        target_start_id = target["source_unit_ids"][0]
+        start = unit_index[target_start_id]
+        direction = target["direction"]
+        rebuilt.extend(movement for movement in original_movements
+                       if movement["end_date"] <= target["start_date"] and movement["id"] != target["id"])
+        sequence = _stable_id(f"structure-sequence-L{level}", [str(_stream_key(segment[0])), segment[0]["id"], "points"])
+
+        def make_movement(end: int, event: dict[str, Any] | None, next_direction: str | None = None):
+            nonlocal start, direction
+            selected = segment[start:end]
+            if not selected:
+                return None
+            complete_centers = [center for center in segment_centers
+                                if spans[center["id"]][0] >= start and spans[center["id"]][1] <= end]
+            turning = [center for center in segment_centers
+                       if spans[center["id"]][0] < end < spans[center["id"]][1]]
+            start_point = {"trade_date": selected[0]["start_date"], "price": float(selected[0]["start_price"]),
+                           "boundary": start, "unit_id": selected[0]["id"]}
+            endpoint = {"trade_date": selected[-1]["end_date"], "price": float(selected[-1]["end_price"]),
+                        "boundary": end, "unit_id": selected[-1]["id"]}
+            low, high = _range_extreme(selected, "down"), _range_extreme(selected, "up")
+            classification = _interval_classification(complete_centers, direction)
+            status = "confirmed" if event and classification is not None else "provisional"
+            confirmation = ({"type": event["point_type"], "signal_id": event["id"],
+                             "confirmed_at": event["confirmed_at"]} if event else None)
+            movement_id = _stable_id(f"movement-L{level}", [sequence, selected[0]["id"], direction])
+            movement = {
+                "id": movement_id, "kind": "movement", "role": "hierarchy_component", "level": level,
+                "state": "undetermined" if classification is None else "formed", "direction": direction,
+                "classification": classification, "status": status,
+                "start_date": start_point["trade_date"], "start_price": start_point["price"],
+                "end_date": endpoint["trade_date"], "end_price": endpoint["price"],
+                "low": low["price"], "high": high["price"],
+                "range_low_date": low["trade_date"], "range_low_price": low["price"],
+                "range_high_date": high["trade_date"], "range_high_price": high["price"],
+                "confirmed_at": event.get("confirmed_at") if status == "confirmed" and event else None,
+                "center_ids": [center["id"] for center in complete_centers],
+                "turning_center_ids": [center["id"] for center in turning],
+                "center_count": len(complete_centers), "confirmation_center_id": None,
+                "confirmation_point_id": event["id"] if status == "confirmed" and event else None,
+                "primary_confirmation": confirmation if status == "confirmed" else None,
+                "confirmation_events": [confirmation] if status == "confirmed" and confirmation else [],
+                "child_movement_ids": [unit["id"] for unit in selected if unit.get("kind") == "movement"],
+                "source_unit_ids": [unit["id"] for unit in selected], "source_pen_ids": _source_pen_ids(selected),
+                "continuous_range_id": _group_key(segment[0])[0], "sequence_id": _group_key(segment[0])[1],
+                "structure_sequence_id": sequence, "origin": origin,
+                "termination_reason": event["point_type"] if status == "confirmed" and event else "provisional_tail",
+                "start_boundary": start, "end_boundary": end, "source_end_boundary": end,
+                "boundary_source_unit_id": endpoint["unit_id"], "boundary_source_price": endpoint["price"],
+                "endpoint_points": [start_point, endpoint], "path_points": [start_point, endpoint],
+                "candidate_extreme_date": None, "candidate_extreme_price": None,
+                "tail_end_date": endpoint["trade_date"], "tail_end_price": endpoint["price"],
+                "construction_mode": "center_free_component_directional",
+                "boundary_mode": "earliest_valid_structural_evidence",
+                "recursive_eligible": status == "confirmed",
+                "undetermined_reason": "mixed_center_relation" if classification is None else None,
+                "evidence": ["MOVEMENT-POINT-CONFIRMATION-001", "MOVEMENT-SHARED-ENDPOINT-001"],
+                "issues": [],
+            }
+            for center in complete_centers:
+                center["owner_movement_id"] = movement_id
+            if event and status == "confirmed":
+                event["movement_id"] = movement_id
+            rebuilt.append(movement)
+            start = end
+            if next_direction:
+                direction = next_direction
+            return movement
+
+        for event in events:
+            boundary = unit_index[event["transition_unit_id"]]
+            next_direction = "up" if event["point_type"].endswith("buy") else "down"
+            if boundary <= start or direction == next_direction:
+                continue
+            selected = segment[start:boundary]
+            if not selected or not _boundary_matches_direction(
+                float(selected[0]["start_price"]), float(selected[-1]["end_price"]), direction,
+            ):
+                continue
+            previous = make_movement(boundary, event, next_direction)
+            turning_center = next((center for center in segment_centers if center["id"] == event["center_id"]), None)
+            if previous and turning_center:
+                turning_center["transition_role"] = "turning"
+                turning_center["entry_movement_id"] = previous["id"]
+                turning_center["transition_point_id"] = event["id"]
+        tail = make_movement(len(segment), None)
+        if tail:
+            for event in reversed(events):
+                if event.get("transition_unit_id") in tail["source_unit_ids"] or event.get("transition_date") == tail["start_date"]:
+                    center = next((item for item in segment_centers if item["id"] == event["center_id"]), None)
+                    if center:
+                        center["exit_movement_id"] = tail["id"]
+                        event["movement_id"] = tail["id"]
+                    break
+    movement_by_id = {movement["id"]: movement for movement in rebuilt}
+    for center in centers:
+        exit_movement = movement_by_id.get(center.get("exit_movement_id"))
+        if exit_movement and center.get("transition_role") == "turning":
+            turning_ids = exit_movement.setdefault("turning_center_ids", [])
+            if center["id"] not in turning_ids:
+                turning_ids.append(center["id"])
+    # A turning center is referenced from both sides of the boundary: its
+    # entry belongs to the prior movement, while its exit belongs to the new
+    # movement that starts at the transition unit.
+    for point in confirmed_points:
+        center = next((center for center in centers if center.get("id") == point.get("center_id")), None)
+        if not center:
+            continue
+        if point.get("point_type") in {"first_buy", "first_sell", "third_buy", "third_sell"} and center.get("transition_role") != "turning":
+            continue
+        matching = [movement for movement in rebuilt if point.get("transition_unit_id") in movement.get("source_unit_ids", [])]
+        if point.get("point_type") in {"second_buy", "second_sell"}:
+            matching = [movement for movement in rebuilt if center.get("id") in movement.get("center_ids", [])]
+        if not matching:
+            continue
+        next_direction = "up" if point.get("point_type", "").endswith("buy") else "down"
+        exit_movement = next((movement for movement in matching if movement.get("direction") == next_direction), None)
+        if exit_movement:
+            center["exit_movement_id"] = exit_movement["id"]
+            if point.get("point_type") in {"first_buy", "first_sell", "third_buy", "third_sell"}:
+                point["movement_id"] = next((movement["id"] for movement in matching if movement.get("direction") != next_direction), point.get("movement_id"))
+        if point.get("point_type") in {"second_buy", "second_sell"}:
+            point["movement_id"] = matching[0]["id"]
+            event = {"type": point["point_type"], "signal_id": point["id"], "confirmed_at": point.get("confirmed_at")}
+            for movement in matching:
+                confirmation_events = movement.setdefault("confirmation_events", [])
+                if not any(item.get("signal_id") == point["id"] for item in confirmation_events):
+                    confirmation_events.append(event)
+    for ordinal, movement in enumerate(rebuilt):
+        movement["ordinal"] = ordinal
+    return rebuilt
+
+
 def _recursive_units(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [dict(unit) for segment in _unit_segments(units) for unit in segment]
 
@@ -696,7 +1305,10 @@ def _parent_centers(movements, parent_level, origin, child_centers=None):
     return [dict(center, origin=origin) for center in build_directional_centers(adapted, parent_level)]
 
 
-def build_hierarchy(pens: list[dict[str, Any]], l1_centers: list[dict[str, Any]], origin: str = "system") -> dict[str, Any]:
+def build_hierarchy(
+    pens: list[dict[str, Any]], l1_centers: list[dict[str, Any]], origin: str = "system",
+    macd: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     # Callers normally pass only the raw directional L1 seeds.  Persisted
     # Only directional L1 seeds are valid hierarchy inputs. Keep legacy
     # hand-authored centers (which omit ``role``) compatible.
@@ -721,7 +1333,7 @@ def build_hierarchy(pens: list[dict[str, Any]], l1_centers: list[dict[str, Any]]
         normalized = dict(center, role="hierarchy", origin=origin, parent_center_ids=[])
         normalized.setdefault("upgrade_kind", None)
         normalized.setdefault("progress", "3/3")
-        normalized.setdefault("construction_mode", "unified_directional_ownership")
+        normalized.setdefault("construction_mode", "center_free_component_directional")
         normalized.setdefault("entry_unit_id", normalized.get("entry_pen_id"))
         normalized.setdefault("core_unit_ids", list(normalized.get("core_pen_ids") or []))
         normalized.setdefault("formation_unit_ids", list(normalized.get("formation_pen_ids") or []))
@@ -735,6 +1347,8 @@ def build_hierarchy(pens: list[dict[str, Any]], l1_centers: list[dict[str, Any]]
         hierarchy_centers.append(normalized)
     units_by_level: dict[int, list[dict[str, Any]]] = {0: atomic_pen_units(pens)}
     movements: list[dict[str, Any]] = []
+    components: list[dict[str, Any]] = []
+    buy_sell_points: list[dict[str, Any]] = []
     unassigned_by_level = {}
     hierarchy_issues = []
 
@@ -749,6 +1363,29 @@ def build_hierarchy(pens: list[dict[str, Any]], l1_centers: list[dict[str, Any]]
                 center for center in hierarchy_centers
                 if int(center.get("level", 1)) == level
             ]
+        level_components = build_center_free_components(units, level)
+        component_registry = {component["id"]: component for component in level_components}
+        for center in structural_centers:
+            for component in center.get("_component_records", []):
+                component_registry[component["id"]] = component
+        level_components = sorted(component_registry.values(), key=lambda item: (
+            item["start_date"], item["end_date"], item["id"],
+        ))
+        components.extend(level_components)
+        level_points = build_third_buy_sell_points(units, structural_centers, level_components, level)
+        level_points.extend(build_first_second_buy_sell_points(
+            units, structural_centers, level_components, macd or [], level,
+        ))
+        for point in level_points:
+            for component in point.get("_component_records", []):
+                if component["id"] not in component_registry:
+                    component_registry[component["id"]] = component
+                    level_components.append(component)
+                    components.append(component)
+        level_points.sort(key=lambda item: (item.get("point_date", ""), item["id"]))
+        for point_ordinal, point in enumerate(level_points):
+            point["ordinal"] = point_ordinal
+        buy_sell_points.extend(level_points)
         component_result = build_hierarchy_components(units, structural_centers, level, origin=origin)
         updated = {center["id"]: center for center in component_result["centers"]}
         for center in structural_centers:
@@ -756,10 +1393,14 @@ def build_hierarchy(pens: list[dict[str, Any]], l1_centers: list[dict[str, Any]]
                 center.update(updated[center["id"]])
         unassigned_by_level[str(level)] = component_result["unassigned"]
         hierarchy_issues.extend(component_result["issues"])
-        component_movements = component_result["movements"]
+        component_movements = rebuild_movements_with_points(
+            units, structural_centers, component_result["movements"], level_points, level, origin,
+        )
+        covered = {unit_id for movement in component_movements for unit_id in movement.get("source_unit_ids", [])}
+        unassigned_by_level[str(level)] = [unit["id"] for unit in units if unit["id"] not in covered]
         movements.extend(component_movements)
 
-        segmented_components = _recursive_units(component_result["movements"])
+        segmented_components = _recursive_units(component_movements)
         if level == MAX_CENTER_LEVEL:
             break
         parent_centers = _parent_centers(
@@ -792,6 +1433,7 @@ def build_hierarchy(pens: list[dict[str, Any]], l1_centers: list[dict[str, Any]]
                 "sequence_id": parent.get("sequence_id", 0), "evidence": ["CENTER-PARENT-CHILD-001"],
             })
     for ordinal, item in enumerate(centers):
+        item.pop("_component_records", None)
         item["ordinal"] = ordinal
     per_level: dict[int, int] = {}
     for item in centers:
@@ -801,12 +1443,19 @@ def build_hierarchy(pens: list[dict[str, Any]], l1_centers: list[dict[str, Any]]
         item["ordinal"] = ordinal
     for ordinal, item in enumerate(movements):
         item["ordinal"] = ordinal
+    for ordinal, item in enumerate(components):
+        item["ordinal"] = ordinal
+    for ordinal, item in enumerate(buy_sell_points):
+        item.pop("_component_records", None)
+        item["ordinal"] = ordinal
     confirmed_levels = [center["level"] for center in hierarchy_centers if center["status"] == "confirmed"]
     available_levels = [center["level"] for center in hierarchy_centers]
     return {
         "centers": centers,
         "center_relations": relations,
         "movements": movements,
+        "components": components,
+        "buy_sell_points": buy_sell_points,
         "max_confirmed_center_level": max(confirmed_levels, default=0),
         "max_available_center_level": max(available_levels, default=0),
         "hierarchy_version": HIERARCHY_VERSION,

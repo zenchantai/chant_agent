@@ -6,6 +6,10 @@ from app.hierarchy import (
     build_hierarchy_components,
     _center_unit_span,
     _movement_from_centers,
+    atomic_pen_units,
+    build_center_free_components,
+    build_directional_centers,
+    build_third_buy_sell_points,
 )
 
 
@@ -33,6 +37,30 @@ def test_center_relations_distinguish_newborn_and_expansion():
     assert classify_center_relation(a, b) == "newborn_up"
     b["dd"] = 3
     assert classify_center_relation(a, b) == "expansion_up"
+
+
+def test_three_pen_center_free_component_uses_directional_internal_center_rule():
+    pens = [unit(i, a, b) for i, (a, b) in enumerate([(1, 5), (5, 3), (3, 7)])]
+    components = build_center_free_components(pens, 1)
+    assert len(components) == 1
+    assert components[0]["source_unit_ids"] == ["u0", "u1", "u2"]
+    assert components[0]["direction"] == "up"
+
+
+def test_third_buy_accepts_core_departure_and_strict_retest_component():
+    pens = [unit(i, a, b) for i, (a, b) in enumerate([
+        (120, 80), (80, 110), (110, 90), (90, 120), (120, 115),
+    ])]
+    components = build_center_free_components(pens, 1)
+    centers = build_directional_centers(pens, 1)
+    components = list({component["id"]: component for component in [
+        *components, *(centers[0].get("_component_records") or []),
+    ]}.values())
+    points = build_third_buy_sell_points(pens, centers, components, 1)
+    confirmed = [point for point in points if point["point_type"] == "third_buy" and point["status"] == "confirmed"]
+    assert len(confirmed) == 1
+    assert confirmed[0]["point_price"] == 115
+    assert confirmed[0]["confirmed_at"] == pens[-1]["confirmed_at"]
 
 
 def test_hierarchy_preserves_l1_and_adds_parent_only_when_three_children_complete():

@@ -111,6 +111,7 @@ type LayerVisibility = {
   pens: boolean;
   centers: boolean;
   movements: boolean;
+  components: boolean;
   centerLevels: Record<string, boolean>;
   movementLevels: Record<string, boolean>;
 };
@@ -187,6 +188,7 @@ const datesIndex = (bars: Bar[], stamp: string) => {
 };
 const kindName = (kind?: string) => ({
   center: "中枢", pen_center: "笔中枢", movement: "走势", segment: "线段", standard: "标准笔", secondary: "次高低特殊笔", gap: "跳空特殊笔",
+  buy_sell_point: "买卖点", center_free_component: "无中枢组件",
 }[kind || ""] || kind || "结构");
 const nodeLevel = (node: Node) => Number.isFinite(Number(node.level)) ? Math.max(1, Math.floor(Number(node.level))) : 1;
 const isCenterNode = (node: Node) => node.kind === "center" || node.kind === "pen_center";
@@ -200,13 +202,16 @@ const calculationSourceLabel = (timeframe: string) => `${periodLabels[timeframe]
 const centerSemanticLabel = (timeframe: string, level: number, _displayPeriod?: string) =>
   `${periodLabels[timeframe] || timeframe}内部 L${level} 中枢（非跨周期递归）`;
 const movementSemanticLabel = (timeframe: string, level: number) =>
-  `${periodLabels[timeframe] || timeframe}内部 L${level} 走势（反向独立中枢确认结束）`;
+  `${periodLabels[timeframe] || timeframe}内部 L${level} 走势（最早有效结构证据确认）`;
 const movementEndLabel = (reason?: string) => ({
   reverse_independent_center: "反向独立中枢确认结束",
   sequence_boundary: "结构序列中断，尚未完成",
   data_boundary: "行情区间中断，尚未完成",
-  provisional_tail: "等待反向独立中枢",
+  first_buy: "一买确认结束", first_sell: "一卖确认结束",
+  third_buy: "三买确认结束", third_sell: "三卖确认结束",
+  provisional_tail: "等待有效结构确认",
 }[reason || ""] || "尚未确认");
+const pointTypeLabel = (pointType?: string) => ({ first_buy: "一买", second_buy: "二买", third_buy: "三买", first_sell: "一卖", second_sell: "二卖", third_sell: "三卖" }[pointType || ""] || pointType || "买卖点");
 
 export const centersForStructureLevel = (centers: Node[], activeLevel: number) =>
   centers.filter((center) =>
@@ -316,7 +321,7 @@ export const formatMovementTooltip = (movement: Node, chartTimeframe?: string) =
     ...(movement.source_unit_ids?.length ? [`构成单位：${movement.source_unit_ids.join(" / ")}`] : []),
     ...(movement.source_pen_ids?.length ? [`构成笔：${movement.source_pen_ids.join(" / ")}`] : []),
     `实际边界：${movement.start_date} → ${movement.end_date}`,
-    `确认时间：${movement.confirmed_at || "等待反向中枢"}`,
+    `确认时间：${movement.confirmed_at || "等待有效结构确认"}`,
     `结束原因：${movementEndLabel(movement.termination_reason)}`,
     ...(movement.confirmation_center_id ? [`确认中枢：${movement.confirmation_center_id}`] : []),
   ].join("<br/>");
@@ -358,7 +363,7 @@ function Chart({
   subplotIndicators: SubplotIndicator[];
   subplotVisible: SubplotVisibility;
   onSubplotIndicator: (index: number, value: SubplotIndicator) => void;
-  onLayerToggle: (key: "pens" | "centers" | "movements", level?: number) => void;
+  onLayerToggle: (key: "pens" | "centers" | "movements" | "components", level?: number) => void;
   mainIndicator?: {mode:"ma"|"boll"|"pen_center"|"none"; maPeriods:number[]; bollPeriod:number; bollMultiplier:number};
   onMainIndicator?: (mode:"ma"|"boll"|"pen_center"|"none") => void;
   onOpenIndicatorSettings?: () => void;
@@ -596,6 +601,10 @@ function Chart({
       return Math.hypot(x - (start[0] + ratio * dx), y - (start[1] + ratio * dy));
     };
     const nodePixelBoundary = (node: Node) => {
+      if (node.kind === "buy_sell_point" && node.point_date && Number.isFinite(Number(node.point_price))) {
+        const point = pointPixel({ trade_date: node.point_date, price: Number(node.point_price) });
+        return { start: point, end: point };
+      }
       const start = pointPixel({ trade_date: node.start_date, price: Number(node.start_price ?? node.low) });
       const end = pointPixel({ trade_date: node.end_date, price: Number(node.end_price ?? node.high) });
       return { start, end };
@@ -609,8 +618,10 @@ function Chart({
         return x >= Math.min(topLeft[0], bottomRight[0]) - 8 && x <= Math.max(topLeft[0], bottomRight[0]) + 8 && y >= Math.min(topLeft[1], bottomRight[1]) - 8 && y <= Math.max(topLeft[1], bottomRight[1]) + 8;
       });
       const candidates = [
+        ...(builderData.buy_sell_points || []).filter((node) => node.status !== "invalidated" && node.point_date && Number.isFinite(Number(node.point_price))).map((node) => ({ node, tolerance: 16 })),
         ...(builderData.pens || []).filter((node) => node.status === "confirmed").map((node) => ({ node, tolerance: 20 })),
         ...artifacts.visibleMovements.map((node) => ({ node, tolerance: 18 })),
+        ...artifacts.visibleComponents.map((node) => ({ node, tolerance: 12 })),
       ];
       const nearest = candidates.map(({ node, tolerance }) => {
         const boundary = nodePixelBoundary(node);
@@ -822,7 +833,7 @@ function Chart({
         </div>}
       </div>
       {data.timeframe !== "1" && <div className="chart-layer-controls" aria-label="缠论图层控制">
-        {([['pens', '笔', 'pen'], ['centers', '中枢', 'center'], ['movements', '走势', 'movement']] as const).map(([key, label, icon]) => (
+        {([['pens', '笔', 'pen'], ['centers', '中枢', 'center'], ['movements', '走势', 'movement'], ['components', '组件', 'pen']] as const).map(([key, label, icon]) => (
           <button
             key={key}
             className={`chart-layer-toggle ${visible[key] ? "active" : ""}`}
@@ -959,7 +970,7 @@ export function App() {
   useEffect(() => { setSelected(null); }, [symbol, timeframe]);
   useEffect(() => {
     if (!selected || !data) return;
-    const nodes = [...(data.pens || []), ...(data.centers || data.pen_centers || []), ...(data.movements || [])];
+    const nodes = [...(data.pens || []), ...(data.centers || data.pen_centers || []), ...(data.movements || []), ...(data.buy_sell_points || []), ...(data.components || [])];
     if (!nodes.some((node) => node.id === selected.id)) setSelected(null);
   }, [data, selected]);
   const [question, setQuestion] = useState("");
@@ -968,6 +979,7 @@ export function App() {
     pens: true,
     centers: true,
     movements: true,
+    components: false,
     centerLevels: {},
     movementLevels: {},
   });
@@ -1151,6 +1163,7 @@ export function App() {
             pens: true,
             centers: true,
             movements: true,
+            components: false,
             centerLevels: Object.fromEntries(centerLevels.map((level) => [String(level), true])),
             movementLevels: Object.fromEntries(movementLevels.map((level) => [String(level), true])),
           }));
@@ -1173,6 +1186,10 @@ export function App() {
                 centers: scopeNodeOrdinals(unique([...(fresh.centers || fresh.pen_centers || []), ...(old.centers || old.pen_centers || [])], (x) => x.id)),
                 pen_centers: scopeNodeOrdinals(unique([...(fresh.pen_centers || fresh.centers || []), ...(old.pen_centers || old.centers || [])], (x) => x.id)),
                 movements: scopeNodeOrdinals(mergeMovements(fresh.movements || [], old.movements || [])),
+                components: scopeNodeOrdinals(unique([...(fresh.components || []), ...(old.components || [])], (x) => x.id)),
+                context_components: scopeNodeOrdinals(unique([...(fresh.context_components || []), ...(old.context_components || [])], (x) => x.id)),
+                buy_sell_points: scopeNodeOrdinals(unique([...(fresh.buy_sell_points || []), ...(old.buy_sell_points || [])], (x) => x.id)),
+                context_buy_sell_points: scopeNodeOrdinals(unique([...(fresh.context_buy_sell_points || []), ...(old.context_buy_sell_points || [])], (x) => x.id)),
                 drawings: fresh.drawings || old.drawings,
                 indicators: {
                   macd: unique([...fresh.indicators.macd, ...old.indicators.macd], (x) => x.trade_date).sort((a, b) => a.trade_date.localeCompare(b.trade_date)),
@@ -1252,12 +1269,12 @@ export function App() {
       try {
         const parsed = JSON.parse(saved);
         const formalVisible = localStorage.getItem(formalStructureKey);
-        const migrated = { pens: parsed.pens ?? true, centers: formalVisible === null ? (parsed.centers ?? true) : formalVisible !== "0", movements: formalVisible === null ? (parsed.movements ?? true) : formalVisible !== "0", centerLevels: parsed.centerLevels || {}, movementLevels: parsed.movementLevels || {} };
+        const migrated = { pens: parsed.pens ?? true, centers: formalVisible === null ? (parsed.centers ?? true) : formalVisible !== "0", movements: formalVisible === null ? (parsed.movements ?? true) : formalVisible !== "0", components: parsed.components ?? false, centerLevels: parsed.centerLevels || {}, movementLevels: parsed.movementLevels || {} };
         setVisible(migrated);
         if (!localStorage.getItem(versionedLayerKey)) localStorage.setItem(versionedLayerKey, JSON.stringify(migrated));
       }
       catch { /* Ignore invalid legacy browser state. */ }
-    } else setVisible({ pens: true, centers: true, movements: true, centerLevels: {}, movementLevels: {} });
+    } else setVisible({ pens: true, centers: true, movements: true, components: false, centerLevels: {}, movementLevels: {} });
     const indicatorKey = `chan-subplots-${symbol}-${timeframe}`;
     try {
       const savedIndicators = JSON.parse(localStorage.getItem(indicatorKey) || "null");
@@ -1270,7 +1287,7 @@ export function App() {
     try { const saved = JSON.parse(localStorage.getItem(`chan-main-indicator-${symbol}-${timeframe}`) || "null"); const next = saved && Array.isArray(saved.maPeriods) ? {...defaultMainIndicator, ...saved, maPeriods: saved.maPeriods.filter((x:number)=>Number.isInteger(x)&&x>=1&&x<=1000).slice(0,10)} : defaultMainIndicator; setMainIndicator((current) => JSON.stringify(current) === JSON.stringify(next) ? current : next); } catch { setMainIndicator((current) => JSON.stringify(current) === JSON.stringify(defaultMainIndicator) ? current : defaultMainIndicator); }
     load(false);
   }, [load]);
-  const setLayer = (key: "pens" | "centers" | "movements", checked: boolean, level?: number) => {
+  const setLayer = (key: "pens" | "centers" | "movements" | "components", checked: boolean, level?: number) => {
     const next = level === undefined
       ? { ...visible, [key]: checked }
       : { ...visible, [key === "centers" ? "centerLevels" : "movementLevels"]: { ...(key === "centers" ? visible.centerLevels : visible.movementLevels), [String(level)]: checked } };
@@ -2048,12 +2065,13 @@ export function App() {
                   {kindName(selected.kind)} #{selected.ordinal + 1}
                 </h3>
                 <p>
-                  {selected.start_date}
-                  <br />至 {selected.end_date}
+                  {selected.kind === "buy_sell_point" ? selected.point_date : selected.start_date}
+                  {selected.kind !== "buy_sell_point" && <><br />至 {selected.end_date}</>}
                 </p>
                 <dl>
                   <dt>状态</dt>
                   <dd>{selected.status}</dd>
+                  {selected.kind === "buy_sell_point" && <><dt>类型</dt><dd>{pointTypeLabel(selected.point_type)}</dd><dt>点位</dt><dd>{selected.point_date}<br />{formatPrice(selected.point_price)}</dd>{selected.center_id && <><dt>关联中枢</dt><dd>{selected.center_id}</dd></>}</>}
                   {isCenterNode(selected) && <>
                     {(() => { const appearance = levelStructureAppearance(theme === "light" ? "light" : "dark", timeframe, nodeLevel(selected)); return <>
                     <dt>结构级别</dt><dd>L{nodeLevel(selected)}</dd>
@@ -2070,6 +2088,8 @@ export function App() {
                   {selected.kind === "movement" && <><dt>参考中枢 ID</dt><dd>{selected.center_ids?.length ? selected.center_ids.join(" / ") : "--"}</dd></>}
                   {selected.kind === "movement" && <><dt>实际边界</dt><dd>{formatPrice(selected.start_price)} → {formatPrice(selected.end_price)}</dd></>}
                   {selected.kind === "movement" && selected.confirmation_center_id && <><dt>确认中枢</dt><dd>{selected.confirmation_center_id}</dd></>}
+                  {selected.kind === "movement" && selected.confirmation_point_id && <><dt>主确认买卖点</dt><dd>{selected.confirmation_point_id}</dd></>}
+                  {selected.kind === "movement" && <><dt>确认事件</dt><dd>{selected.confirmation_events?.length ? selected.confirmation_events.map((event: any) => pointTypeLabel(String(event.type || ""))).join(" / ") : "--"}</dd></>}
                   {selected.kind === "movement" && <><dt>结束原因</dt><dd>{selected.termination_reason || "provisional_tail"}</dd></>}
                   {selected.kind === "movement" && selected.candidate_extreme_date && <><dt>候选极值</dt><dd>{selected.candidate_extreme_date}<br />{formatPrice(selected.candidate_extreme_price)}</dd></>}
                   {selected.entry_pen_id && <><dt>进入笔</dt><dd>{selected.entry_pen_id}</dd></>}
@@ -2079,11 +2099,14 @@ export function App() {
                   {!!selected.extension_pen_ids?.length && <><dt>延伸笔</dt><dd>{selected.extension_pen_ids.length}</dd></>}
                   {!!selected.peripheral_pen_ids?.length && <><dt>外围笔</dt><dd>{selected.peripheral_pen_ids.length}</dd></>}
                   {!!selected.departure_pen_ids?.length && <><dt>离开候选</dt><dd>{selected.departure_pen_ids.length}</dd></>}
+                  {!!selected.formation_component_ids?.length && <><dt>形成组件</dt><dd>{selected.formation_component_ids.join(" / ")}</dd></>}
+                  {!!selected.departure_component_ids?.length && <><dt>离开组件</dt><dd>{selected.departure_component_ids.join(" / ")}</dd></>}
+                  {!!selected.retest_component_ids?.length && <><dt>回试组件</dt><dd>{selected.retest_component_ids.join(" / ")}</dd></>}
                   {selected.tail_status && <><dt>尾部状态</dt><dd>{selected.tail_status}</dd></>}
                   {selected.zd !== undefined && <><dt>ZD / ZG</dt><dd>{formatPrice(selected.zd)} / {formatPrice(selected.zg)}</dd></>}
                   {selected.dd !== undefined && <><dt>DD / GG</dt><dd>{formatPrice(selected.dd)} / {formatPrice(selected.gg)}</dd></>}
                   <dt>确认时间</dt>
-                  <dd>{selected.confirmed_at || "等待反向中枢"}</dd>
+                  <dd>{selected.confirmed_at || (selected.kind === "buy_sell_point" ? "等待买卖点确认" : "等待有效结构确认")}</dd>
                   {(selected.completion_reason || selected.termination_reason) && <><dt>完成依据</dt><dd>{selected.completion_reason || selected.termination_reason}</dd></>}
                   <dt>构成笔</dt>
                   <dd>{selected.source_pen_ids?.length || selected.pen_ids?.length || selected.child_ids?.length || 0}</dd>

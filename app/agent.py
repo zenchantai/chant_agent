@@ -20,7 +20,7 @@ async def explain(payload: dict[str, Any], question: str | None = None) -> dict[
     api_key = os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
     model = os.getenv("AI_MODEL") or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     api_style = os.getenv("AI_API_STYLE", "responses").lower()
-    prompt = "请基于以下缠论规则计算结果生成简洁、审慎的盘前分析。只能引用 evidence；可以解释已计算的笔、方向性L1中枢和同周期走势，但不能修改结构边界、补充中枢或走势、判断背驰或创造买卖点。"
+    prompt = "请基于以下缠论规则计算结果生成简洁、审慎的盘前分析。只能引用 evidence；可以解释规则引擎已持久化的笔、无中枢组件、方向性中枢、买卖点和同周期走势，但不能修改结构边界、补充中枢或走势、自行判断背驰或创造买卖点。"
     if question:
         prompt += f" 用户问题：{question}"
     if not api_key:
@@ -64,6 +64,7 @@ async def run_agent(rows, symbol: str, question: str | None = None,
         and int(center.get("level", 1) or 1) == 1
     ][-6:]
     movements = result.get("movements", [])[-4:]
+    buy_sell_points = result.get("buy_sell_points", [])[-8:]
     result["explanation"] = await explain({
         "symbol": symbol,
         "definition_version": result.get("definition_version"),
@@ -72,6 +73,7 @@ async def run_agent(rows, symbol: str, question: str | None = None,
         "pens": result.get("pens", [])[-8:],
         "pen_centers": centers,
         "movements": movements,
-        "notice": "只能解释本周期笔、已确认的L1正式中枢及规则引擎已确认或标记为provisional的正式走势。模型不能修改结构、升级递归级别或产生买卖点。",
+        "buy_sell_points": buy_sell_points,
+        "notice": "只能解释本周期规则引擎已经计算并持久化的结构和买卖点。模型不能修改结构、升级递归级别、补判背驰或创造买卖点。",
     }, question)
     return result
