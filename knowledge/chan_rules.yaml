@@ -1,41 +1,41 @@
-version: chan-period-center-free-components-buy-sell-points-v22
+version: chan-period-daily-led-reference-v27
+calculation_profiles:
+  full: ["5", "30", "d"]
+  pen_centers_only: ["w", "m"]
+center_envelope_mode: owned_z_units
+center_promotion_mode: verified_expansion_or_recursive_core
+envelope_touch_mode: candidate
 source:
   title: 读缠论108课札记
   file: ../读缠论108课札记.pdf
 priority: [product_override, later_revision, original_definition]
-base_timeframe: "each_period"
+base_timeframe: each_period
 rules:
-  - {id: RAW-5M-001, section: market_data, assertion: "各周期前复权行情独立按时间升序、去重并校验OHLC；结构不得跨越本周期不完整区间。"}
-  - {id: INC-001, section: inclusion, assertion: "包含关系从左向右处理；向上取高高低高，向下取低低高低，开头方向待首个非包含关系确定。", source_lessons: [62, 65], source_pages: [394, 396, 409, 410, 411]}
-  - {id: FX-001, section: fractals, assertion: "顶分型中间K线高低点均严格高于左右K线，底分型反之，并在右侧K线完成时确认。", source_lessons: [62, 65, 77], source_pages: [394, 396, 411, 482]}
-  - {id: PEN-NEW-001, section: pens, assertion: "新笔由交替顶底分型构成；分型不共享K线，中间至少一根独立处理后K线。", formula: "abs(right.middle_index-left.middle_index) >= 4", source_lessons: [77, 81], source_pages: [482, 520]}
-  - {id: PEN-NEW-002, section: pens, priority: product_override, assertion: "标准笔要求交替分型、中间索引差至少4、顶分型中间K线高低点均高于底分型中间K线；向上终点high严格突破起点右侧确认K线high，向下终点low严格跌破起点右侧确认K线low；不比较两组三K线整体极值。普通笔失败后尝试既有特殊笔例外，均失败则保留起点继续扫描；同类分型保留能维持有效连接的更极端者，同价保留较早者。", source: "用户确认计划 2026-09-15-redesign-standard-pen-rules.md"}
-  - {id: PEN-SPECIAL-001, section: pens, assertion: "特殊次高次低笔：快速行情中标准笔不足5根时，四根K线条件衡量前一端点到先出现的实际最高/最低极值，后续次高/次低分型仅作为较弱端点，且其相对极值的回撤不超过前一波幅50%。", runtime: true, source: "8月半年课第二课 笔的定义", source_pages: [2]}
-  - {id: PEN-SPECIAL-002, section: pens, assertion: "跳空成笔：日线缺口不直接成笔；指数5分钟缺口超过1%、个股超过2.5%，且连续3根K线不回补时允许成笔。", runtime: true, source: "8月半年课第二课 笔的定义", source_pages: [3]}
-  - {id: PEN-SPECIAL-003, section: pens, assertion: "打横笔仅在标准笔成立且次级别对称横盘时启用；收盘有效突破前高低则取消。", runtime: true, source: "8月半年课第二课 笔的定义", source_pages: [2]}
-  - {id: PEN-SPECIAL-004, section: pens, assertion: "修正笔重算尾部同类极值；临时反向端点被更极端同类分型替换时，须回溯重评期间被跳过的上一端点同类极值，更极端者替换、同价保留较早者，稳定前缀不可被未来数据改写。", runtime: true, source: "8月半年课第二课 笔的定义", source_pages: [2]}
-  - {id: PEN-SPECIAL-005, section: pens, assertion: "跳空成笔按周期与指数/个股阈值，连续三根K线不回补后确认；日线不直接成笔。", runtime: true, source: "8月半年课第二课 笔的定义", source_pages: [3]}
-  - {id: CENTER-DIRECTIONAL-ENTRY-001, section: centers, priority: product_override, assertion: "方向性L1笔中枢由进入笔P0及其后连续三条核心笔P1/P2/P3构成；向上进入要求P0起点严格低于ZD且终点严格高于ZD，向下进入要求P0起点严格高于ZG且终点严格低于ZG。", formula: "up: start(P0)<ZD<end(P0); down: start(P0)>ZG>end(P0)", source_lessons: [17, 18, 38], source_pages: [102, 103, 243, 244]}
-  - {id: CENTER-DIRECTIONAL-CORE-001, section: centers, priority: product_override, assertion: "P1/P2/P3必须方向交替且全部确认，三笔核心严格重合；成功消费P0-P3，失败仅右移一笔。中枢矩形只覆盖P1-P3。", formula: "ZD=max(low(P1..P3)); ZG=min(high(P1..P3)); ZD<ZG", source_lessons: [17, 18, 20, 38], source_pages: [102, 103, 104, 121, 243, 244]}
-  - {id: CENTER-L1-EXTENSION-001, section: centers, priority: product_override, assertion: "方向性L1形成后固定ZD/ZG；后续笔区间与固定核心严格重合时吸收为同一L1的延伸，不重新生成L1。", formula: "max(pen.low,ZD)<min(pen.high,ZG)"}
-  - {id: CENTER-L1-REENTRY-001, section: centers, priority: product_override, assertion: "首条不重合笔仅为暂时离开；独立新中枢确认前重新进入固定核心时，外围笔并入原L1外围范围，原核心保持不变。"}
-  - {id: MOVEMENT-BASE-001, section: movements, priority: product_override, assertion: "同周期走势至少包含一个已确认方向性L1笔中枢；单中枢走势分类为盘整，方向取首中枢进入方向。"}
-  - {id: MOVEMENT-TREND-001, section: movements, priority: product_override, assertion: "两个以上严格同向分离的L1中枢构成同一个趋势走势；上升要求ZD(next)>ZG(previous)，下降要求ZG(next)<ZD(previous)，接触不算趋势。"}
-  - {id: MOVEMENT-BOUNDARY-001, section: movements, priority: product_override, assertion: "同级、同连续区间的已确认中枢进入方向相反且核心严格分离时，确认前一走势完成；真实极值端点与反向中枢confirmed_at分开保存。"}
-  - {id: MOVEMENT-STATUS-001, section: movements, priority: product_override, assertion: "最右侧未获反向中枢确认的走势保持provisional；首中枢前的笔记为unassigned，不伪造窗口左边界。"}
-  - {id: CENTER-RELATION-HIERARCHY-001, section: hierarchy, priority: product_override, assertion: "正式层级中枢独立判定延伸、新生和扩张；关系用于组织正式层级递归。"}
-  - {id: CENTER-UPGRADE-EXTENSION-001, section: hierarchy, priority: product_override, assertion: "extension_3x3 不再作为父级成枢分支；固定核心的后续严格重叠单位只能作为延伸，不能按数量自动升级。"}
-  - {id: CENTER-UPGRADE-EXPANSION-001, section: hierarchy, priority: product_override, assertion: "expansion 只保留为中枢关系描述，不替代统一的进入单位加三核心单位成枢条件。"}
-  - {id: CENTER-PARENT-CHILD-001, section: hierarchy, priority: product_override, assertion: "高级中枢只新增父结构，低级中枢、走势和源笔永久保留。"}
-  - {id: MOVEMENT-SHARED-ENDPOINT-001, section: movements, priority: product_override, assertion: "相邻正式走势只共享一个真实高低端点，不共享低级运动；实际边界与确认时间分开保存。"}
-  - {id: RECURSION-001, section: hierarchy, runtime: true, assertion: "每个行情周期内独立递归中枢级别，不把行情周期直接映射为结构级别，递归上限L8。", source_lessons: [17, 18, 20, 83], source_pages: [102, 109, 119, 527]}
-  - {id: CONFIRM-001, section: confirmation, assertion: "所有结构保存confirmed或provisional；确认时间取完成规则所需最后事件时间，禁止未来函数。", source_lessons: [65, 67, 77, 78], source_pages: [411, 418, 482, 489]}
-  - {id: LEGACY-RECURSIVE, section: legacy, runtime: false, assertion: "旧版单层走势仅保留为历史快照审计；当前版本启用正式层级递归、级别显示颜色映射和计算器指纹快照失效。"}
-  - {id: CENTER-HIERARCHY-THREE-001, section: hierarchy, priority: product_override, assertion: "所有级别统一使用U0进入单位加U1/U2/U3三个核心单位；U0-U2为2/3候选，U0-U3才确认父级中枢。低级走势必须已由反向独立中枢确认。"}
-  - {id: COMPONENT-CENTER-FREE-001, section: components, priority: product_override, assertion: "进入、核心、离开和回试统一使用无同级中枢的次级别走势组件；组件可以退化为一个单位，或由三个及以上奇数个连续交替单位组成，内部不得形成同级中枢。"}
-  - {id: CENTER-COMPONENT-ENTRY-001, section: centers, priority: product_override, assertion: "所有级别中枢均由进入组件E与核心组件C1/C2/C3构成，中枢方向永久取E的方向；中枢只引用组件，不取得底层单位所有权。"}
-  - {id: CENTER-COMPONENT-CORE-001, section: centers, priority: product_override, assertion: "核心组件C1/C2/C3严格重叠后固定ZD/ZG；核心第三组件可以同时作为首个离开组件，后续严格重叠只延伸原中枢。"}
-  - {id: POINT-FIRST-MACD-DUAL-001, section: buy_sell_points, priority: product_override, assertion: "一买一卖必须同时满足同一连续结构序列内价格创新极值、同向MACD柱面积缩小和DIF极值改善；缺一条件只保留候选。"}
-  - {id: POINT-SECOND-RETEST-001, section: buy_sell_points, priority: product_override, assertion: "二买二卖必须依赖正式一买一卖，回试不得越过一买一卖价位，并由后续反向组件确认；只追加证据，不移动已锁定走势边界。"}
-  - {id: POINT-THIRD-RETEST-001, section: buy_sell_points, priority: product_override, assertion: "三买三卖可独立成立；离开组件严格越过ZG/ZD后，反向回试组件仍严格位于核心外侧并完成时确认。"}
-  - {id: MOVEMENT-POINT-CONFIRMATION-001, section: movements, priority: product_override, assertion: "正式一买一卖、三买三卖和反向独立中枢均可确认走势；最早confirmed_at锁定边界，二买二卖和后续证据只追加到confirmation_events。"}
+  - {id: PERIOD-PROFILE-V27, section: period_profile, priority: product_override, assertion: "日线、5分钟、30分钟保留完整结构计算；周线、月线只计算确认笔、L1笔中枢及延伸，保留内部离开回试证据，但不生成中枢关系、扩张、升级、走势、背驰或买卖点。"}
+  - {id: DAILY-L2-PROJECTION-V27, section: projection, priority: product_override, assertion: "周月图独立叠加日线正式展示目录中的L2，包含活动及升级后保留的组成中枢；保持日线来源、日期、价格、家族和修订身份，不参与周月原生结构计算。"}
+  - {id: DAILY-CONFIRMED-SOURCE-V27, section: confirmation, priority: product_override, assertion: "日线正式结构和跨周期L2仅使用有完成基线或匹配内容确认的已收盘日K；形成中数据只用于独立预览，未确认缓存不能因墙钟或跨日自动转为正式。"}
+  - {id: RAW-5M-001, section: market_data, assertion: "各周期行情独立按时间升序去重并校验OHLC；结构不得跨越不完整区间、数据断点或序列边界。"}
+  - {id: INC-001, section: inclusion, assertion: "包含关系从左向右处理；向上取高高低高，向下取低低高低，开头方向由首个非包含关系确定。"}
+  - {id: FX-001, section: fractals, assertion: "顶分型中间K线高低点均严格高于左右K线，底分型反之，并在右侧K线完成时确认。"}
+  - {id: PEN-NEW-001, section: pens, assertion: "新笔由交替顶底分型构成，分型不共享K线，中间至少一根独立处理后K线。"}
+  - {id: PEN-NEW-002, section: pens, priority: product_override, assertion: "标准笔沿用当前工程已验证规则；本版不修改笔识别，只消费已确认笔。"}
+  - {id: PEN-SPECIAL-001, section: pens, assertion: "特殊次高次低笔沿用现有规则。"}
+  - {id: PEN-SPECIAL-002, section: pens, assertion: "跳空成笔沿用现有周期与标的阈值规则。"}
+  - {id: PEN-SPECIAL-003, section: pens, assertion: "打横笔仅在标准笔成立且次级别对称横盘时启用。"}
+  - {id: PEN-SPECIAL-004, section: pens, assertion: "修正笔只重算活动尾部，已确认稳定前缀不被未来数据改写。"}
+  - {id: PEN-SPECIAL-005, section: pens, assertion: "日线缺口不直接成笔；其他周期按现有跳空规则确认。"}
+  - {id: COMPONENT-CENTER-FREE-V25, section: components, assertion: "进入、连接、离开和回试组件由连续、不重复、方向交替的低级单位组成，内部不存在当前工作区可提交的同级中枢。"}
+  - {id: CENTER-WORKSPACE-V25, section: centers, assertion: "中枢在走势边界后的工作区内构造，必须先有非空进入段，再选择时间最早的合法三单位核心；禁止全局滑窗。"}
+  - {id: CENTER-STRICT-CORE-V25, section: centers, assertion: "核心三单位连续、已确认、方向交替并严格重叠；ZD=max(low1,low2,low3)，ZG=min(high1,high2,high3)，且ZD+epsilon<ZG。"}
+  - {id: CENTER-STATE-MACHINE-V25, section: centers, assertion: "核心形成后固定ZD/ZG；后续波动依时间唯一进入延伸、暂时离开返回、离开或回试分支。"}
+  - {id: CENTER-Z-WAVE-V26, section: centers, assertion: "DD/GG仅取核心第一、第三及已接纳同向延伸Z单位，进入、连接、最终离开和回试不参与；与上下文价格范围分开。"}
+  - {id: CENTER-NEWBORN-EXPANSION-V26, section: centers, assertion: "核心分离且Z包络分离为新生；Z包络重叠还须确认两子中枢、连续源区间、真实连接、Z重叠见证和事件可用时间，才追加高级修订；仅接触保持候选。"}
+  - {id: CENTER-FAMILY-REVISION-V25, section: hierarchy, assertion: "中枢升级沿用较早center_family_id并新增不可变高级修订；不通过传递重叠吸收后续结构。"}
+  - {id: POINT-STRENGTH-VECTOR-V25, section: points, assertion: "力度先比较内部最高中枢级别和已确认子走势数，相同时再比较振幅与平均斜率；MACD仅作辅助证据。"}
+  - {id: POINT-FIRST-V25, section: points, assertion: "一类点仅出现在至少两个同级中枢构成的趋势中，点位是最后离开段真实极值，后续反向低级走势完成时确认。"}
+  - {id: POINT-SECOND-V25, section: points, assertion: "二类点依赖已确认一类点，第一次完整回撤不得破坏一类点极值，且不默认切分走势。"}
+  - {id: POINT-THIRD-V25, section: points, assertion: "三类点由完整离开组件和第一次完整回试组件构成，回试进入核心则候选失效。"}
+  - {id: MOVEMENT-POINT-BOUNDARY-V25, section: movements, assertion: "走势边界必须追溯到结构点真实端点；相邻走势只共享一个价格端点，不共享整笔或低级走势。"}
+  - {id: MOVEMENT-CLASSIFICATION-V25, section: movements, assertion: "一个同级中枢为盘整；两个以上完整系统依次严格向上或向下分离为上涨或下跌；扩张不得误判同级趋势。"}
+  - {id: RECURSION-V25, section: hierarchy, assertion: "L2以上只消费连续、已确认、分类明确且recursive_eligible=true的低级走势，递归上限L8。"}
+  - {id: CONFIRM-V25, section: confirmation, assertion: "点位时间与确认时间分开；无法唯一确认的结构保持candidate、provisional、undetermined或truncated，禁止未来函数。"}

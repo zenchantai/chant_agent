@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from .providers import TIMEFRAMES, MarketDataProvider, fetch_baostock, fetch_stock_name, fetch_trade_calendar, is_trading_day
 from .store import Store
-from .period_structure import PeriodStructureService
+from .period_structure import PeriodStructureService, STRUCTURE_TIMEFRAMES
 from .intraday import IntradayService
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -109,19 +109,12 @@ class SyncService:
         self.store.upsert_trade_calendar(rows)
 
     async def sync_one(self, symbol: str, timeframe: str, mode: str = "incremental", scheduled_for: datetime | None = None, adjustflag: str = "2"):
-        stamp = scheduled_for.isoformat() if scheduled_for else None
-        if stamp and self.store.has_successful_sync(symbol, timeframe, stamp):
-            return
-        run_id = self.store.create_sync_run(symbol, timeframe, mode, stamp)
         try:
             if timeframe == "1":
                 attempt = await asyncio.to_thread(self.intraday.refresh, symbol, adjustflag)
                 if attempt["result"] == "failed":
                     raise RuntimeError(attempt["error"])
-                range_start, range_end = self.store.market_range(symbol, timeframe, adjustflag)
-                count = len(self.store.market_bars(symbol, timeframe, adjustflag, "0000-01-01"))
-                self.store.finish_sync_run(run_id, "success", count, range_start, range_end)
-                return
+                return attempt
             cached_start, cached_end = self.store.market_range(symbol, timeframe, adjustflag)
             if mode == "full" or not cached_end:
                 start = HISTORY_START
@@ -142,11 +135,13 @@ class SyncService:
                 if delay:
                     await asyncio.sleep(delay)
                 try:
+                    request_started_at = datetime.now(TZ)
                     if timeframe == "5":
                         fetched = await self.market_provider.fetch_5m(symbol, start, date.today().isoformat(), adjustflag)
                         rows = fetched["rows"]
                     else:
                         rows = await asyncio.to_thread(fetch_baostock, symbol, timeframe, start, date.today().isoformat(), adjustflag)
+                    fetched_at = datetime.now(TZ)
                     error = None
                     break
                 except Exception as exc:
@@ -157,19 +152,32 @@ class SyncService:
                 raise RuntimeError("BaoStock 未返回可缓存的行情数据")
             source = rows[0].get("source", "baostock") if rows else "baostock"
             snapshot_id = rows[0].get("snapshot_id", "") if rows else ""
-            count, changed_from = self.store.upsert_bars_with_changes(symbol, timeframe, adjustflag, rows, source=source, snapshot_id=snapshot_id)
-            coverage = self.period_structures.coverage(symbol, timeframe, adjustflag)
-            self.store.save_market_coverage(symbol, timeframe, adjustflag, coverage)
-            gaps = [{"start_date": x.get("date", x.get("start_date")), "end_date": x.get("date", x.get("end_date"))} for x in coverage.get("incomplete_days", [])]
-            gaps += [{"start_date": x, "end_date": x} for x in coverage.get("missing_sessions", [])]
-            self.store.replace_gap_tasks(symbol, timeframe, adjustflag, [g for g in gaps if g["start_date"] and g["end_date"]])
-            active = self.store.active_period_structure_run(symbol, timeframe, adjustflag)
-            if changed_from or not active:
+            count, changed_from = self.store.upsert_bars_with_changes(
+                symbol, timeframe, adjustflag, rows, source=source, snapshot_id=snapshot_id,
+                **({"fetched_at": fetched_at, "request_started_at": request_started_at}
+                   if timeframe == "d" else {}),
+            )
+            active = self.store.active_chan_run(symbol, timeframe, adjustflag)
+            if timeframe in STRUCTURE_TIMEFRAMES and (changed_from or not active):
                 await asyncio.to_thread(self.period_structures.ensure, symbol, timeframe, adjustflag, True)
+            if timeframe == "d" and rows and count:
+                latest = max(rows, key=lambda row: row["trade_date"])
+                accepted_source = {**latest, "source": latest.get("source", source),
+                                   "snapshot_id": latest.get("snapshot_id", snapshot_id)}
+                formal = self.store.confirmed_daily_bars(symbol, adjustflag)
+                if (formal and formal[-1]["trade_date"] == latest["trade_date"]
+                        and self.store._daily_bar_hash(formal[-1]) == self.store._daily_bar_hash(accepted_source)):
+                    self.intraday.record_formal_daily_refresh(
+                        symbol, adjustflag, fetched_at, latest["trade_date"],
+                    )
             range_start, range_end = self.store.market_range(symbol, timeframe, adjustflag)
-            self.store.finish_sync_run(run_id, "success", count, range_start, range_end)
+            return {
+                "result": "success", "rows_received": count,
+                "range_start": range_start, "range_end": range_end,
+                "changed_from": changed_from,
+            }
         except Exception as exc:
-            self.store.finish_sync_run(run_id, "failed", error=f"{type(exc).__name__}: {exc}")
+            return {"result": "failed", "error": f"{type(exc).__name__}: {exc}"}
 
     async def add_stock(self, symbol: str, name: str = "", sync: bool = True,
                         group_id: int | None = None):

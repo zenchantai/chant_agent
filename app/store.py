@@ -7,22 +7,31 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
+
+
+MARKET_TZ = ZoneInfo("Asia/Shanghai")
+MARKET_BAR_FIELDS = "trade_date,open,high,low,close,volume,amount,source,snapshot_id,source_revision,adjust_factor,is_suspended,limit_up,limit_down"
 
 
 class Store:
-    def __init__(self, path: str = "data/chant_agent.db"):
+    def __init__(self, path: str = "data/chant_agent.db", clock=None):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.clock = clock or (lambda: datetime.now(MARKET_TZ))
         self._lock = threading.RLock()
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
-        self._initialize()
+        try:
+            self._initialize()
+        except BaseException:
+            self.db.close()
+            raise
 
     def _initialize(self):
         with self._lock:
+            self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA busy_timeout=5000")
-            self.db.execute("CREATE TABLE IF NOT EXISTS analyses (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, as_of TEXT, data_version TEXT, payload TEXT)")
-            self.db.execute("CREATE TABLE IF NOT EXISTS journals (id INTEGER PRIMARY KEY AUTOINCREMENT, analysis_id INTEGER, action TEXT, note TEXT, created_at TEXT)")
             self.db.execute("""CREATE TABLE IF NOT EXISTS market_bars (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
                 trade_date TEXT NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL,
@@ -50,22 +59,7 @@ class Store:
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(stock_pool)")}
             if "sort_order" not in columns:
                 self.db.execute("ALTER TABLE stock_pool ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS sync_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
-                mode TEXT NOT NULL, scheduled_for TEXT, started_at TEXT NOT NULL, finished_at TEXT,
-                status TEXT NOT NULL, rows_received INTEGER NOT NULL DEFAULT 0,
-                range_start TEXT, range_end TEXT, error TEXT NOT NULL DEFAULT '')""")
             self.db.execute("CREATE INDEX IF NOT EXISTS idx_market_bars_lookup ON market_bars(symbol,timeframe,adjustflag,trade_date)")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS structure_overrides (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
-                adjustflag TEXT NOT NULL, structure_type TEXT NOT NULL, target_id TEXT,
-                operation TEXT NOT NULL, payload TEXT NOT NULL, base_run_id INTEGER,
-                base_structure_version TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'active',
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
-            self.db.execute("CREATE INDEX IF NOT EXISTS idx_structure_overrides_lookup ON structure_overrides(symbol,timeframe,adjustflag,status,id DESC)")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS structure_override_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, override_id INTEGER NOT NULL, action TEXT NOT NULL,
-                before_payload TEXT NOT NULL DEFAULT '', after_payload TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)""")
             self.db.execute("""CREATE TABLE IF NOT EXISTS drawing_objects (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
                 object_type TEXT NOT NULL, start_anchor TEXT NOT NULL, end_anchor TEXT NOT NULL,
@@ -76,17 +70,6 @@ class Store:
                 exchange TEXT NOT NULL, trade_date TEXT NOT NULL, is_trading_day INTEGER NOT NULL,
                 session_type TEXT NOT NULL DEFAULT 'full', expected_5m_count INTEGER,
                 expected_30m_count INTEGER, PRIMARY KEY(exchange, trade_date))""")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS market_coverage (
-                symbol TEXT NOT NULL, timeframe TEXT NOT NULL, adjustflag TEXT NOT NULL,
-                coverage_version TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL,
-                updated_at TEXT NOT NULL, PRIMARY KEY(symbol,timeframe,adjustflag))""")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS market_gap_tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
-                adjustflag TEXT NOT NULL, gap_start TEXT NOT NULL, gap_end TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0,
-                source TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
-                UNIQUE(symbol,timeframe,adjustflag,gap_start,gap_end))""")
-            self.db.execute("CREATE INDEX IF NOT EXISTS idx_sync_runs_lookup ON sync_runs(symbol,timeframe,id DESC)")
             market_columns = {row[1] for row in self.db.execute("PRAGMA table_info(market_bars)")}
             for name, definition in {
                 "source": "TEXT NOT NULL DEFAULT 'baostock'",
@@ -98,54 +81,143 @@ class Store:
             }.items():
                 if name not in market_columns:
                     self.db.execute(f"ALTER TABLE market_bars ADD COLUMN {name} {definition}")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS market_data_conflicts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
-                trade_date TEXT NOT NULL, adjustflag TEXT NOT NULL, old_source TEXT NOT NULL,
-                new_source TEXT NOT NULL, old_payload TEXT NOT NULL, new_payload TEXT NOT NULL,
-                created_at TEXT NOT NULL)""")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS period_structure_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
-                adjustflag TEXT NOT NULL, definition_version TEXT NOT NULL, started_at TEXT NOT NULL,
-                finished_at TEXT, status TEXT NOT NULL, market_version TEXT NOT NULL,
-                coverage_version TEXT NOT NULL DEFAULT '', structure_version TEXT NOT NULL DEFAULT '',
-                calculator_fingerprint TEXT NOT NULL DEFAULT '',
-                error TEXT NOT NULL DEFAULT '', movement_count INTEGER NOT NULL DEFAULT 0,
-                component_count INTEGER NOT NULL DEFAULT 0, point_count INTEGER NOT NULL DEFAULT 0,
-                center_level_counts TEXT NOT NULL DEFAULT '{}', movement_level_counts TEXT NOT NULL DEFAULT '{}',
-                max_confirmed_center_level INTEGER NOT NULL DEFAULT 0,
-                max_available_center_level INTEGER NOT NULL DEFAULT 0)""")
-            self.db.execute("CREATE INDEX IF NOT EXISTS idx_period_runs_lookup ON period_structure_runs(symbol,timeframe,adjustflag,id DESC)")
-            for table in ("period_processed_bars", "period_fractals", "period_pens", "period_pen_centers", "period_center_relations", "period_movements", "period_structure_components", "period_buy_sell_points"):
-                self.db.execute(f"""CREATE TABLE IF NOT EXISTS {table} (
-                    run_id INTEGER NOT NULL, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
-                    adjustflag TEXT NOT NULL, definition_version TEXT NOT NULL, ordinal INTEGER NOT NULL,
-                    start_date TEXT NOT NULL, end_date TEXT NOT NULL, payload TEXT NOT NULL,
-                    PRIMARY KEY(run_id,ordinal))""")
-                self.db.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_range ON {table}(run_id,start_date,end_date)")
-            run_columns = {row[1] for row in self.db.execute("PRAGMA table_info(period_structure_runs)")}
-            if "structure_metadata" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN structure_metadata TEXT NOT NULL DEFAULT '{}'")
-            if "calculator_fingerprint" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN calculator_fingerprint TEXT NOT NULL DEFAULT ''")
-            if "movement_count" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN movement_count INTEGER NOT NULL DEFAULT 0")
-            if "component_count" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN component_count INTEGER NOT NULL DEFAULT 0")
-            if "point_count" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN point_count INTEGER NOT NULL DEFAULT 0")
-            if "center_level_counts" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN center_level_counts TEXT NOT NULL DEFAULT '{}'")
-            if "movement_level_counts" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN movement_level_counts TEXT NOT NULL DEFAULT '{}'")
-            if "max_confirmed_center_level" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN max_confirmed_center_level INTEGER NOT NULL DEFAULT 0")
-            if "max_available_center_level" not in run_columns:
-                self.db.execute("ALTER TABLE period_structure_runs ADD COLUMN max_available_center_level INTEGER NOT NULL DEFAULT 0")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS active_period_structure_runs (
+            self._initialize_daily_confirmations()
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_structure_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL, timeframe TEXT NOT NULL, adjustflag TEXT NOT NULL,
-                run_id INTEGER NOT NULL, activated_at TEXT NOT NULL,
+                definition_version TEXT NOT NULL, calculator_fingerprint TEXT NOT NULL,
+                market_version TEXT NOT NULL, structure_version TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL, max_level INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL, finished_at TEXT, error TEXT NOT NULL DEFAULT '',
+                meta_json TEXT NOT NULL DEFAULT '{}')""")
+            self.db.execute("CREATE INDEX IF NOT EXISTS idx_chan_runs_lookup ON chan_structure_runs(symbol,timeframe,adjustflag,id DESC)")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_active_runs (
+                symbol TEXT NOT NULL, timeframe TEXT NOT NULL, adjustflag TEXT NOT NULL,
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                activated_at TEXT NOT NULL,
                 PRIMARY KEY(symbol,timeframe,adjustflag))""")
+            for table in ("chan_processed_bars", "chan_fractals", "chan_pens"):
+                self.db.execute(f"""CREATE TABLE IF NOT EXISTS {table} (
+                    run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                    id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                    start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY(run_id,id), UNIQUE(run_id,ordinal))""")
+                self.db.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_range ON {table}(run_id,start_date,end_date)")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_components (
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                id TEXT NOT NULL, level INTEGER NOT NULL, role TEXT NOT NULL,
+                direction TEXT, status TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+                start_price REAL NOT NULL, end_price REAL NOT NULL, low REAL NOT NULL, high REAL NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(run_id,id))""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_component_units (
+                run_id INTEGER NOT NULL, component_id TEXT NOT NULL, unit_kind TEXT NOT NULL,
+                unit_id TEXT NOT NULL, role TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                PRIMARY KEY(run_id,component_id,role,ordinal),
+                FOREIGN KEY(run_id,component_id) REFERENCES chan_components(run_id,id) ON DELETE CASCADE)""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_center_families (
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                id TEXT NOT NULL, current_revision_id TEXT NOT NULL, base_level INTEGER NOT NULL,
+                current_level INTEGER NOT NULL, status TEXT NOT NULL,
+                PRIMARY KEY(run_id,id))""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_center_revisions (
+                run_id INTEGER NOT NULL, id TEXT NOT NULL, family_id TEXT NOT NULL,
+                revision_no INTEGER NOT NULL, previous_revision_id TEXT, level INTEGER NOT NULL,
+                status TEXT NOT NULL, active INTEGER NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+                zd REAL NOT NULL, zg REAL NOT NULL, dd REAL NOT NULL, gg REAL NOT NULL,
+                entry_direction TEXT, core_formation_pattern TEXT, departure_direction TEXT,
+                owner_movement_id TEXT, evidence_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no),
+                FOREIGN KEY(run_id,family_id) REFERENCES chan_center_families(run_id,id) ON DELETE CASCADE)""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_center_units (
+                run_id INTEGER NOT NULL, center_revision_id TEXT NOT NULL, unit_kind TEXT NOT NULL,
+                unit_id TEXT NOT NULL, role TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                PRIMARY KEY(run_id,center_revision_id,role,ordinal),
+                FOREIGN KEY(run_id,center_revision_id) REFERENCES chan_center_revisions(run_id,id) ON DELETE CASCADE)""")
+            self.db.execute("""CREATE INDEX IF NOT EXISTS idx_chan_core_owner
+                ON chan_center_units(run_id,unit_kind,unit_id) WHERE role='core'""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_movement_families (
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                id TEXT NOT NULL, current_revision_id TEXT NOT NULL, base_level INTEGER NOT NULL,
+                current_level INTEGER NOT NULL, status TEXT NOT NULL,
+                PRIMARY KEY(run_id,id))""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_movement_revisions (
+                run_id INTEGER NOT NULL, id TEXT NOT NULL, family_id TEXT NOT NULL,
+                revision_no INTEGER NOT NULL, level INTEGER NOT NULL, status TEXT NOT NULL,
+                classification TEXT, direction TEXT NOT NULL, active INTEGER NOT NULL,
+                start_date TEXT NOT NULL, end_date TEXT NOT NULL, start_price REAL NOT NULL, end_price REAL NOT NULL,
+                confirmed_at TEXT, recursive_eligible INTEGER NOT NULL,
+                termination_reason TEXT NOT NULL, evidence_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no),
+                FOREIGN KEY(run_id,family_id) REFERENCES chan_movement_families(run_id,id) ON DELETE CASCADE)""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_movement_units (
+                run_id INTEGER NOT NULL, movement_revision_id TEXT NOT NULL, unit_kind TEXT NOT NULL,
+                unit_id TEXT NOT NULL, role TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                PRIMARY KEY(run_id,movement_revision_id,role,ordinal),
+                FOREIGN KEY(run_id,movement_revision_id) REFERENCES chan_movement_revisions(run_id,id) ON DELETE CASCADE)""")
+            self.db.execute("""CREATE INDEX IF NOT EXISTS idx_chan_movement_unit_owner
+                ON chan_movement_units(run_id,unit_kind,unit_id) WHERE role='source'""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_movement_centers (
+                run_id INTEGER NOT NULL, movement_revision_id TEXT NOT NULL,
+                center_family_id TEXT NOT NULL, center_revision_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                PRIMARY KEY(run_id,movement_revision_id,ordinal),
+                FOREIGN KEY(run_id,movement_revision_id) REFERENCES chan_movement_revisions(run_id,id) ON DELETE CASCADE)""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_point_families (
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                id TEXT NOT NULL, current_revision_id TEXT NOT NULL, status TEXT NOT NULL,
+                PRIMARY KEY(run_id,id))""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_point_revisions (
+                run_id INTEGER NOT NULL, id TEXT NOT NULL, family_id TEXT NOT NULL,
+                revision_no INTEGER NOT NULL, level INTEGER NOT NULL, point_type TEXT NOT NULL,
+                status TEXT NOT NULL, active INTEGER NOT NULL, point_date TEXT NOT NULL, point_price REAL NOT NULL,
+                confirmed_at TEXT, source_unit_id TEXT NOT NULL, center_family_id TEXT NOT NULL,
+                center_revision_id TEXT NOT NULL, movement_family_id TEXT, invalidated_reason TEXT,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no),
+                FOREIGN KEY(run_id,family_id) REFERENCES chan_point_families(run_id,id) ON DELETE CASCADE)""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_relations (
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                id TEXT NOT NULL, level INTEGER NOT NULL, relation_type TEXT NOT NULL,
+                from_id TEXT NOT NULL, to_id TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(run_id,id))""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_issues (
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                id TEXT NOT NULL, level INTEGER NOT NULL DEFAULT 0, issue_type TEXT NOT NULL,
+                start_date TEXT NOT NULL DEFAULT '', end_date TEXT NOT NULL DEFAULT '',
+                evidence_json TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(run_id,id))""")
             self.db.commit()
+
+    def _initialize_daily_confirmations(self) -> None:
+        # The table's existence marks this one-time migration as complete, so
+        # its DDL and historical inserts must commit (or roll back) together.
+        self.db.execute("SAVEPOINT daily_confirmations_migration")
+        try:
+            existed = self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daily_bar_confirmations'"
+            ).fetchone()
+            self.db.execute("""CREATE TABLE IF NOT EXISTS daily_bar_confirmations (
+                symbol TEXT NOT NULL, adjustflag TEXT NOT NULL, trade_date TEXT NOT NULL,
+                row_hash TEXT NOT NULL, confirmed_at TEXT NOT NULL,
+                PRIMARY KEY(symbol,adjustflag,trade_date))""")
+            if not existed:
+                self._backfill_daily_confirmations(self._market_time(self.clock()))
+            self.db.execute("RELEASE SAVEPOINT daily_confirmations_migration")
+        except BaseException:
+            self.db.execute("ROLLBACK TO SAVEPOINT daily_confirmations_migration")
+            self.db.execute("RELEASE SAVEPOINT daily_confirmations_migration")
+            raise
+
+    def _backfill_daily_confirmations(self, migrated_at: datetime) -> None:
+        # Never revisit this baseline on a later day: post-migration intraday
+        # caches require new successful-fetch evidence before becoming formal.
+        legacy_rows = self.db.execute(
+            "SELECT * FROM market_bars WHERE timeframe='d' AND trade_date<?",
+            (migrated_at.date().isoformat(),),
+        ).fetchall()
+        self.db.executemany("""INSERT INTO daily_bar_confirmations
+            (symbol,adjustflag,trade_date,row_hash,confirmed_at) VALUES(?,?,?,?,?)""",
+            [(row["symbol"], row["adjustflag"], row["trade_date"],
+              self._daily_bar_hash(dict(row)), migrated_at.isoformat()) for row in legacy_rows])
 
     def list_stock_pool(self):
         with self._lock:
@@ -154,23 +226,14 @@ class Store:
             for row in rows:
                 item = dict(row)
                 item["enabled"] = bool(item["enabled"])
-                latest = self.db.execute("""SELECT s.* FROM sync_runs s JOIN (
-                    SELECT timeframe,MAX(id) id FROM sync_runs WHERE symbol=? GROUP BY timeframe
-                ) x ON s.id=x.id ORDER BY s.id DESC""", (item["symbol"],)).fetchall()
-                statuses = [run["status"] for run in latest]
-                if "running" in statuses:
-                    item["sync_status"] = "running"
-                elif "failed" in statuses and "success" in statuses:
-                    item["sync_status"] = "partial_failed"
-                elif "failed" in statuses:
-                    item["sync_status"] = "failed"
-                elif statuses:
-                    item["sync_status"] = "success"
-                else:
-                    item["sync_status"] = None
-                successes = [run["finished_at"] for run in latest if run["status"] == "success" and run["finished_at"]]
-                item["last_sync"] = max(successes) if successes else None
-                item["sync_error"] = "；".join(run["error"] for run in latest if run["status"] == "failed" and run["error"])
+                latest = self.db.execute("""SELECT r.status,r.finished_at,r.error
+                    FROM chan_structure_runs r JOIN chan_active_runs a ON a.run_id=r.id
+                    WHERE a.symbol=? ORDER BY r.id DESC""", (item["symbol"],)).fetchall()
+                item["sync_status"] = "success" if latest else None
+                item["last_sync"] = max(
+                    (run["finished_at"] for run in latest if run["finished_at"]), default=None,
+                )
+                item["sync_error"] = ""
                 item["market"] = self.market_summary(item["symbol"], "2")
                 result.append(item)
             return result
@@ -540,7 +603,112 @@ class Store:
         count, _ = self.upsert_bars_with_changes(symbol, timeframe, adjustflag, rows)
         return count
 
-    def upsert_bars_with_changes(self, symbol: str, timeframe: str, adjustflag: str, rows: list[dict[str, Any]], source: str = "baostock", snapshot_id: str = "", allow_lower_priority: bool = False) -> tuple[int, str | None]:
+    @staticmethod
+    def _market_time(value: datetime | str) -> datetime:
+        stamp = datetime.fromisoformat(value) if isinstance(value, str) else value
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=MARKET_TZ)
+        return stamp.astimezone(MARKET_TZ)
+
+    @staticmethod
+    def _daily_bar_hash(row: dict[str, Any]) -> str:
+        """Hash accepted market content and provenance, never SQLite identity."""
+        payload = {field: float(row.get(field, default) or 0) for field, default in (
+            ("open", 0), ("high", 0), ("low", 0), ("close", 0), ("volume", 0),
+            ("amount", 0), ("adjust_factor", 1),
+        )}
+        payload.update({field: float(row[field]) if row.get(field) is not None else None
+                        for field in ("limit_up", "limit_down")})
+        payload.update({"trade_date": str(row["trade_date"]),
+                        "is_suspended": bool(row.get("is_suspended", False)),
+                        "source": row.get("source", "baostock"),
+                        "snapshot_id": row.get("snapshot_id", ""),
+                        "source_revision": row.get("source_revision", "")})
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def _confirm_daily_rows(self, symbol: str, adjustflag: str, rows: list[dict[str, Any]],
+                            fetched_at: datetime, request_started_at: datetime) -> list[str]:
+        """Called inside the writer transaction; return newly confirmed dates."""
+        fetched_at = self._market_time(fetched_at)
+        request_started_at = self._market_time(request_started_at)
+        if fetched_at < request_started_at:
+            raise ValueError("日线确认的请求开始时间不能晚于响应时间")
+        changed = []
+        for candidate in rows:
+            day = str(candidate["trade_date"])
+            close_at = datetime.fromisoformat(day).replace(
+                hour=15, minute=0, second=15, microsecond=0, tzinfo=MARKET_TZ,
+            )
+            if request_started_at < close_at:
+                continue
+            calendar = self.db.execute("""SELECT is_trading_day FROM trade_calendar
+                WHERE exchange='CN' AND trade_date=?""", (day,)).fetchone()
+            # A historical response is already a completed source. For a same-day
+            # response, positive exchange-calendar evidence is also required.
+            if (calendar and not calendar[0]) or (day == fetched_at.date().isoformat() and not calendar):
+                continue
+            stored = self.db.execute("""SELECT * FROM market_bars
+                WHERE symbol=? AND timeframe='d' AND adjustflag=? AND trade_date=?""",
+                (symbol, adjustflag, day)).fetchone()
+            candidate_hash = self._daily_bar_hash(candidate)
+            if not stored or self._daily_bar_hash(dict(stored)) != candidate_hash:
+                continue
+            previous = self.db.execute("""SELECT row_hash FROM daily_bar_confirmations
+                WHERE symbol=? AND adjustflag=? AND trade_date=?""", (symbol, adjustflag, day)).fetchone()
+            if not previous or previous[0] != candidate_hash:
+                changed.append(day)
+            self.db.execute("""INSERT INTO daily_bar_confirmations
+                (symbol,adjustflag,trade_date,row_hash,confirmed_at) VALUES(?,?,?,?,?)
+                ON CONFLICT(symbol,adjustflag,trade_date) DO UPDATE SET
+                row_hash=excluded.row_hash,confirmed_at=excluded.confirmed_at""",
+                (symbol, adjustflag, day, candidate_hash, fetched_at.isoformat()))
+        return changed
+
+    def confirm_daily_bars(self, symbol: str, adjustflag: str, rows: list[dict[str, Any]],
+                           fetched_at: datetime, request_started_at: datetime | None = None) -> int:
+        """Register explicit successful-fetch evidence matching the stored rows.
+
+        Callers that also write rows should pass these timestamps to
+        upsert_bars_with_changes so both actions share a transaction.
+        """
+        with self._lock:
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                changed = self._confirm_daily_rows(symbol, adjustflag, rows, fetched_at,
+                                                   request_started_at or fetched_at)
+                self.db.commit()
+                return len(changed)
+            except Exception:
+                self.db.rollback()
+                raise
+
+    def confirmed_daily_bars(self, symbol: str, adjustflag: str = "2") -> list[dict[str, Any]]:
+        """Return full-history daily input with matching content and close evidence."""
+        with self._lock:
+            rows = self.market_bars(symbol, "d", adjustflag, "0000-01-01")
+            confirmations = {row["trade_date"]: dict(row) for row in self.db.execute("""
+                SELECT trade_date,row_hash,confirmed_at FROM daily_bar_confirmations
+                WHERE symbol=? AND adjustflag=?""", (symbol, adjustflag))}
+            now = self._market_time(self.clock())
+            confirmed = []
+            for row in rows:
+                proof = confirmations.get(row["trade_date"])
+                if not proof or proof["row_hash"] != self._daily_bar_hash(row):
+                    continue
+                try:
+                    stamp = self._market_time(proof["confirmed_at"])
+                    close_at = datetime.fromisoformat(row["trade_date"]).replace(
+                        hour=15, minute=0, second=15, microsecond=0, tzinfo=MARKET_TZ,
+                    )
+                except (ValueError, TypeError):
+                    continue
+                if close_at <= stamp <= now:
+                    confirmed.append(row)
+            return confirmed
+
+    def upsert_bars_with_changes(self, symbol: str, timeframe: str, adjustflag: str, rows: list[dict[str, Any]], source: str = "baostock", snapshot_id: str = "", allow_lower_priority: bool = False,
+                                *, fetched_at: datetime | None = None,
+                                request_started_at: datetime | None = None) -> tuple[int, str | None]:
         priority = {"tencent": 0, "baostock": 1, "api": 2, "csv": 3}
         values = [(symbol, timeframe, row["trade_date"], row["open"], row["high"], row["low"], row["close"], row.get("volume", 0), row.get("amount", 0), adjustflag,
                    row.get("source", source), row.get("snapshot_id", snapshot_id), row.get("source_revision", ""), row.get("adjust_factor", 1),
@@ -562,22 +730,48 @@ class Store:
                 old_prices = tuple(old[key] for key in ("open", "high", "low", "close", "volume", "amount")) if old else None
                 if old_prices != new_prices:
                     changed.append(row["trade_date"])
-                    if old:
-                        self.db.execute("""INSERT INTO market_data_conflicts(symbol,timeframe,trade_date,adjustflag,old_source,new_source,old_payload,new_payload,created_at)
-                            VALUES(?,?,?,?,?,?,?,?,?)""", (symbol, timeframe, row["trade_date"], adjustflag, old["source"], new_source,
-                            json.dumps(old, ensure_ascii=False, default=str), json.dumps(row, ensure_ascii=False), datetime.now(timezone.utc).isoformat()))
                 accepted.append(value)
-            self.db.executemany("""INSERT INTO market_bars(symbol,timeframe,trade_date,open,high,low,close,volume,amount,adjustflag,source,snapshot_id,source_revision,adjust_factor,is_suspended,limit_up,limit_down)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,trade_date,adjustflag) DO UPDATE SET
-                open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,amount=excluded.amount,
-                source=excluded.source,snapshot_id=excluded.snapshot_id,source_revision=excluded.source_revision,adjust_factor=excluded.adjust_factor,
-                is_suspended=excluded.is_suspended,limit_up=excluded.limit_up,limit_down=excluded.limit_down""", accepted)
-            self.db.commit()
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                self.db.executemany("""INSERT INTO market_bars(symbol,timeframe,trade_date,open,high,low,close,volume,amount,adjustflag,source,snapshot_id,source_revision,adjust_factor,is_suspended,limit_up,limit_down)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,trade_date,adjustflag) DO UPDATE SET
+                    open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,amount=excluded.amount,
+                    source=excluded.source,snapshot_id=excluded.snapshot_id,source_revision=excluded.source_revision,adjust_factor=excluded.adjust_factor,
+                    is_suspended=excluded.is_suspended,limit_up=excluded.limit_up,limit_down=excluded.limit_down""", accepted)
+                if timeframe == "d":
+                    accepted_dates = {value[2] for value in accepted}
+                    supplied = [{**row, "source": row.get("source", source),
+                                 "snapshot_id": row.get("snapshot_id", snapshot_id)}
+                                for row in rows if row["trade_date"] in accepted_dates]
+                    # Invalidate immediately; reverting to older prices must not
+                    # resurrect their former close proof without a new fetch.
+                    for row in supplied:
+                        invalidated = self.db.execute("""DELETE FROM daily_bar_confirmations
+                            WHERE symbol=? AND adjustflag=? AND trade_date=? AND row_hash<>?""",
+                            (symbol, adjustflag, row["trade_date"], self._daily_bar_hash(row)))
+                        if invalidated.rowcount:
+                            changed.append(row["trade_date"])
+                    if fetched_at is not None:
+                        changed.extend(self._confirm_daily_rows(symbol, adjustflag, supplied,
+                                       fetched_at, request_started_at or fetched_at))
+                    else:
+                        # New historical imports are an explicit completed-history
+                        # source. Existing unconfirmed rows never gain a proof here.
+                        imported_at = self._market_time(self.clock())
+                        historical = [row for row in supplied
+                                      if row["trade_date"] not in existing
+                                      and row["trade_date"] < imported_at.date().isoformat()]
+                        changed.extend(self._confirm_daily_rows(symbol, adjustflag, historical,
+                                       imported_at, imported_at))
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
         return len(accepted), min(changed) if changed else None
 
     def market_bars(self, symbol: str, timeframe: str, adjustflag: str, start_date: str = "2015-01-01", end_date: str = "9999-12-31", limit: int | None = None) -> list[dict[str, Any]]:
         params: list[Any] = [symbol, timeframe, adjustflag, start_date, end_date]
-        fields = "trade_date,open,high,low,close,volume,amount,source,snapshot_id,source_revision,adjust_factor,is_suspended,limit_up,limit_down"
+        fields = MARKET_BAR_FIELDS
         sql = f"SELECT {fields} FROM market_bars WHERE symbol=? AND timeframe=? AND adjustflag=? AND trade_date>=? AND trade_date<=? ORDER BY trade_date"
         if limit:
             sql = f"SELECT * FROM (SELECT {fields} FROM market_bars WHERE symbol=? AND timeframe=? AND adjustflag=? AND trade_date>=? AND trade_date<=? ORDER BY trade_date DESC LIMIT ?) ORDER BY trade_date"
@@ -610,7 +804,11 @@ class Store:
             has_more = False
             if rows:
                 has_more = bool(self.db.execute("SELECT 1 FROM market_bars WHERE symbol=? AND timeframe=? AND adjustflag=? AND trade_date<? LIMIT 1", (symbol, timeframe, adjustflag, rows[0]["trade_date"])).fetchone())
-        return rows, has_more
+        return {
+            "bars": rows,
+            "has_more": has_more,
+            "next_before": rows[0]["trade_date"] if rows else None,
+        }
 
     def market_summary(self, symbol: str, adjustflag: str):
         with self._lock:
@@ -620,363 +818,254 @@ class Store:
         change_pct = ((daily[0][0] / daily[1][0] - 1) * 100) if len(daily) > 1 and daily[1][0] else None
         return {"ranges": {row["timeframe"]: dict(row) for row in rows}, "latest": latest, "change_pct": change_pct}
 
-    def save_market_coverage(self, symbol: str, timeframe: str, adjustflag: str, payload: dict[str, Any]):
-        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        version = hashlib.sha256(raw.encode()).hexdigest()[:20]
-        status = str(payload.get("status", "unknown"))
-        now = datetime.now(timezone.utc).isoformat()
+    def active_chan_run(self, symbol: str, timeframe: str, adjustflag: str = "2"):
         with self._lock:
-            self.db.execute("""INSERT INTO market_coverage(symbol,timeframe,adjustflag,coverage_version,status,payload,updated_at)
-                VALUES(?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,adjustflag) DO UPDATE SET
-                coverage_version=excluded.coverage_version,status=excluded.status,payload=excluded.payload,updated_at=excluded.updated_at""",
-                (symbol, timeframe, adjustflag, version, status, raw, now))
-            self.db.commit()
-        return {"coverage_version": version, "status": status}
-
-    def market_coverage(self, symbol: str, timeframe: str, adjustflag: str = "2"):
-        with self._lock:
-            row = self.db.execute("SELECT * FROM market_coverage WHERE symbol=? AND timeframe=? AND adjustflag=?", (symbol, timeframe, adjustflag)).fetchone()
-        if not row:
-            return None
-        result = dict(row)
-        result["payload"] = json.loads(result["payload"] or "{}")
-        return result
-
-    def replace_gap_tasks(self, symbol: str, timeframe: str, adjustflag: str, gaps: list[dict[str, Any]]):
-        now = datetime.now(timezone.utc).isoformat()
-        with self._lock:
-            self.db.execute("DELETE FROM market_gap_tasks WHERE symbol=? AND timeframe=? AND adjustflag=? AND status='pending'", (symbol, timeframe, adjustflag))
-            self.db.executemany("""INSERT OR IGNORE INTO market_gap_tasks(symbol,timeframe,adjustflag,gap_start,gap_end,status,updated_at)
-                VALUES(?,?,?,?,?,'pending',?)""", [(symbol, timeframe, adjustflag, g["start_date"], g["end_date"], now) for g in gaps])
-            self.db.commit()
-
-    def market_gap_tasks(self, symbol: str, timeframe: str, adjustflag: str = "2"):
-        with self._lock:
-            rows = self.db.execute("SELECT * FROM market_gap_tasks WHERE symbol=? AND timeframe=? AND adjustflag=? ORDER BY gap_start", (symbol, timeframe, adjustflag)).fetchall()
-        return [dict(row) for row in rows]
-
-    def create_sync_run(self, symbol: str, timeframe: str, mode: str, scheduled_for: str | None):
-        with self._lock:
-            cur = self.db.execute("INSERT INTO sync_runs(symbol,timeframe,mode,scheduled_for,started_at,status) VALUES(?,?,?,?,?,'running')", (symbol, timeframe, mode, scheduled_for, datetime.now(timezone.utc).isoformat()))
-            self.db.commit()
-            return cur.lastrowid
-
-    def finish_sync_run(self, run_id: int, status: str, rows_received: int = 0, range_start: str | None = None, range_end: str | None = None, error: str = ""):
-        with self._lock:
-            self.db.execute("UPDATE sync_runs SET finished_at=?,status=?,rows_received=?,range_start=?,range_end=?,error=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), status, rows_received, range_start, range_end, error[:1000], run_id))
-            self.db.commit()
-
-    def has_successful_sync(self, symbol: str, timeframe: str, scheduled_for: str) -> bool:
-        with self._lock:
-            return bool(self.db.execute("SELECT 1 FROM sync_runs WHERE symbol=? AND timeframe=? AND scheduled_for=? AND status='success' LIMIT 1", (symbol, timeframe, scheduled_for)).fetchone())
-
-    def list_sync_runs(self, limit: int = 100):
-        with self._lock:
-            rows = self.db.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        return [dict(row) for row in rows]
-
-    def save(self, symbol: str, payload: dict[str, Any], as_of: str) -> dict[str, Any]:
-        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        version = hashlib.sha256(raw.encode()).hexdigest()[:16]
-        with self._lock:
-            cur = self.db.execute("INSERT INTO analyses(symbol,as_of,data_version,payload) VALUES(?,?,?,?)", (symbol, as_of, version, raw))
-            self.db.commit()
-        return {"analysis_id": cur.lastrowid, "data_version": version, "as_of": as_of}
-
-    def list(self, limit: int = 50):
-        with self._lock:
-            rows = self.db.execute("SELECT id,symbol,as_of,data_version,payload FROM analyses ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        return [{"analysis_id": row[0], "symbol": row[1], "as_of": row[2], "data_version": row[3], "payload": json.loads(row[4])} for row in rows]
-
-    def journal(self, analysis_id: int, action: str, note: str, created_at: str):
-        with self._lock:
-            cur = self.db.execute("INSERT INTO journals(analysis_id,action,note,created_at) VALUES(?,?,?,?)", (analysis_id, action, note, created_at))
-            self.db.commit()
-        return {"journal_id": cur.lastrowid, "analysis_id": analysis_id, "action": action, "note": note, "created_at": created_at}
-
-    def journals(self, limit: int = 100):
-        with self._lock:
-            rows = self.db.execute("SELECT id,analysis_id,action,note,created_at FROM journals ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-        return [{"journal_id": row[0], "analysis_id": row[1], "action": row[2], "note": row[3], "created_at": row[4]} for row in rows]
-
-    def active_period_structure_run(self, symbol: str, timeframe: str, adjustflag: str = "2"):
-        with self._lock:
-            row = self.db.execute("""SELECT r.* FROM active_period_structure_runs a
-                JOIN period_structure_runs r ON r.id=a.run_id
-                WHERE a.symbol=? AND a.timeframe=? AND a.adjustflag=?""", (symbol, timeframe, adjustflag)).fetchone()
+            row = self.db.execute("""SELECT r.* FROM chan_active_runs a
+                JOIN chan_structure_runs r ON r.id=a.run_id
+                WHERE a.symbol=? AND a.timeframe=? AND a.adjustflag=?""",
+                (symbol, timeframe, adjustflag)).fetchone()
         return dict(row) if row else None
 
-    def highest_active_center_level(self, definition_version: str) -> int:
+    def highest_active_chan_level(self, definition_version: str) -> int:
         with self._lock:
-            rows = self.db.execute("""SELECT r.center_level_counts FROM active_period_structure_runs a
-                JOIN period_structure_runs r ON r.id=a.run_id WHERE r.definition_version=?""",
-                (definition_version,)).fetchall()
-        levels = [int(level) for row in rows for level, count in json.loads(row[0] or "{}").items() if count]
-        return max(levels, default=0)
+            row = self.db.execute("""SELECT MAX(r.max_level) FROM chan_active_runs a
+                JOIN chan_structure_runs r ON r.id=a.run_id
+                WHERE r.definition_version=? AND r.status='success'""", (definition_version,)).fetchone()
+        return int(row[0] or 0)
 
     @staticmethod
-    def _period_structure_mapping():
-        return (("period_processed_bars", "processed_bars"), ("period_fractals", "fractals"),
-                ("period_pens", "pens"), ("period_pen_centers", "centers"),
-                ("period_center_relations", "center_relations"),
-                ("period_movements", "movements"),
-                ("period_structure_components", "components"),
-                ("period_buy_sell_points", "buy_sell_points"))
+    def _payload_json(item: dict[str, Any]) -> str:
+        return json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
-    @staticmethod
-    def _prepare_period_structure_snapshot(item: dict[str, Any]) -> dict[str, Any]:
-        symbol = item["symbol"]
-        timeframe = item["timeframe"]
-        adjustflag = item.get("adjustflag", "2")
-        definition_version = item["definition_version"]
-        result = item["result"]
-        centers = result.get("centers", result.get("pen_centers", []))
-        json.dumps(centers)
-        from .structure_validation import assert_valid_structure
+    def _insert_base_rows(self, run_id: int, table: str, values: list[dict[str, Any]]) -> None:
+        rows = []
+        for ordinal, item in enumerate(values):
+            identifier = str(item.get("id") or f"{table}-{ordinal}")
+            start = str(item.get("start_date") or item.get("trade_date") or "")
+            end = str(item.get("end_date") or item.get("trade_date") or start)
+            rows.append((run_id, identifier, ordinal, start, end, self._payload_json(item)))
+        if rows:
+            self.db.executemany(
+                f"INSERT INTO {table}(run_id,id,ordinal,start_date,end_date,payload_json) VALUES(?,?,?,?,?,?)",
+                rows,
+            )
 
-        try:
-            assert_valid_structure(result)
-        except ValueError as exc:
-            raise ValueError(f"走势确认不合法: {exc}") from exc
-        center_level_counts: dict[str, int] = {}
-        for center in centers:
-            if center.get("role") not in {None, "hierarchy"}:
-                raise ValueError("period_pen_centers 只允许正式 hierarchy")
-            key = str(center.get("level", 1))
-            center_level_counts[key] = center_level_counts.get(key, 0) + 1
-        from .hierarchy import movement_confirmation_errors
+    def _insert_components(self, run_id: int, values: list[dict[str, Any]]) -> None:
+        for item in values:
+            self.db.execute("""INSERT INTO chan_components
+                (run_id,id,level,role,direction,status,start_date,end_date,start_price,end_price,low,high,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                run_id, item["id"], int(item["level"]), item["role"], item.get("direction"),
+                item["status"], item["start_date"], item["end_date"], float(item["start_price"]),
+                float(item["end_price"]), float(item["low"]), float(item["high"]), self._payload_json(item),
+            ))
+            for ordinal, unit_id in enumerate(item.get("source_unit_ids", [])):
+                self.db.execute("""INSERT INTO chan_component_units
+                    (run_id,component_id,unit_kind,unit_id,role,ordinal) VALUES(?,?,?,?,?,?)""",
+                    (run_id, item["id"], item["unit_kind"], unit_id, "source", ordinal))
 
-        center_by_id = {center["id"]: center for center in centers if center.get("id")}
-        for movement in result.get("movements", []):
-            errors = movement_confirmation_errors(movement, center_by_id)
-            if errors:
-                raise ValueError(f"走势确认不合法: {movement.get('id')}: {errors}")
-        movement_level_counts: dict[str, int] = {}
-        for movement in result.get("movements", []):
-            if movement.get("role") not in {None, "hierarchy_component"}:
-                raise ValueError("period_movements 只允许正式 hierarchy_component")
-            key = f"L{movement.get('level', 1)}:hierarchy_component"
-            movement_level_counts[key] = movement_level_counts.get(key, 0) + 1
-        return {
-            **item,
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "adjustflag": adjustflag,
-            "definition_version": definition_version,
-            "started_at": item.get("started_at") or datetime.now(timezone.utc).isoformat(),
-            "centers": centers,
-            "center_level_counts": center_level_counts,
-            "movement_level_counts": movement_level_counts,
-            "movement_count": len(result.get("movements", [])),
-            "component_count": len(result.get("components", [])),
-            "point_count": len(result.get("buy_sell_points", [])),
-        }
+    def _insert_centers(self, run_id: int, values: list[dict[str, Any]]) -> None:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in values:
+            grouped.setdefault(item["family_id"], []).append(item)
+        for family_id, revisions in grouped.items():
+            active = [item for item in revisions if item.get("active")]
+            if len(active) > 1:
+                raise ValueError("中枢族存在多个活动修订")
+            current = active[0] if active else max(revisions, key=lambda item: int(item["revision_no"]))
+            self.db.execute("""INSERT INTO chan_center_families
+                (run_id,id,current_revision_id,base_level,current_level,status) VALUES(?,?,?,?,?,?)""",
+                (run_id, family_id, current["id"], min(int(item["level"]) for item in revisions),
+                 int(current["level"]), current["status"]))
+        for item in values:
+            self.db.execute("""INSERT INTO chan_center_revisions
+                (run_id,id,family_id,revision_no,previous_revision_id,level,status,active,start_date,end_date,
+                 zd,zg,dd,gg,entry_direction,core_formation_pattern,departure_direction,owner_movement_id,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                run_id, item["id"], item["family_id"], int(item["revision_no"]), item.get("previous_revision_id"),
+                int(item["level"]), item["status"], int(bool(item.get("active"))), item["start_date"], item["end_date"],
+                float(item["zd"]), float(item["zg"]), float(item["dd"]), float(item["gg"]),
+                item.get("entry_direction"), item.get("core_formation_pattern"), item.get("departure_direction"),
+                item.get("owner_movement_id"), self._payload_json(item),
+            ))
+            role_fields = {
+                "entry": "entry_unit_ids", "core": "core_unit_ids", "extension": "extension_unit_ids",
+                "peripheral": "peripheral_unit_ids", "departure": "departure_unit_ids", "retest": "retest_unit_ids",
+                "child_center": "child_center_ids", "child_movement": "child_movement_ids",
+                "z_wave": "z_unit_ids",
+            }
+            for role, field in role_fields.items():
+                for ordinal, unit_id in enumerate(item.get(field, [])):
+                    self.db.execute("""INSERT INTO chan_center_units
+                        (run_id,center_revision_id,unit_kind,unit_id,role,ordinal) VALUES(?,?,?,?,?,?)""",
+                        (run_id, item["id"], "center_revision" if role == "child_center" else "movement" if role == "child_movement" else item["unit_kind"], unit_id, role, ordinal))
 
-    def _insert_period_structure_snapshot(self, prepared: dict[str, Any]) -> int:
-        result = prepared["result"]
-        cur = self.db.execute("""INSERT INTO period_structure_runs
-            (symbol,timeframe,adjustflag,definition_version,started_at,status,market_version,coverage_version,calculator_fingerprint)
-            VALUES(?,?,?,?,?,'running',?,?,?)""", (
-            prepared["symbol"], prepared["timeframe"], prepared["adjustflag"],
-            prepared["definition_version"], prepared["started_at"],
-            prepared["market_version"], prepared.get("coverage_version", ""),
-            result.get("calculator_fingerprint", ""),
-        ))
-        run_id = cur.lastrowid
-        self.db.execute("UPDATE period_structure_runs SET structure_metadata=? WHERE id=?", (
-            json.dumps({key: result.get(key, {}) if key == "unassigned_by_level" else result.get(key, [])
-                        for key in ("unassigned_by_level", "hierarchy_issues", "pen_diagnostics")}, ensure_ascii=False), run_id))
-        for table, key in self._period_structure_mapping():
-            values = []
-            for ordinal, item in enumerate(result.get(key, [])):
-                start = item.get("start_date") or item.get("trade_date") or ""
-                end = item.get("end_date") or item.get("trade_date") or start
-                values.append((run_id, prepared["symbol"], prepared["timeframe"], prepared["adjustflag"],
-                               prepared["definition_version"], ordinal, start, end,
-                               json.dumps(item, ensure_ascii=False, sort_keys=True)))
-            if values:
-                self.db.executemany(
-                    f"INSERT INTO {table}(run_id,symbol,timeframe,adjustflag,definition_version,ordinal,start_date,end_date,payload) VALUES(?,?,?,?,?,?,?,?,?)",
-                    values,
-                )
-        self.db.execute("""UPDATE period_structure_runs SET finished_at=?,status='success',
-            structure_version=?,center_level_counts=?,movement_count=?,component_count=?,point_count=?,movement_level_counts=?,
-            max_confirmed_center_level=?,max_available_center_level=? WHERE id=?""",
-            (datetime.now(timezone.utc).isoformat(), result.get("structure_version", ""),
-             json.dumps(prepared["center_level_counts"], sort_keys=True), prepared["movement_count"],
-             prepared["component_count"], prepared["point_count"],
-             json.dumps(prepared["movement_level_counts"], sort_keys=True),
-             int(result.get("max_confirmed_center_level", 0)),
-             int(result.get("max_available_center_level", 0)), run_id))
-        return int(run_id)
+    def _insert_movements(self, run_id: int, values: list[dict[str, Any]]) -> None:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in values:
+            grouped.setdefault(item["family_id"], []).append(item)
+        for family_id, revisions in grouped.items():
+            current = max(revisions, key=lambda item: (bool(item.get("active")), int(item["level"]), int(item["revision_no"])))
+            self.db.execute("""INSERT INTO chan_movement_families
+                (run_id,id,current_revision_id,base_level,current_level,status) VALUES(?,?,?,?,?,?)""",
+                (run_id, family_id, current["id"], min(int(item["level"]) for item in revisions),
+                 int(current["level"]), current["status"]))
+        for item in values:
+            self.db.execute("""INSERT INTO chan_movement_revisions
+                (run_id,id,family_id,revision_no,level,status,classification,direction,active,start_date,end_date,
+                 start_price,end_price,confirmed_at,recursive_eligible,termination_reason,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                run_id, item["id"], item["family_id"], int(item["revision_no"]), int(item["level"]),
+                item["status"], item.get("classification"), item["direction"], int(bool(item.get("active"))),
+                item["start_date"], item["end_date"], float(item["start_price"]), float(item["end_price"]),
+                item.get("confirmed_at"), int(bool(item.get("recursive_eligible"))), item["termination_reason"],
+                self._payload_json(item),
+            ))
+            for ordinal, unit_id in enumerate(item.get("source_unit_ids", [])):
+                self.db.execute("""INSERT INTO chan_movement_units
+                    (run_id,movement_revision_id,unit_kind,unit_id,role,ordinal) VALUES(?,?,?,?,?,?)""",
+                    (run_id, item["id"], "unit", unit_id, "source", ordinal))
+            for ordinal, (family_id, revision_id) in enumerate(zip(
+                item.get("center_family_ids", []), item.get("center_revision_ids", []),
+            )):
+                self.db.execute("""INSERT INTO chan_movement_centers
+                    (run_id,movement_revision_id,center_family_id,center_revision_id,ordinal) VALUES(?,?,?,?,?)""",
+                    (run_id, item["id"], family_id, revision_id, ordinal))
 
-    def replace_period_structures_atomic(
-        self,
-        items: list[dict[str, Any]],
-        retire_symbols: tuple[str, ...] = (),
-        keep_timeframes: tuple[str, ...] = (),
-    ) -> dict[str, Any]:
-        if not items:
-            return {"runs": [], "retired_active_runs": []}
-        prepared = [self._prepare_period_structure_snapshot(item) for item in items]
-        keys = [(item["symbol"], item["timeframe"], item["adjustflag"]) for item in prepared]
-        if len(keys) != len(set(keys)):
-            raise ValueError("批量结构快照包含重复的标的、周期和复权组合")
+    def _insert_points(self, run_id: int, values: list[dict[str, Any]]) -> None:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in values:
+            grouped.setdefault(item["family_id"], []).append(item)
+        for family_id, revisions in grouped.items():
+            current = max(revisions, key=lambda item: (bool(item.get("active")), int(item["revision_no"])))
+            self.db.execute("""INSERT INTO chan_point_families
+                (run_id,id,current_revision_id,status) VALUES(?,?,?,?)""",
+                (run_id, family_id, current["id"], current["status"]))
+        for item in values:
+            self.db.execute("""INSERT INTO chan_point_revisions
+                (run_id,id,family_id,revision_no,level,point_type,status,active,point_date,point_price,
+                 confirmed_at,source_unit_id,center_family_id,center_revision_id,movement_family_id,
+                 invalidated_reason,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                run_id, item["id"], item["family_id"], int(item["revision_no"]), int(item["level"]),
+                item["point_type"], item["status"], int(bool(item.get("active"))), item["point_date"],
+                float(item["point_price"]), item.get("confirmed_at"), item["source_unit_id"],
+                item["center_family_id"], item["center_revision_id"], item.get("movement_family_id"),
+                item.get("invalidated_reason"), self._payload_json(item),
+            ))
+
+    def replace_chan_structure(
+        self, symbol: str, timeframe: str, adjustflag: str,
+        result: dict[str, Any], market_version: str,
+    ) -> int:
+        from .chan_structure import assert_valid_structure
+
+        assert_valid_structure(result)
+        meta = result["meta"]
+        structure = result["structure"]
+        started_at = datetime.now(timezone.utc).isoformat()
         with self._lock:
             try:
                 self.db.execute("BEGIN IMMEDIATE")
-                run_ids = [self._insert_period_structure_snapshot(item) for item in prepared]
-                activated_at = datetime.now(timezone.utc).isoformat()
-                for item, run_id in zip(prepared, run_ids):
-                    self.db.execute("""INSERT INTO active_period_structure_runs(symbol,timeframe,adjustflag,run_id,activated_at)
-                        VALUES(?,?,?,?,?) ON CONFLICT(symbol,timeframe,adjustflag) DO UPDATE SET
-                        run_id=excluded.run_id,activated_at=excluded.activated_at""",
-                        (item["symbol"], item["timeframe"], item["adjustflag"], run_id, activated_at))
-                retired_active_runs = []
-                if retire_symbols:
-                    placeholders = ",".join("?" for _ in keep_timeframes) or "NULL"
-                    for symbol in retire_symbols:
-                        stale = self.db.execute(
-                            f"""SELECT a.timeframe,a.run_id FROM active_period_structure_runs a
-                               JOIN period_structure_runs r ON r.id=a.run_id
-                               WHERE a.symbol=? AND a.adjustflag=? AND a.timeframe NOT IN ({placeholders})
-                                 AND r.definition_version!=?""",
-                            (symbol, prepared[0]["adjustflag"], *keep_timeframes, prepared[0]["definition_version"]),
-                        ).fetchall()
-                        for timeframe, run_id in stale:
-                            self.db.execute(
-                                "DELETE FROM active_period_structure_runs WHERE symbol=? AND timeframe=? AND adjustflag=? AND run_id=?",
-                                (symbol, timeframe, prepared[0]["adjustflag"], run_id),
-                            )
-                            retired_active_runs.append({"symbol": symbol, "timeframe": timeframe, "run_id": run_id})
+                cursor = self.db.execute("""INSERT INTO chan_structure_runs
+                    (symbol,timeframe,adjustflag,definition_version,calculator_fingerprint,market_version,
+                     structure_version,status,max_level,started_at,meta_json)
+                    VALUES(?,?,?,?,?,?,?,'running',?,?,?)""", (
+                    symbol, timeframe, adjustflag, meta["definition_version"], meta["calculator_fingerprint"],
+                    market_version, meta["structure_version"], int(meta.get("max_level", 0)), started_at,
+                    self._payload_json(meta),
+                ))
+                run_id = int(cursor.lastrowid)
+                self._insert_base_rows(run_id, "chan_processed_bars", structure.get("processed_bars", []))
+                self._insert_base_rows(run_id, "chan_fractals", structure.get("fractals", []))
+                self._insert_base_rows(run_id, "chan_pens", structure.get("pens", []))
+                self._insert_components(run_id, structure.get("components", []))
+                self._insert_centers(run_id, structure.get("center_revisions", []))
+                self._insert_movements(run_id, structure.get("movement_revisions", []))
+                self._insert_points(run_id, structure.get("point_revisions", []))
+                for item in structure.get("relations", []):
+                    self.db.execute("""INSERT INTO chan_relations
+                        (run_id,id,level,relation_type,from_id,to_id,start_date,end_date,evidence_json)
+                        VALUES(?,?,?,?,?,?,?,?,?)""", (
+                        run_id, item["id"], int(item.get("level", 0)), item["relation_type"],
+                        item["from_id"], item["to_id"], item.get("start_date", ""), item.get("end_date", ""),
+                        self._payload_json(item),
+                    ))
+                for ordinal, item in enumerate(structure.get("issues", [])):
+                    issue_id = str(item.get("id") or f"issue-{ordinal}")
+                    self.db.execute("""INSERT INTO chan_issues
+                        (run_id,id,level,issue_type,start_date,end_date,evidence_json) VALUES(?,?,?,?,?,?,?)""", (
+                        run_id, issue_id, int(item.get("level", 0)), item.get("issue_type", "structure_issue"),
+                        item.get("start_date", ""), item.get("end_date", ""), self._payload_json(item),
+                    ))
+                finished_at = datetime.now(timezone.utc).isoformat()
+                self.db.execute("UPDATE chan_structure_runs SET status='success',finished_at=? WHERE id=?", (finished_at, run_id))
+                self.db.execute("""INSERT INTO chan_active_runs(symbol,timeframe,adjustflag,run_id,activated_at)
+                    VALUES(?,?,?,?,?) ON CONFLICT(symbol,timeframe,adjustflag) DO UPDATE SET
+                    run_id=excluded.run_id,activated_at=excluded.activated_at""",
+                    (symbol, timeframe, adjustflag, run_id, finished_at))
+                stale = [row[0] for row in self.db.execute("""SELECT id FROM chan_structure_runs
+                    WHERE symbol=? AND timeframe=? AND adjustflag=? AND status='success' AND id!=?""",
+                    (symbol, timeframe, adjustflag, run_id)).fetchall()]
+                if stale:
+                    self.db.executemany("DELETE FROM chan_structure_runs WHERE id=?", [(item,) for item in stale])
                 self.db.commit()
-            except Exception:
+                return run_id
+            except Exception as exc:
                 self.db.rollback()
+                self.db.execute("""INSERT INTO chan_structure_runs
+                    (symbol,timeframe,adjustflag,definition_version,calculator_fingerprint,market_version,
+                     structure_version,status,max_level,started_at,finished_at,error,meta_json)
+                    VALUES(?,?,?,?,?,?,?,'failed',?,?,?,?,?)""", (
+                    symbol, timeframe, adjustflag, meta.get("definition_version", ""),
+                    meta.get("calculator_fingerprint", ""), market_version, meta.get("structure_version", ""),
+                    int(meta.get("max_level", 0)), started_at, datetime.now(timezone.utc).isoformat(),
+                    f"{type(exc).__name__}: {exc}"[:2000], self._payload_json(meta),
+                ))
+                self.db.execute("""DELETE FROM chan_structure_runs WHERE id NOT IN (
+                    SELECT id FROM chan_structure_runs WHERE symbol=? AND timeframe=? AND adjustflag=?
+                    AND status='failed' ORDER BY id DESC LIMIT 1
+                ) AND symbol=? AND timeframe=? AND adjustflag=? AND status='failed'""",
+                    (symbol, timeframe, adjustflag, symbol, timeframe, adjustflag))
+                self.db.commit()
                 raise
-        return {
-            "runs": [self._run_by_id(run_id) for run_id in run_ids],
-            "retired_active_runs": retired_active_runs if retire_symbols else [],
+
+    def _load_json_rows(self, table: str, run_id: int, column: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.db.execute(f"SELECT {column} FROM {table} WHERE run_id=? ORDER BY rowid", (run_id,)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def load_chan_structure(self, run_id: int) -> dict[str, Any]:
+        with self._lock:
+            return self._load_chan_structure(run_id)
+
+    def _load_chan_structure(self, run_id: int) -> dict[str, Any]:
+        run = self.db.execute("SELECT * FROM chan_structure_runs WHERE id=? AND status='success'", (run_id,)).fetchone()
+        if not run:
+            raise ValueError(f"结构运行不存在或未成功: {run_id}")
+        meta = json.loads(run["meta_json"])
+        meta.update({"run_id": run_id, "market_version": run["market_version"]})
+        center_revisions = self._load_json_rows("chan_center_revisions", run_id, "evidence_json")
+        movement_revisions = self._load_json_rows("chan_movement_revisions", run_id, "evidence_json")
+        point_revisions = self._load_json_rows("chan_point_revisions", run_id, "evidence_json")
+        structure = {
+            "processed_bars": self._load_json_rows("chan_processed_bars", run_id, "payload_json"),
+            "fractals": self._load_json_rows("chan_fractals", run_id, "payload_json"),
+            "pens": self._load_json_rows("chan_pens", run_id, "payload_json"),
+            "components": self._load_json_rows("chan_components", run_id, "evidence_json"),
+            "centers": [item for item in center_revisions if item.get("active")],
+            "center_revisions": center_revisions,
+            "movements": [item for item in movement_revisions if item.get("active", True)],
+            "movement_revisions": movement_revisions,
+            "points": [item for item in point_revisions if item.get("active", True)],
+            "point_revisions": point_revisions,
+            "relations": self._load_json_rows("chan_relations", run_id, "evidence_json"),
+            "issues": self._load_json_rows("chan_issues", run_id, "evidence_json"),
         }
-
-    def _run_by_id(self, run_id: int):
-        with self._lock:
-            row = self.db.execute("SELECT * FROM period_structure_runs WHERE id=?", (run_id,)).fetchone()
-        return dict(row) if row else None
-
-    def replace_period_structure(self, symbol: str, timeframe: str, adjustflag: str,
-                                 definition_version: str, result: dict[str, Any],
-                                 market_version: str, coverage_version: str = ""):
-        batch = self.replace_period_structures_atomic([{
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "adjustflag": adjustflag,
-            "definition_version": definition_version,
-            "result": result,
-            "market_version": market_version,
-            "coverage_version": coverage_version,
-        }])
-        return batch["runs"][0]
-
-    def period_rows(self, table: str, run_id: int, start_date: str | None = None, end_date: str | None = None):
-        allowed = {"period_processed_bars", "period_fractals", "period_pens", "period_pen_centers", "period_center_relations", "period_movements", "period_structure_components", "period_buy_sell_points"}
-        if table not in allowed: raise ValueError("invalid period table")
-        params: list[Any] = [run_id]; sql = f"SELECT payload FROM {table} WHERE run_id=?"
-        if start_date is not None and end_date is not None:
-            sql += " AND end_date>=? AND start_date<=?"; params += [start_date,end_date]
-        sql += " ORDER BY ordinal"
-        with self._lock: rows = self.db.execute(sql, params).fetchall()
-        return [json.loads(r[0]) for r in rows]
-
-    def structure_overrides(self, symbol: str, timeframe: str, adjustflag: str = "2"):
-        with self._lock:
-            rows = self.db.execute("""SELECT * FROM structure_overrides
-                WHERE symbol=? AND timeframe=? AND adjustflag=? AND status IN ('active','conflicted')
-                ORDER BY id""", (symbol, timeframe, adjustflag)).fetchall()
-        return [{**dict(row), "payload": json.loads(row["payload"] or "{}")} for row in rows]
-
-    def create_structure_override(self, item: dict[str, Any], base_run: dict[str, Any] | None):
-        now = datetime.now(timezone.utc).isoformat()
-        with self._lock:
-            if base_run and (item.get("base_run_id") != base_run["id"] or item.get("base_structure_version") != base_run.get("structure_version", "")):
-                raise ValueError("结构快照已变化，请刷新后重试")
-            cur = self.db.execute("""INSERT INTO structure_overrides
-                (symbol,timeframe,adjustflag,structure_type,target_id,operation,payload,base_run_id,base_structure_version,status,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,'active',?,?)""", (
-                    item["symbol"], item["timeframe"], item.get("adjustflag", "2"), item["structure_type"],
-                    item.get("target_id"), item["operation"], json.dumps(item.get("payload", {}), ensure_ascii=False, sort_keys=True),
-                    item.get("base_run_id") or (base_run["id"] if base_run else None),
-                    item.get("base_structure_version") or (base_run.get("structure_version", "") if base_run else ""), now, now))
-            override_id = cur.lastrowid
-            self.db.execute("INSERT INTO structure_override_events(override_id,action,after_payload,created_at) VALUES(?,?,?,?)", (override_id, item["operation"], json.dumps(item.get("payload", {}), ensure_ascii=False), now))
-            self.db.commit()
-        return self.structure_override(override_id)
-
-    def structure_override(self, override_id: int):
-        with self._lock:
-            row = self.db.execute("SELECT * FROM structure_overrides WHERE id=?", (override_id,)).fetchone()
-        if not row: return None
-        item = dict(row); item["payload"] = json.loads(item["payload"] or "{}"); return item
-
-    def update_structure_override(self, override_id: int, payload: dict[str, Any], base_run: dict[str, Any] | None):
-        current = self.structure_override(override_id)
-        if not current: return None
-        if base_run and (current.get("base_run_id") != base_run["id"] or current.get("base_structure_version") != base_run.get("structure_version", "")): raise ValueError("结构修订基准已变化，请刷新后重试")
-        now = datetime.now(timezone.utc).isoformat()
-        with self._lock:
-            self.db.execute("UPDATE structure_overrides SET payload=?,operation='update',status='active',updated_at=? WHERE id=?", (json.dumps(payload, ensure_ascii=False, sort_keys=True), now, override_id))
-            self.db.execute("INSERT INTO structure_override_events(override_id,action,before_payload,after_payload,created_at) VALUES(?,?,?,?,?)", (override_id, "update", json.dumps(current["payload"], ensure_ascii=False), json.dumps(payload, ensure_ascii=False), now))
-            self.db.commit()
-        return self.structure_override(override_id)
-
-    def set_structure_override_status(self, override_id: int, status: str, operation: str):
-        now = datetime.now(timezone.utc).isoformat()
-        with self._lock:
-            self.db.execute("UPDATE structure_overrides SET status=?,operation=?,updated_at=? WHERE id=?", (status, operation, now, override_id)); self.db.commit()
-        return self.structure_override(override_id)
-
-    def restore_structure_overrides(self, symbol: str, timeframe: str, adjustflag: str = "2", override_id: int | None = None):
-        now = datetime.now(timezone.utc).isoformat()
-        with self._lock:
-            if override_id is None:
-                self.db.execute("UPDATE structure_overrides SET status='restored',operation='restore',updated_at=? WHERE symbol=? AND timeframe=? AND adjustflag=? AND status='active'", (now,symbol,timeframe,adjustflag))
-            else:
-                self.db.execute("UPDATE structure_overrides SET status='restored',operation='restore',updated_at=? WHERE id=?", (now,override_id))
-            self.db.commit()
-
-    def batch_structure_overrides(self, symbol: str, request: dict[str, Any], base_run: dict[str, Any]):
-        if base_run["id"] != request["base_run_id"] or base_run.get("structure_version", "") != request["base_structure_version"]:
-            raise ValueError("结构快照已变化，请刷新后重试")
-        allowed_types = {"pen", "pen_center"}
-        allowed_operations = {"create", "update", "delete"}
-        now = datetime.now(timezone.utc).isoformat()
-        created_ids: list[int] = []
-        with self._lock:
-            try:
-                self.db.execute("BEGIN IMMEDIATE")
-                for operation in request.get("operations", []):
-                    typ = operation.get("structure_type")
-                    action = operation.get("operation")
-                    target_id = operation.get("target_id")
-                    if typ not in allowed_types or action not in allowed_operations:
-                        raise ValueError("结构修订参数不合法")
-                    payload = operation.get("payload") or {}
-                    cur = self.db.execute("""INSERT INTO structure_overrides
-                        (symbol,timeframe,adjustflag,structure_type,target_id,operation,payload,
-                         base_run_id,base_structure_version,status,created_at,updated_at)
-                        VALUES(?,?,?,?,?,?,?,?,?,'active',?,?)""", (
-                        symbol, request["timeframe"], request.get("adjustflag", "2"), typ,
-                        target_id, action, json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                        request["base_run_id"], request["base_structure_version"], now, now))
-                    override_id = cur.lastrowid
-                    created_ids.append(override_id)
-                    self.db.execute("""INSERT INTO structure_override_events
-                        (override_id,action,after_payload,created_at) VALUES(?,?,?,?)""",
-                        (override_id, action, json.dumps(payload, ensure_ascii=False), now))
-                self.db.commit()
-            except Exception:
-                self.db.rollback()
-                raise
-        return {"items": [self.structure_override(i) for i in created_ids]}
+        structure["levels"] = sorted({int(item["level"]) for item in structure["centers"]})
+        structure["max_level"] = max(structure["levels"], default=0)
+        structure["unassigned_by_level"] = meta.get("unassigned_by_level", {})
+        return {"meta": meta, "structure": structure}
 
     def drawings(self, symbol: str, timeframe: str):
         with self._lock:

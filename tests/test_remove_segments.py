@@ -1,48 +1,35 @@
-import sqlite3
-
-import pytest
-
 from app.store import Store
-from scripts import migrate_remove_segments as migration
 
 
-def seed_database(path):
-    store = Store(str(path))
-    store.db.execute("CREATE TABLE period_segments (id INTEGER PRIMARY KEY, payload TEXT)")
-    store.db.execute("INSERT INTO period_segments VALUES (1, '{\"role\":\"line_segment\"}')")
-    store.db.execute("CREATE TABLE preservation_sample (id INTEGER, content BLOB)")
-    store.db.execute("INSERT INTO preservation_sample VALUES (1, x'0001ff')")
+def test_fresh_v25_store_never_creates_legacy_structure_or_analysis_tables(tmp_path):
+    store = Store(str(tmp_path / "v25.db"))
+    tables = {row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert not any(name.startswith("period_") for name in tables)
+    assert not {
+        "active_period_structure_runs", "structure_overrides", "structure_override_events",
+        "analyses", "journals", "sync_runs", "market_data_conflicts", "market_coverage",
+        "market_gap_tasks", "period_segments",
+    } & tables
+
+
+def test_deleting_run_cascades_all_normalized_detail_rows(tmp_path):
+    store = Store(str(tmp_path / "cascade.db"))
+    tables = [
+        "chan_processed_bars", "chan_fractals", "chan_pens", "chan_components",
+        "chan_center_revisions", "chan_movement_revisions", "chan_point_revisions",
+        "chan_relations", "chan_issues",
+    ]
+    store.db.execute("PRAGMA foreign_keys=ON")
+    store.db.execute("""INSERT INTO chan_structure_runs
+        (symbol,timeframe,adjustflag,definition_version,calculator_fingerprint,market_version,
+         structure_version,status,max_level,started_at,meta_json)
+        VALUES('s','d','2','v25','f','m','s','success',0,'now','{}')""")
+    run_id = store.db.execute("SELECT id FROM chan_structure_runs").fetchone()[0]
+    store.db.execute(
+        "INSERT INTO chan_processed_bars(run_id,id,ordinal,start_date,end_date,payload_json) VALUES(?,?,?,?,?,?)",
+        (run_id, "b", 0, "2026-01-01", "2026-01-01", "{}"),
+    )
     store.db.commit()
-    store.db.close()
-
-
-def test_migration_only_drops_segments_and_store_does_not_recreate_table(tmp_path):
-    db = tmp_path / "data.db"
-    seed_database(db)
-    with sqlite3.connect(db) as connection:
-        before = migration.snapshot(connection)
-    assert migration.migrate(db)["segment_rows"] == 1
-    assert not (tmp_path / "backups").exists()
-    result = migration.migrate(db, True)
-    assert result["deleted_segment_rows"] == 1
-    assert result["other_tables_unchanged"]
-    with sqlite3.connect(result["backup"]) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM period_segments").fetchone()[0] == 1
-        assert migration.snapshot(connection) == before
-    store = Store(str(db))
-    assert not store.db.execute("SELECT 1 FROM sqlite_master WHERE name='period_segments'").fetchone()
-    store.db.close()
-    with sqlite3.connect(db) as connection:
-        assert migration.snapshot(connection) == before
-    assert migration.migrate(db, True)["table_exists"] is False
-
-
-def test_migration_rolls_back_when_preservation_check_fails(tmp_path, monkeypatch):
-    db = tmp_path / "data.db"
-    seed_database(db)
-    snapshots = iter([{"before": True}, {"before": False}])
-    monkeypatch.setattr(migration, "snapshot", lambda connection: next(snapshots))
-    with pytest.raises(RuntimeError, match="非线段表发生变化"):
-        migration.migrate(db, True)
-    with sqlite3.connect(db) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM period_segments").fetchone()[0] == 1
+    store.db.execute("DELETE FROM chan_structure_runs WHERE id=?", (run_id,))
+    store.db.commit()
+    assert all(store.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0 for table in tables)

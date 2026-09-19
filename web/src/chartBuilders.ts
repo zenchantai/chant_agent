@@ -1,7 +1,11 @@
-import type { Bar, ChartData, Drawing, DrawingStyle, Node } from "./types";
+import type { Bar, Center, ChartApiResponse, ChartData, Component, Drawing, DrawingStyle, Movement, Pen, StructuralPoint, StructureEntity } from "./types";
 import { alignIntradaySeries, chartDates, intradayPointDates } from "./intradayTimeline";
 import { levelStructureColor, periodStructureColor } from "./structureColors";
 import { formatCompactNumber, formatIndicatorValue, formatPrice, formatVolume } from "./marketFormatters";
+import { centerDisplayLabel, centerDisplayRange, centerRevisionMap, centersForDisplay, isWeeklyCoreCenter, selectedCenterEvidence, selectedPoint } from "./centerDisplay";
+
+import { dailyL2Bounds, dailyL2Label, isReferenceProfile, projectionRectangle } from "./dailyL2Overlay";
+import type { ProjectionBounds } from "./dailyL2Overlay";
 
 export type SubplotIndicator = "macd" | "volume" | "amount";
 export type MainIndicator = {
@@ -22,21 +26,22 @@ export type ChartBuildContext = {
     components?: boolean;
     centerLevels?: Record<string, boolean>;
     movementLevels?: Record<string, boolean>;
+    dailyL2?: boolean;
   };
   subplotIndicators?: SubplotIndicator[];
   subplotVisible?: boolean[];
   mainIndicator?: MainIndicator;
   drawingItems?: Drawing[];
-  movementsStale?: boolean;
   zoomStart?: number;
   zoomEnd?: number;
   chartHeight?: number;
   paneRatios?: number[];
   compactLayout?: boolean;
   selectedStructureId?: string | null;
+  selectedProjectionId?: string | null;
   formatKlineTooltip?: (bar?: Bar, previousClose?: number) => string;
-  formatCenterTooltip?: (center: Node, chartTimeframe: string) => string;
-  formatMovementTooltip?: (movement: Node, chartTimeframe?: string) => string;
+  formatCenterTooltip?: (center: Center, chartTimeframe: string) => string;
+  formatMovementTooltip?: (movement: Movement, chartTimeframe?: string) => string;
 };
 
 export type ChartBuildIssue = {
@@ -99,9 +104,10 @@ export const buildVisiblePriceMarkLine = (bars: Bar[], theme = "dark", zoomStart
 export type ChartBuildArtifacts = {
   option: Record<string, any> | null;
   issues: ChartBuildIssue[];
-  visibleCenters: Node[];
-  visibleMovements: Node[];
-  visibleComponents: Node[];
+  visibleCenters: Center[];
+  visibleMovements: Movement[];
+  visibleComponents: Component[];
+  visibleDailyL2: ProjectionBounds[];
 };
 
 export type ChartPaneLayout = {
@@ -182,7 +188,7 @@ const normalizeIndicator = (item: unknown): Record<string, any> | null => {
   return result;
 };
 
-const normalizeNode = (item: unknown, ordinal: number): Node | null => {
+const normalizeNode = (item: unknown, ordinal: number): StructureEntity | null => {
   const startDate = isObject(item) && typeof item.start_date === "string" ? item.start_date.trim() : "";
   const endDate = isObject(item) && typeof item.end_date === "string" ? item.end_date.trim() : "";
   if (!isObject(item) || item.id === undefined || String(item.id).trim() === "" || !validRange(startDate, endDate)) return null;
@@ -194,7 +200,7 @@ const normalizeNode = (item: unknown, ordinal: number): Node | null => {
       else delete result[key];
     }
   });
-  ["source_pen_ids", "pen_ids", "core_pen_ids", "core_unit_ids", "source_unit_ids", "formation_pen_ids", "extension_pen_ids", "peripheral_pen_ids", "departure_pen_ids", "child_ids", "child_movement_ids", "child_center_ids", "center_ids", "evidence"].forEach((key) => {
+  ["source_pen_ids", "source_unit_ids", "entry_unit_ids", "core_unit_ids", "extension_unit_ids", "peripheral_unit_ids", "departure_unit_ids", "retest_unit_ids", "owned_unit_ids", "context_unit_ids", "child_movement_ids", "child_center_ids", "center_family_ids", "center_revision_ids", "source_component_ids", "formation_modes"].forEach((key) => {
     if (key in result) result[key] = Array.isArray(result[key]) ? result[key].filter((value: unknown) => value !== undefined && value !== null).map(String) : [];
   });
   ["path_points", "endpoint_points"].forEach((key) => {
@@ -208,49 +214,90 @@ const normalizeNode = (item: unknown, ordinal: number): Node | null => {
       }).filter(Boolean)
       : [];
   });
-  return result as Node;
+  return result as StructureEntity;
 };
 
+type ActivityNode = StructureEntity & { active?: boolean; display_status?: string };
+const isActiveNode = (item: StructureEntity | null): item is StructureEntity => Boolean(item)
+  && (item as ActivityNode).active !== false
+  && (item as ActivityNode).display_status !== "absorbed";
+
 /** Normalize every API response before it can reach ECharts or the side panels. */
-export const normalizeChartData = (input: ChartData | null): ChartData | null => {
+export const normalizeChartData = (input: ChartData | ChartApiResponse | null): ChartData | null => {
   if (!isObject(input)) return null;
-  const raw = input as Record<string, any>;
+  const source = input as Record<string, any>;
+  const nested = isObject(source.meta) && isObject(source.market) && isObject(source.structure);
+  const raw: Record<string, any> = nested ? {
+    ...source.meta,
+    ...source.market,
+    ...source.structure,
+    overlays: source.overlays,
+    indicators: source.indicators,
+    drawings: source.drawings?.items,
+    drawings_version: source.drawings?.version,
+    has_more: source.pagination?.has_more,
+    next_before: source.pagination?.next_before,
+    active_structure_level: source.meta?.active_level,
+    max_available_center_level: source.meta?.max_level,
+    coverage: source.meta?.sampling_coverage,
+    structure_preview: source.meta?.preview,
+    structure_persisted: source.meta?.persisted,
+  } : { ...source };
   const bars = normalizeBars(raw.bars);
-  const centers = (Array.isArray(raw.centers) ? raw.centers : (Array.isArray(raw.pen_centers) ? raw.pen_centers : [])).map(normalizeNode).filter((item): item is Node => Boolean(item));
-  const pens = (Array.isArray(raw.pens) ? raw.pens : []).map(normalizeNode).filter((item): item is Node => Boolean(item));
-  const movements = (Array.isArray(raw.movements) ? raw.movements : []).map(normalizeNode).filter((item): item is Node => Boolean(item));
-  const relationRows = (Array.isArray(raw.center_relations) ? raw.center_relations : []).filter(isObject).map((item) => ({ ...item }));
+  if (isReferenceProfile(raw as ChartData)) {
+    // Old cached responses must not restore unsupported reference-chart layers.
+    raw.movements = []; raw.movement_revisions = []; raw.components = [];
+    raw.points = []; raw.point_revisions = []; raw.relations = [];
+    raw.centers = (Array.isArray(raw.centers) ? raw.centers : []).filter((item: Center) => item?.level === 1);
+    raw.center_revisions = (Array.isArray(raw.center_revisions) ? raw.center_revisions : []).filter((item: Center) => item?.level === 1);
+    raw.display_center_levels = raw.centers.length || raw.center_revisions.length ? [1] : []; raw.movement_levels = [];
+    raw.levels = (Array.isArray(raw.levels) ? raw.levels : []).filter((level: number) => level === 1);
+    raw.max_available_center_level = raw.centers.length ? 1 : 0;
+  }
+  const centers = (Array.isArray(raw.centers) ? raw.centers : []).map(normalizeNode).filter((item): item is Center => isActiveNode(item) && item.kind === "center");
+  const pens = (Array.isArray(raw.pens) ? raw.pens : []).map(normalizeNode).filter((item): item is Pen => item?.kind === "pen");
+  const movements = (Array.isArray(raw.movements) ? raw.movements : []).map(normalizeNode).filter((item): item is Movement => isActiveNode(item) && item.kind === "movement");
+  const components = (Array.isArray(raw.components) ? raw.components : []).map(normalizeNode).filter((item): item is Component => isActiveNode(item) && item.kind === "component");
+  const points = (Array.isArray(raw.points) ? raw.points : []).map(normalizeNode).filter((item): item is StructuralPoint => isActiveNode(item) && item.kind === "structural_point");
+  const centerRevisions = (Array.isArray(raw.center_revisions) ? raw.center_revisions : []).map(normalizeNode).filter((item): item is Center => item?.kind === "center");
+  const movementRevisions = (Array.isArray(raw.movement_revisions) ? raw.movement_revisions : []).map(normalizeNode).filter((item): item is Movement => item?.kind === "movement");
+  const pointRevisions = (Array.isArray(raw.point_revisions) ? raw.point_revisions : []).map(normalizeNode).filter((item): item is StructuralPoint => item?.kind === "structural_point");
+  const relationRows = (Array.isArray(raw.relations) ? raw.relations : []).filter(isObject).map((item) => ({ ...item }));
   const indicators = raw.indicators && isObject(raw.indicators) ? raw.indicators : {};
   const macd = uniqueBy((Array.isArray(indicators.macd) ? indicators.macd : []).map(normalizeIndicator).filter(Boolean) as Record<string, any>[], (item) => item.trade_date);
   const ma = uniqueBy((Array.isArray(indicators.ma) ? indicators.ma : []).map(normalizeIndicator).filter(Boolean) as Record<string, any>[], (item) => item.trade_date);
   const boll = uniqueBy((Array.isArray(indicators.boll) ? indicators.boll : []).map(normalizeIndicator).filter(Boolean) as Record<string, any>[], (item) => item.trade_date);
-  const centerLevels = Array.from(new Set((Array.isArray(raw.center_levels) ? raw.center_levels : centers.map((item) => item.level)).map(Number).filter((level) => Number.isInteger(level) && level >= 1))).sort((a, b) => a - b);
-  const movementLevels = Array.from(new Set((Array.isArray(raw.movement_levels) ? raw.movement_levels : movements.map((item) => item.level)).map(Number).filter((level) => Number.isInteger(level) && level >= 1))).sort((a, b) => a - b);
+  const availableLevels = Array.isArray(raw.levels) ? raw.levels : [];
+  const centerLevels = Array.from(new Set((Array.isArray(raw.display_center_levels) ? raw.display_center_levels : Array.isArray(raw.center_levels) ? raw.center_levels : availableLevels.length ? availableLevels : centers.map((item) => item.level)).map(Number).filter((level) => Number.isInteger(level) && level >= 1))).sort((a, b) => a - b);
+  const movementLevels = Array.from(new Set((Array.isArray(raw.movement_levels) ? raw.movement_levels : availableLevels.length ? availableLevels : movements.map((item) => item.level)).map(Number).filter((level) => Number.isInteger(level) && level >= 1))).sort((a, b) => a - b);
   return {
     ...raw,
     bars,
     pens,
     centers,
-    pen_centers: centers,
     movements,
-    center_relations: relationRows,
+    components,
+    points,
+    center_revisions: centerRevisions,
+    movement_revisions: movementRevisions,
+    point_revisions: pointRevisions,
+    relations: relationRows,
     indicators: { macd, ma, boll },
     center_levels: centerLevels,
     movement_levels: movementLevels,
     has_more: Boolean(raw.has_more),
+    next_before: raw.next_before || undefined,
   } as unknown as ChartData;
 };
-export const nodeLevel = (node: Node) => Number.isFinite(Number(node.level)) ? Math.max(1, Math.floor(Number(node.level))) : 1;
+export const nodeLevel = (node: StructureEntity) => Number.isFinite(Number(node.level)) ? Math.max(1, Math.floor(Number(node.level))) : 1;
 export const isProvisionalStatus = (status?: string) => status === "provisional" || status === "candidate" || status === "pending";
-export const movementClassificationLabel = (classification?: Node["classification"]) =>
+export const movementClassificationLabel = (classification?: Movement["classification"]) =>
   classification === "trend" ? "趋势" : classification === "consolidation" ? "盘整" : "待定";
-export const centerZd = (center: Node) => Number(center.zd ?? center.fixed_zd);
-export const centerZg = (center: Node) => Number(center.zg ?? center.fixed_zg);
+export const centerZd = (center: Center) => Number(center.zd ?? center.fixed_zd);
+export const centerZg = (center: Center) => Number(center.zg ?? center.fixed_zg);
 
-const centerCollection = (data: ChartData) => data.centers?.length ? data.centers : (data.pen_centers || []);
-export const centersForStructureLevel = (centers: Node[], activeLevel: number) => centers.filter((center) =>
-  (center.role === undefined || center.role === "hierarchy")
-  && Number.isInteger(Number(center.level))
+export const centersForStructureLevel = (centers: Center[], activeLevel: number) => centers.filter((center) =>
+  Number.isInteger(Number(center.level))
   && Number(center.level) === activeLevel,
 );
 const levelIsVisible = (levels: Record<string, boolean> | undefined, level: number) =>
@@ -275,7 +322,7 @@ export const nearestDate = (dates: string[], stamp: string) => {
 };
 
 type Boundary = { startDate: string; endDate: string; startPrice: number; endPrice: number };
-const nodeBoundary = (node: Node): Boundary | null => {
+const nodeBoundary = (node: StructureEntity): Boundary | null => {
   const points = Array.isArray(node.endpoint_points) && node.endpoint_points.length ? node.endpoint_points : node.path_points;
   const first = points?.[0];
   const last = points?.[points.length - 1];
@@ -294,7 +341,7 @@ const interpolate = (leftDate: string, leftPrice: number, rightDate: string, rig
   return leftPrice + (rightPrice - leftPrice) * ratio;
 };
 
-const pointAt = (node: Node, target: string) => {
+const pointAt = (node: StructureEntity, target: string) => {
   const boundary = nodeBoundary(node);
   if (!boundary) return null;
   const points = [
@@ -314,7 +361,7 @@ const pointAt = (node: Node, target: string) => {
   return target < boundary.startDate ? boundary.startPrice : boundary.endPrice;
 };
 
-const clippedBoundary = (node: Node, dates: string[]): Boundary | null => {
+const clippedBoundary = (node: StructureEntity, dates: string[]): Boundary | null => {
   const boundary = nodeBoundary(node);
   if (!boundary || !dates.length || boundary.endDate < dates[0] || boundary.startDate > dates[dates.length - 1]) return null;
   const rawStart = boundary.startDate < dates[0] ? dates[0] : boundary.startDate;
@@ -335,9 +382,9 @@ export type MovementEndpointMarker = {
   level: number;
 };
 
-const movementMarkers = (movements: Node[], dates: string[] = []) => {
+const movementMarkers = (movements: Movement[], dates: string[] = []) => {
   const entries = movements.map((movement) => ({ movement, boundary: dates.length ? clippedBoundary(movement, dates) : nodeBoundary(movement) }))
-    .filter((item): item is { movement: Node; boundary: Boundary } => Boolean(item.boundary))
+    .filter((item): item is { movement: Movement; boundary: Boundary } => Boolean(item.boundary))
     .sort((a, b) => a.boundary.startDate.localeCompare(b.boundary.startDate) || a.boundary.endDate.localeCompare(b.boundary.endDate) || a.movement.id.localeCompare(b.movement.id));
   const map = new Map<string, MovementEndpointMarker & { score: number }>();
   entries.forEach(({ movement, boundary }) => {
@@ -350,21 +397,21 @@ const movementMarkers = (movements: Node[], dates: string[] = []) => {
   let high = 0, low = 0;
   return Array.from(map.values()).sort((a, b) => a.trade_date.localeCompare(b.trade_date) || a.price - b.price || a.key.localeCompare(b.key)).map((point) => ({
     key: point.key, trade_date: point.trade_date, price: point.price, kind: point.kind,
-    label: point.kind === "high" ? `H${++high}` : `L${++low}`, movementId: point.movementId, level: point.level,
+    label: point.kind === "high" ? `高点${++high}` : `低点${++low}`, movementId: point.movementId, level: point.level,
   }));
 };
 
-export const movementEndpointMarkers = (movements: Node[], dates: string[] = []) => movementMarkers(movements, dates);
+export const movementEndpointMarkers = (movements: Movement[], dates: string[] = []) => movementMarkers(movements, dates);
 /** Public endpoint-label builder used by the chart and by pure configuration tests. */
-export const buildEndpointLabels = (movements: Node[], dates: string[] = []) => movementEndpointMarkers(movements, dates);
-export const movementLineEndpoints = (movement: Node, dateMapper: (stamp: string) => string = (stamp) => stamp) => {
+export const buildEndpointLabels = (movements: Movement[], dates: string[] = []) => movementEndpointMarkers(movements, dates);
+export const movementLineEndpoints = (movement: Movement, dateMapper: (stamp: string) => string = (stamp) => stamp) => {
   const boundary = nodeBoundary(movement);
   if (!boundary) return [];
   return [{ value: [dateMapper(boundary.startDate), boundary.startPrice], movementId: movement.id }, { value: [dateMapper(boundary.endDate), boundary.endPrice], movementId: movement.id }];
 };
-export const movementVisualStyle = (theme: string, movement: Node, timeframe = "d") => ({
+export const movementVisualStyle = (theme: string, movement: Movement, timeframe = "d") => ({
   color: levelStructureColor(theme === "light" ? "light" : "dark", timeframe, nodeLevel(movement)),
-  lineType: isProvisionalStatus(movement.status) ? "dashed" as const : "solid" as const,
+  lineType: movement.status === "confirmed" ? "solid" as const : isProvisionalStatus(movement.status) ? "dashed" as const : "dotted" as const,
 });
 
 const safeColor = (theme: string, timeframe: string, level: number) => levelStructureColor(theme === "light" ? "light" : "dark", timeframe, level);
@@ -374,48 +421,15 @@ const withAlpha = (color: string, alpha: string) => {
   if (/^#[0-9a-f]{8}$/i.test(normalized)) return `#${normalized.slice(1, 7)}${alpha}`;
   return normalized;
 };
-const centerColor = (theme: string, timeframe: string, center: Node) => {
+const centerColor = (theme: string, timeframe: string, center: Center) => {
   const supplied = (center as any).color;
   if (typeof supplied === "string" && supplied.trim()) return supplied;
-  const key = typeof center.color_key === "string" ? center.color_key : "";
-  const period = key.match(/^period-(1|5|15|30|60|120|d|w|m)$/)?.[1];
-  if (period) return periodStructureColor(theme === "light" ? "light" : "dark", period);
-  const levelKey = key.match(/(?:period-[^-]+-level-L|structure-higher-L)(\d+)$/)?.[1];
-  if (levelKey) return safeColor(theme, timeframe, Number(levelKey));
   return safeColor(theme, timeframe, nodeLevel(center));
 };
-const hasMissingReference = (center: Node, data: ChartData) => {
+const hasMissingReference = (center: Center, data: ChartData) => {
   const penIds = new Set((data.pens || []).map((item) => item.id));
-  const centerIds = new Set(centerCollection(data).map((item) => item.id));
-  const movementIds = new Set((data.movements || []).map((item) => item.id));
-  const centerLevel = nodeLevel(center);
-  const advertisedCenterLevels = (data.center_levels || []).map(Number).filter(Number.isInteger);
-  const advertisedMovementLevels = (data.movement_levels || []).map(Number).filter(Number.isInteger);
-  const penRefs = [
-    ...(center.source_pen_ids || []), ...(center.pen_ids || []), ...(center.core_pen_ids || []),
-    ...(center.formation_pen_ids || []), ...(center.extension_pen_ids || []),
-    ...(center.peripheral_pen_ids || []), ...(center.departure_pen_ids || []),
-    ...(centerLevel === 1 ? (center.core_unit_ids || []) : []),
-    ...(center.entry_pen_id ? [center.entry_pen_id] : []),
-  ];
+  const penRefs = center.source_pen_ids || [];
   if (penRefs.length && penRefs.some((id) => !penIds.has(id))) return "center_pen_reference_missing";
-  const childCenterRefs = [...(center.child_center_ids || []), ...(center.child_ids || [])].filter(Boolean);
-  // The chart API intentionally returns only the selected level's centers;
-  // child IDs can therefore point to lower-level rows omitted from this page.
-  // Validate them when no lower-level catalog is advertised, which catches
-  // malformed standalone payloads without rejecting valid L2/L3 responses.
-  const hasLowerLevelCatalog = advertisedCenterLevels.some((level) => level < centerLevel);
-  if (childCenterRefs.length && centerIds.size && !hasLowerLevelCatalog && childCenterRefs.some((id) => !centerIds.has(id))) return "center_child_reference_missing";
-
-  // Higher-level centers normally reference lower-level movements. Those rows
-  // are intentionally omitted from a selected-level chart page, so only make
-  // this check strict when no lower-level movement catalog is advertised.
-  const movementRefs = [
-    ...(centerLevel > 1 ? (center.child_movement_ids || []) : []),
-    ...(centerLevel > 1 ? (center.source_unit_ids || []) : []),
-  ];
-  const hasLowerMovementCatalog = advertisedMovementLevels.some((level) => level < centerLevel);
-  if (movementRefs.length && !hasLowerMovementCatalog && movementRefs.some((id) => !movementIds.has(id))) return "center_movement_reference_missing";
   return null;
 };
 
@@ -423,27 +437,26 @@ export const buildCenterAreas = (context: ChartBuildContext, dates: string[], is
   const data = context.data;
   if (!dates.length) {
     issues.push({ code: "center_dates_empty" });
-    return { areas: [] as any[], visibleCenters: [] as Node[] };
+    return { areas: [] as any[], visibleCenters: [] as Center[] };
   }
-  if (context.visible?.centers === false) return { areas: [] as any[], visibleCenters: [] as Node[] };
-  const visible = centerCollection(data).filter((center) => {
-    const level = nodeLevel(center);
-    if (!Number.isInteger(Number(center.level)) || (center.role !== undefined && center.role !== "hierarchy") || !levelIsVisible(context.visible?.centerLevels, level)) return false;
+  const visible = centersForDisplay(data, context.selectedStructureId, context.visible?.centers !== false, context.visible?.centerLevels).filter((center) => {
+    if (!Number.isInteger(Number(center.level))) return false;
+    const range = centerDisplayRange(center, data.timeframe);
     const zd = centerZd(center), zg = centerZg(center);
-    if (!Number.isFinite(zd) || !Number.isFinite(zg) || zd >= zg || !validRange(center.start_date, center.end_date)) {
+    if (!range || !Number.isFinite(zd) || !Number.isFinite(zg) || zd >= zg || !validRange(range.start_date, range.end_date)) {
       issues.push({ code: "center_invalid_range", id: center.id }); return false;
     }
     if (hasMissingReference(center, data)) { issues.push({ code: "center_reference_missing", id: center.id }); return false; }
-    if (center.end_date < dates[0] || center.start_date > dates[dates.length - 1]) return false;
+    if (range.end_date < dates[0] || range.start_date > dates[dates.length - 1]) return false;
     return true;
   });
   const areas = visible.map((center) => {
+    const range = centerDisplayRange(center, data.timeframe)!;
     const color = centerColor(context.theme || "dark", data.timeframe, center);
-    if (!(center as any).color && !center.color_key) issues.push({ code: "center_color_metadata_missing", id: center.id });
-    const fill = withAlpha(color, context.theme === "light" ? "1A" : "24");
+    const fill = withAlpha(color, center.selected_evidence ? "33" : center.display_role === "constituent" ? "0A" : context.theme === "light" ? "12" : "18");
     return [
-      { xAxis: nearestDate(dates, center.start_date), yAxis: centerZd(center), centerId: center.id, itemStyle: { color: fill, borderColor: color, borderWidth: 2.2, borderType: isProvisionalStatus(center.status) ? "dashed" : "solid" }, label: isProvisionalStatus(center.status) ? { show: true, formatter: `${center.upgrade_kind || "候选"}${center.progress ? ` ${center.progress}` : ""}`, color } : { show: false } },
-      { xAxis: nearestDate(dates, center.end_date), yAxis: centerZg(center) },
+      { name: centerDisplayLabel(data, center), xAxis: nearestDate(dates, range.start_date), yAxis: centerZd(center), centerId: center.id, itemStyle: { color: fill, borderColor: color, borderWidth: center.selected_evidence ? 3 : center.display_role === "constituent" ? 1.4 : 2.2, borderType: isProvisionalStatus(center.status) ? "dashed" : "solid" }, label: { show: true, formatter: centerDisplayLabel(data, center), color, fontSize: 10, position: "insideTopLeft" } },
+      { xAxis: nearestDate(dates, range.end_date), yAxis: centerZg(center) },
     ];
   });
   return { areas, visibleCenters: visible };
@@ -599,10 +612,10 @@ export const buildPriceSeries = (context: ChartBuildContext, centerAreas: any[] 
   }
   const candle: Record<string, any> = { id: "kline", name: "K线", type: "candlestick", data: bars.map((bar) => [bar.open, bar.close, bar.low, bar.high]), itemStyle: { color: "transparent", color0: "#26a269", borderColor: "#ef5350", borderColor0: "#26a269" } };
   candle.markLine = buildVisiblePriceMarkLine(bars, context.theme, context.zoomStart, context.zoomEnd);
-  if (centerAreas.length && context.visible?.centers !== false) {
+  if (centerAreas.length) {
     candle.markArea = { silent: false, label: { show: false }, data: centerAreas, tooltip: { trigger: "item", formatter: (params: any) => {
       const item = Array.isArray(params?.data) ? params.data[0] : params?.data;
-      const center = centerCollection(data).find((candidate) => candidate.id === item?.centerId);
+      const center = centersForDisplay(data, context.selectedStructureId, context.visible?.centers !== false, context.visible?.centerLevels).find((candidate) => candidate.id === item?.centerId);
       return center && context.formatCenterTooltip ? context.formatCenterTooltip(center, data.timeframe) : "";
     } } };
   }
@@ -653,41 +666,67 @@ export const buildIndicatorSeries = (context: ChartBuildContext, axes = buildAxe
 export const buildPenSeries = (context: ChartBuildContext, dates: string[], issues: ChartBuildIssue[] = []) => {
   if (context.data.timeframe === "1" || context.visible?.pens === false) return [];
   const color = periodStructureColor(context.theme === "light" ? "light" : "dark", context.data.timeframe);
+  const selectedCenter = selectedCenterEvidence(context.data, context.selectedStructureId);
+  const point = selectedPoint(context.data, context.selectedStructureId);
+  const roleColors = { entry: "#d97706", core: "#7c3aed", z_wave: "#0891b2", peripheral: "#64748b", departure: "#dc2626", retest: "#16a34a", connection: "#db2777" };
+  const roles = new Map<string, keyof typeof roleColors>();
+  const roleCenters = selectedCenter ? [selectedCenter, ...context.data.center_revisions.filter((item) => selectedCenter.child_center_ids.includes(item.id))] : [];
+  const assign = (identifiers: string[], role: keyof typeof roleColors) => identifiers.forEach((identifier) => {
+    const movement = context.data.movement_revisions.find((item) => item.id === identifier);
+    (movement?.source_pen_ids || [identifier]).forEach((penId) => roles.set(penId, role));
+  });
+  roleCenters.forEach((center) => {
+    if (isWeeklyCoreCenter(center, context.data.timeframe)) {
+      assign(center.core_unit_ids || [], "core");
+      return;
+    }
+    assign(center.entry_unit_ids || [], "entry");
+    assign(center.peripheral_unit_ids || [], "peripheral");
+    assign(center.departure_unit_ids || [], "departure");
+    assign(center.retest_unit_ids || [], "retest");
+    assign(center.z_unit_ids || [], "z_wave");
+    assign(center.core_unit_ids || [], "core");
+    context.data.components.filter((component) => center.connection_component_ids?.includes(component.id)).forEach((component) => assign(component.source_unit_ids, "connection"));
+  });
+  if (point) context.data.components.filter((component) => point.source_component_ids.includes(component.id)).forEach((component) => {
+    if (component.role === "departure" || component.role === "retest") assign(component.source_unit_ids, component.role);
+  });
   return (context.data.pens || []).slice().sort((a, b) => a.start_date.localeCompare(b.start_date)).filter((pen) => pen.status === "confirmed").map((pen) => {
     const boundary = clippedBoundary(pen, dates);
     if (!boundary) return null;
     if (!Number.isFinite(boundary.startPrice) || !Number.isFinite(boundary.endPrice)) { issues.push({ code: "pen_invalid_boundary", id: pen.id }); return null; }
     const selected = context.selectedStructureId === pen.id;
-    return { id: pen.id, name: `笔 ${(Number(pen.ordinal) || 0) + 1}`, type: "line", data: [[boundary.startDate, boundary.startPrice], [boundary.endDate, boundary.endPrice]], showSymbol: true, symbolSize: selected ? 8 : 5, lineStyle: { width: selected ? 3.4 : 1.8, type: "solid", color, opacity: selected ? 1 : 0.88 }, itemStyle: { color }, z: 5 };
+    const role = roles.get(pen.id);
+    const lineColor = role ? roleColors[role] : color;
+    return { id: pen.id, name: `笔 ${(Number(pen.ordinal) || 0) + 1}${role ? ` · ${role}` : ""}`, type: "line", data: [[boundary.startDate, boundary.startPrice], [boundary.endDate, boundary.endPrice]], showSymbol: true, symbolSize: selected || role ? 8 : 5, lineStyle: { width: selected || role ? 3.4 : 1.8, type: "solid", color: lineColor, opacity: selected || role ? 1 : selectedCenter ? 0.3 : 0.88 }, itemStyle: { color: lineColor }, z: role ? 11 : 5 };
   }).filter(Boolean) as Record<string, any>[];
 };
 
-const buildStructureHitSeries = (context: ChartBuildContext, dates: string[], centers: Node[], movements: Node[], pens: Node[], components: Node[]) => {
+const buildStructureHitSeries = (context: ChartBuildContext, dates: string[], centers: Center[], movements: Movement[], pens: Pen[], components: Component[]) => {
   if (context.data.timeframe === "1") return [] as Record<string, any>[];
   const hitStyle = { color: "#000", opacity: 0 };
-  const lineHit = (node: Node, kind: "pen" | "movement", width: number) => {
+  const lineHit = (node: StructureEntity, kind: "pen" | "movement", width: number) => {
     const boundary = clippedBoundary(node, dates);
     if (!boundary) return null;
     const key = `${kind}Id`;
     return { id: `${kind}-hit-${node.id}`, name: `${kind}-hit`, type: "line", data: [{ value: [boundary.startDate, boundary.startPrice], [key]: node.id }, { value: [boundary.endDate, boundary.endPrice], [key]: node.id }], showSymbol: false, lineStyle: { ...hitStyle, width }, silent: false, tooltip: { show: false }, z: kind === "movement" ? 9 : 11 };
   };
   const centerHits = centers.map((center) => {
+    const range = centerDisplayRange(center, context.data.timeframe);
     const zd = centerZd(center), zg = centerZg(center);
-    if (!Number.isFinite(zd) || !Number.isFinite(zg)) return null;
-    const start = nearestDate(dates, center.start_date), end = nearestDate(dates, center.end_date);
+    if (!range || !Number.isFinite(zd) || !Number.isFinite(zg)) return null;
+    const start = nearestDate(dates, range.start_date), end = nearestDate(dates, range.end_date);
     return { id: `center-hit-${center.id}`, name: "center-hit", type: "line", data: [[start, zd], [end, zd], [end, zg], [start, zg], [start, zd]].map((value) => ({ value, centerId: center.id })), showSymbol: false, lineStyle: { ...hitStyle, width: 18 }, areaStyle: { color: "#000", opacity: 0 }, markArea: { silent: false, itemStyle: { color: "#000", opacity: 0 }, data: [[{ coord: [start, zd], centerId: center.id }, { coord: [end, zg], centerId: center.id }]] }, silent: false, tooltip: { show: false }, z: 12 };
   }).filter(Boolean) as Record<string, any>[];
   return [...components.map((node) => lineHit(node, "pen", 12)), ...pens.map((node) => lineHit(node, "pen", 14)), ...movements.map((node) => lineHit(node, "movement", 18)), ...centerHits].filter(Boolean) as Record<string, any>[];
 };
 
 export const buildComponentSeries = (context: ChartBuildContext, dates: string[]) => {
-  if (context.data.timeframe === "1") return { series: [] as Record<string, any>[], visibleComponents: [] as Node[] };
-  const selected = [...(context.data.centers || []), ...(context.data.buy_sell_points || [])].find((item) => item.id === context.selectedStructureId);
-  const referenced = new Set<string>([
-    ...(selected?.formation_component_ids || []), ...(selected?.extension_component_ids || []),
-    ...(selected?.peripheral_component_ids || []), ...(selected?.departure_component_ids || []),
-    ...(selected?.retest_component_ids || []), ...((selected as any)?.source_component_ids || []),
-  ]);
+  if (context.data.timeframe === "1" || isReferenceProfile(context.data)) return { series: [] as Record<string, any>[], visibleComponents: [] as Component[] };
+  const selected = [...(context.data.centers || []), ...(context.data.center_revisions || []), ...(context.data.points || [])].find((item) => item.id === context.selectedStructureId);
+  const referenced = new Set<string>(selected?.kind === "center"
+    ? [selected.entry_component_id, selected.departure_component_id, selected.retest_component_id, ...(selected.connection_component_ids || [])].filter((value): value is string => Boolean(value))
+    : selected?.kind === "structural_point" ? selected.source_component_ids : []);
   const visible = (context.data.components || []).filter((component) => context.visible?.components || referenced.has(component.id));
   const series = visible.map((component) => {
     const boundary = clippedBoundary(component, dates);
@@ -702,9 +741,9 @@ export const buildComponentSeries = (context: ChartBuildContext, dates: string[]
   return { series, visibleComponents: visible };
 };
 
-const buildMovementSeriesForRole = (context: ChartBuildContext, dates: string[], issues: ChartBuildIssue[], role: "hierarchy_component") => {
-  if (context.data.timeframe === "1" || context.visible?.movements === false || context.movementsStale) return { series: [] as Record<string, any>[], visibleMovements: [] as Node[], endpointMarkers: [] as MovementEndpointMarker[] };
-  const visible = (context.data.movements || []).filter((movement) => Number.isInteger(Number(movement.level)) && movement.role === role && levelIsVisible(context.visible?.movementLevels, nodeLevel(movement))).map((movement) => ({ movement, boundary: clippedBoundary(movement, dates) })).filter((item): item is { movement: Node; boundary: Boundary } => {
+const buildMovementSeriesForRole = (context: ChartBuildContext, dates: string[], issues: ChartBuildIssue[]) => {
+  if (context.data.timeframe === "1" || isReferenceProfile(context.data) || context.visible?.movements === false) return { series: [] as Record<string, any>[], visibleMovements: [] as Movement[], endpointMarkers: [] as MovementEndpointMarker[] };
+  const visible = (context.data.movements || []).filter((movement) => Number.isInteger(Number(movement.level)) && levelIsVisible(context.visible?.movementLevels, nodeLevel(movement))).map((movement) => ({ movement, boundary: clippedBoundary(movement, dates) })).filter((item): item is { movement: Movement; boundary: Boundary } => {
     if (!item.boundary) return false;
     if (!Number.isFinite(item.boundary.startPrice) || !Number.isFinite(item.boundary.endPrice)) { issues.push({ code: "movement_invalid_boundary", id: item.movement.id }); return false; }
     return true;
@@ -721,27 +760,32 @@ const buildMovementSeriesForRole = (context: ChartBuildContext, dates: string[],
 };
 
 export const buildMovementSeries = (context: ChartBuildContext, dates: string[], issues: ChartBuildIssue[] = []) =>
-  buildMovementSeriesForRole(context, dates, issues, "hierarchy_component");
+  buildMovementSeriesForRole(context, dates, issues);
 
 const pointLabel = (pointType?: string) => ({
   first_buy: "一买", second_buy: "二买", third_buy: "三买",
   first_sell: "一卖", second_sell: "二卖", third_sell: "三卖",
+  consolidation_divergence_buy: "盘背买", consolidation_divergence_sell: "盘背卖",
+  structural_turn_buy: "结构低点", structural_turn_sell: "结构高点",
 }[pointType || ""] || pointType || "买卖点");
 
 export const buildBuySellPointSeries = (context: ChartBuildContext, dates: string[]) => {
-  if (context.data.timeframe === "1") return [] as Record<string, any>[];
+  if (context.data.timeframe === "1" || isReferenceProfile(context.data)) return [] as Record<string, any>[];
   const theme = context.theme === "light" ? "light" : "dark";
-  const points = (context.data.buy_sell_points || []).filter((point) =>
-    point.status !== "invalidated" && point.point_date && Number.isFinite(Number(point.point_price))
+  const points = (context.data.points || []).filter((point) =>
+    (point as ActivityNode).active !== false && (point as ActivityNode).display_status !== "absorbed"
+      && point.status !== "invalidated" && point.point_date && Number.isFinite(Number(point.point_price))
       && dates[0] <= point.point_date && point.point_date <= dates[dates.length - 1],
   );
   if (!points.length) return [] as Record<string, any>[];
+  const centers = centerRevisionMap(context.data);
   return [{
     id: "buy-sell-points", name: "买卖点", type: "scatter",
     data: points.map((point) => {
       const confirmed = point.status === "confirmed";
       const buy = point.point_type?.endsWith("buy");
-      const color = buy ? (theme === "light" ? "#13795b" : "#63d6ad") : (theme === "light" ? "#b13d4a" : "#ff8a8a");
+      const center = centers.get(point.center_revision_id);
+      const color = center ? centerColor(theme, context.data.timeframe, center) : theme === "light" ? "#64748b" : "#94a3b8";
       return {
         value: [nearestDate(dates, point.point_date || ""), Number(point.point_price)], pointId: point.id,
         name: pointLabel(point.point_type),
@@ -752,10 +796,37 @@ export const buildBuySellPointSeries = (context: ChartBuildContext, dates: strin
     symbol: "circle", symbolSize: 10,
     tooltip: { trigger: "item", formatter: (params: any) => {
       const point = points.find((item) => item.id === params?.data?.pointId);
-      return point ? `${pointLabel(point.point_type)}：${point.status === "confirmed" ? "已确认" : "候选"}<br/>${point.point_date} ${formatPrice(Number(point.point_price))}<br/>确认时间：${point.confirmed_at || "等待确认"}` : "";
+      return point ? `${pointLabel(point.point_type)}：${point.status === "confirmed" ? "已确认" : "候选"}<br/>${point.point_date} ${formatPrice(Number(point.point_price))}<br/>确认时间：${point.confirmed_at || "等待确认"}${centers.has(point.center_revision_id) ? "" : "<br/>中枢证据缺失"}` : "";
     } }, z: 13,
   }];
 };
+export const buildDailyL2Series = (context: ChartBuildContext, dates: string[]) => {
+  const bounds = dailyL2Bounds(context.data, dates, context.visible?.dailyL2 !== false);
+  const color = levelStructureColor(context.theme || "dark", "d", 2);
+  const series = bounds.length ? [{
+    id: "daily-l2-projections", name: "日线 L2 参考", type: "custom", clip: true, silent: true, z: 2,
+    dimensions: ["start", "end", "zd", "zg"], encode: { x: [0, 1], y: [2, 3] },
+    data: bounds.map(({ center, startIndex, endIndex }) => [startIndex, endIndex, center.zd, center.zg]),
+    tooltip: { show: false },
+    renderItem: (params: any, api: any) => {
+      const bound = bounds[params.dataIndex];
+      if (!bound) return null;
+      const rect = projectionRectangle(bound, (index, price) => api.coord([index, price]), api.size([1, 0])[0]);
+      const grid = params.coordSys;
+      const x = Math.max(rect.x, grid.x), y = Math.max(rect.y, grid.y);
+      const width = Math.min(rect.x + rect.width, grid.x + grid.width) - x;
+      const height = Math.min(rect.y + rect.height, grid.y + grid.height) - y;
+      if (width <= 0 || height <= 0) return null;
+      const selected = context.selectedProjectionId === bound.center.id;
+      return { type: "group", children: [
+        { type: "rect", shape: { x, y, width, height }, style: { fill: withAlpha(color, selected ? "33" : "0D"), stroke: color, lineWidth: selected ? 3 : 1.5 } },
+        { type: "text", style: { x: x + 4, y: y + 14, text: dailyL2Label(bound.center), fill: color, font: "10px sans-serif", width: Math.max(0, width - 8), overflow: "truncate" } },
+      ] };
+    },
+  }] : [];
+  return { bounds, series };
+};
+
 const styleDefaults = (drawing: Drawing, theme: string): DrawingStyle => {
   const color = periodStructureColor(theme === "light" ? "light" : "dark", drawing.timeframe);
   return { color, width: 1.5, line_type: "solid", opacity: 0.9, ...(drawing.object_type === "rectangle" ? { fill_color: color, fill_opacity: theme === "light" ? 0.1 : 0.14 } : {}) };
@@ -781,7 +852,7 @@ export const buildDrawingSeries = (context: ChartBuildContext, dates: string[], 
   }).filter(Boolean) as Record<string, any>[];
 };
 
-const ALLOWED_SERIES_TYPES = new Set(["line", "bar", "candlestick", "scatter"]);
+const ALLOWED_SERIES_TYPES = new Set(["line", "bar", "candlestick", "scatter", "custom"]);
 /** Recursively reject undefined values, including holes in sparse arrays. */
 const valueIsValid = (value: any, ancestors = new WeakSet<object>()): boolean => {
   if (value === null || value === undefined) return value === null;
@@ -822,6 +893,7 @@ const validSeriesDataItem = (type: string, item: unknown): boolean => {
   if (type === "candlestick") {
     return Array.isArray(value) && value.length === 4 && value.every((part) => typeof part === "number" && Number.isFinite(part));
   }
+  if (type === "custom") return Array.isArray(value) && value.length === 4 && value.every(item => typeof item === "number" && Number.isFinite(item));
   if (type === "scatter") {
     return Array.isArray(value) && value.length === 2 && validCategoryCoordinate(value[0]) && typeof value[1] === "number" && Number.isFinite(value[1]);
   }
@@ -878,9 +950,9 @@ export const validateAxes = (axes: { grid?: unknown[]; xAxis?: unknown[]; yAxis?
 
 export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtifacts => {
   const data = normalizeChartData(context.data);
-  if (!data) return { option: null, issues: [{ code: "invalid_chart_data" }], visibleCenters: [], visibleMovements: [], visibleComponents: [] };
+  if (!data) return { option: null, issues: [{ code: "invalid_chart_data" }], visibleCenters: [], visibleMovements: [], visibleComponents: [], visibleDailyL2: [] };
   const bars = normalizeBars(context.bars === undefined ? data.bars : context.bars);
-  if (!bars.length) return { option: null, issues: [{ code: "empty_bars" }], visibleCenters: [], visibleMovements: [], visibleComponents: [] };
+  if (!bars.length) return { option: null, issues: [{ code: "empty_bars" }], visibleCenters: [], visibleMovements: [], visibleComponents: [], visibleDailyL2: [] };
   context = { ...context, data, bars };
   const dates = chartDates(data.timeframe, bars);
   const pointDates = data.timeframe === "1" ? intradayPointDates(bars, dates) : dates;
@@ -891,7 +963,12 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
   const movement = buildMovementSeries({ ...context, bars }, dates, issues);
   const component = buildComponentSeries({ ...context, bars }, dates);
   const pointSeries = buildBuySellPointSeries({ ...context, bars }, dates);
-  const hitSeries = buildStructureHitSeries({ ...context, bars }, dates, centers.visibleCenters, movement.visibleMovements, (data.pens || []).filter((pen) => pen.status === "confirmed"), component.visibleComponents);
+  const dailyL2 = buildDailyL2Series(context, dates);
+  const hitSeries = buildStructureHitSeries(
+    { ...context, bars }, dates, centers.visibleCenters, movement.visibleMovements,
+    context.visible?.pens === false ? [] : (data.pens || []).filter((pen) => pen.status === "confirmed"),
+    component.visibleComponents,
+  );
   const marketSeries = [
     ...buildPriceSeries({ ...context, bars }, centers.areas),
     ...buildIndicatorSeries({ ...context, bars }, axes),
@@ -902,6 +979,7 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
     ...component.series,
     ...movement.series,
     ...pointSeries,
+    ...dailyL2.series,
     ...hitSeries,
     ...buildDrawingSeries({ ...context, bars }, dates, issues),
   ];
@@ -914,7 +992,7 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
   // of triggering an internal "reading type" exception.
   if (!checkedAxes.valid || !checked.valid.length) {
     issues.push({ code: "chart_option_invalid" });
-    return { option: null, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements, visibleComponents: component.visibleComponents };
+    return { option: null, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements, visibleComponents: component.visibleComponents, visibleDailyL2: dailyL2.bounds };
   }
   const dark = context.theme !== "light";
   const option: Record<string, any> = {
@@ -939,14 +1017,14 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
         return `${item.marker || ""}${item.seriesName}：${formatted}`;
       }).join("<br/>");
     } },
-    dataZoom: [{ type: "inside", xAxisIndex: axes.xAxis.map((_, index) => index), start: data.timeframe === "1" ? 0 : context.zoomStart ?? 0, end: data.timeframe === "1" ? 100 : context.zoomEnd ?? 100, disabled: data.timeframe === "1", moveOnMouseMove: data.timeframe !== "1", zoomOnMouseWheel: data.timeframe !== "1", moveOnMouseWheel: false, preventDefaultMouseMove: true }, ...(data.timeframe === "1" ? [] : [{ type: "slider", xAxisIndex: axes.xAxis.map((_, index) => index), bottom: 5, height: 18, start: context.zoomStart ?? 0, end: context.zoomEnd ?? 100, borderColor: dark ? "#34424c" : "#bfd2df", backgroundColor: dark ? "#17232c" : "#edf5fa", fillerColor: dark ? "#3f92bd2e" : "#75a8c936" }])],
+    dataZoom: [{ type: "inside", ...(isReferenceProfile(data) ? { filterMode: "weakFilter" } : {}), xAxisIndex: axes.xAxis.map((_, index) => index), start: data.timeframe === "1" ? 0 : context.zoomStart ?? 0, end: data.timeframe === "1" ? 100 : context.zoomEnd ?? 100, disabled: data.timeframe === "1", moveOnMouseMove: data.timeframe !== "1", zoomOnMouseWheel: data.timeframe !== "1", moveOnMouseWheel: false, preventDefaultMouseMove: true }, ...(data.timeframe === "1" ? [] : [{ type: "slider", ...(isReferenceProfile(data) ? { filterMode: "weakFilter" } : {}), xAxisIndex: axes.xAxis.map((_, index) => index), bottom: 5, height: 18, start: context.zoomStart ?? 0, end: context.zoomEnd ?? 100, borderColor: dark ? "#34424c" : "#bfd2df", backgroundColor: dark ? "#17232c" : "#edf5fa", fillerColor: dark ? "#3f92bd2e" : "#75a8c936" }])],
     series: checked.valid,
   };
   if (!valueIsValid(option)) {
     issues.push({ code: "chart_option_invalid" });
-    return { option: null, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements, visibleComponents: component.visibleComponents };
+    return { option: null, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements, visibleComponents: component.visibleComponents, visibleDailyL2: dailyL2.bounds };
   }
-  return { option, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements, visibleComponents: component.visibleComponents };
+  return { option, issues, visibleCenters: centers.visibleCenters, visibleMovements: movement.visibleMovements, visibleComponents: component.visibleComponents, visibleDailyL2: dailyL2.bounds };
 };
 
 export const buildChartOption = (context: ChartBuildContext) => buildChartArtifacts(context).option;

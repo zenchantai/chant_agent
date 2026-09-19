@@ -56,24 +56,19 @@ async def run_agent(rows, symbol: str, question: str | None = None,
     result["as_of"] = datetime.now(timezone.utc).isoformat()
     result["status"] = "paper_only"
     result["signals"] = []
-    # Keep explanations grounded in confirmed formal L1 centers and computed
-    # hierarchy movements.
-    centers = [
-        center for center in result.get("pen_centers", [])
-        if center.get("role", "hierarchy") == "hierarchy"
-        and int(center.get("level", 1) or 1) == 1
-    ][-6:]
-    movements = result.get("movements", [])[-4:]
-    buy_sell_points = result.get("buy_sell_points", [])[-8:]
+    structure = result.get("structure", {})
+    meta = result.get("meta", {})
+    centers = [center for center in structure.get("centers", []) if int(center.get("level", 1)) == 1][-6:]
+    movements = structure.get("movements", [])[-4:]
+    points = structure.get("points", [])[-8:]
     result["explanation"] = await explain({
         "symbol": symbol,
-        "definition_version": result.get("definition_version"),
-        "available": result.get("available", True),
-        "stale_reason": result.get("stale_reason"),
-        "pens": result.get("pens", [])[-8:],
-        "pen_centers": centers,
+        "definition_version": meta.get("definition_version"),
+        "available": bool(structure.get("pens")),
+        "pens": structure.get("pens", [])[-8:],
+        "centers": centers,
         "movements": movements,
-        "buy_sell_points": buy_sell_points,
+        "points": points,
         "notice": "只能解释本周期规则引擎已经计算并持久化的结构和买卖点。模型不能修改结构、升级递归级别、补判背驰或创造买卖点。",
     }, question)
     return result

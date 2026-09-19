@@ -1,66 +1,56 @@
-import json
+import sqlite3
 
 import pytest
 
-from app.hierarchy import build_hierarchy
 from app.period_structure import PeriodStructureService
 from app.store import Store
-from scripts import recalculate_structure
-from tests.test_strict_movements import structural_stream
-from tests.test_structure import seed, session_rows
+from tests.chan_fixtures import seed, session_rows
 
 
-def test_snapshot_rejects_forged_confirmation_without_switching_active(tmp_path):
+def test_successful_staging_run_activates_atomically_and_replaces_old_success(tmp_path):
     store = Store(str(tmp_path / "snapshot.db"))
     seed(store, "000001", session_rows())
-    service = PeriodStructureService(store)
-    service.ensure("000001", "5", force=True)
-    before = store.active_period_structure_run("000001", "5")
-    units, centers = structural_stream(4)
-    structure = build_hierarchy(units, centers)
-    confirmed = next(item for item in structure["movements"] if item["status"] == "confirmed")
-    confirmed["confirmation_center_id"] = "nonexistent"
-    with pytest.raises(ValueError, match="走势确认不合法"):
-        store.replace_period_structure("000001", "5", "2", before["definition_version"], structure, "test")
-    assert store.active_period_structure_run("000001", "5")["id"] == before["id"]
+    service = PeriodStructureService(store, calculator_fingerprint="fingerprint-a")
+    first = service.ensure("000001", "5", force=True)
+    second = PeriodStructureService(store, calculator_fingerprint="fingerprint-b").ensure("000001", "5")
+    assert first["meta"]["run_id"] != second["meta"]["run_id"]
+    active = store.active_chan_run("000001", "5", "2")
+    assert active["id"] == second["meta"]["run_id"]
+    assert active["calculator_fingerprint"] == "fingerprint-b"
+    successful = store.db.execute(
+        "SELECT COUNT(*) FROM chan_structure_runs WHERE symbol='000001' AND timeframe='5' AND status='success'"
+    ).fetchone()[0]
+    assert successful == 1
 
 
-def test_new_snapshot_keeps_historical_rows_and_retires_unsupported_pointer(tmp_path, monkeypatch):
-    path = tmp_path / "migration.db"
-    store = Store(str(path))
+def test_failed_normalized_write_does_not_switch_active_pointer(tmp_path):
+    store = Store(str(tmp_path / "failed.db"))
     seed(store, "000001", session_rows())
-    service = PeriodStructureService(store)
-    result = service.ensure("000001", "5", force=True)
-    previous_id = result["run_id"]
-    previous_rows = store.period_rows("period_movements", previous_id)
-    store.db.execute("UPDATE period_structure_runs SET definition_version='old' WHERE id=?", (previous_id,))
-    store.db.execute("INSERT INTO active_period_structure_runs VALUES ('000001','15','2',?,'2026-01-01')", (previous_id,))
-    store.db.commit()
+    service = PeriodStructureService(store, calculator_fingerprint="stable")
+    snapshot = service.ensure("000001", "5", force=True)
+    active_before = store.active_chan_run("000001", "5", "2")["id"]
+    broken = {
+        **snapshot,
+        "structure": {**snapshot["structure"], "center_revisions": [{"id": "broken"}]},
+    }
+    with pytest.raises((AssertionError, KeyError, ValueError)):
+        store.replace_chan_structure("000001", "5", "2", broken, snapshot["meta"]["market_version"])
+    assert store.active_chan_run("000001", "5", "2")["id"] == active_before
+
+
+def test_normalized_tables_and_foreign_keys_round_trip(tmp_path):
+    store = Store(str(tmp_path / "normalized.db"))
+    seed(store, "000001", session_rows())
+    snapshot = PeriodStructureService(store).ensure("000001", "5", force=True)
+    run_id = snapshot["meta"]["run_id"]
+    loaded = store.load_chan_structure(run_id)
+    assert loaded["meta"]["structure_version"] == snapshot["meta"]["structure_version"]
+    assert loaded["structure"]["centers"] == snapshot["structure"]["centers"]
+    assert store.db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert store.db.execute("PRAGMA foreign_key_check").fetchall() == []
+    tables = {row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "chan_center_revisions" in tables
+    assert "period_structure_runs" not in tables
     store.db.close()
-    monkeypatch.setattr(recalculate_structure, "TIMEFRAMES", ("5",))
-    report = recalculate_structure._execute(path, ("000001",))
-    assert report["success_count"] == 1 and report["failure_count"] == 0
-    reopened = Store(str(path))
-    assert reopened.active_period_structure_run("000001", "5")["id"] != previous_id
-    assert reopened.period_rows("period_movements", previous_id) == previous_rows
-    assert reopened.active_period_structure_run("000001", "15") is None
-    assert report["retired_active_runs"] == [{"symbol": "000001", "timeframe": "15", "run_id": previous_id}]
-    active = reopened.active_period_structure_run("000001", "5")
-    assert "unassigned_by_level" in json.loads(active["structure_metadata"])
-
-
-def test_chart_page_keeps_offscreen_confirmation_in_context(tmp_path, monkeypatch):
-    store = Store(str(tmp_path / "page.db"))
-    units, centers = structural_stream(4)
-    structure = build_hierarchy(units, centers)
-    bars = [{"trade_date": unit["start_date"], "open": unit["start_price"], "close": unit["end_price"],
-             "high": unit["high"], "low": unit["low"], "volume": 1, "amount": 1} for unit in units]
-    store.upsert_bars("000001", "d", "2", bars)
-    service = PeriodStructureService(store)
-    monkeypatch.setattr(service, "effective_structure", lambda *args: {**structure, "pens": units, "available": True})
-    page = service.chart_page("000001", "d", "2", units[6]["start_date"], 6)
-    movement = next(item for item in page["movements"] if item["status"] == "confirmed")
-    visible = {center["id"] for center in page["centers"]}
-    context = {center["id"] for center in page["context_centers"]}
-    assert movement["confirmation_center_id"] in visible | context
-    assert context and not context & visible
+    with sqlite3.connect(tmp_path / "normalized.db") as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

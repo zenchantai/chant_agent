@@ -63,27 +63,15 @@ export const levelStructureAppearance = (
   const knownTimeframes = new Set(["1", "5", "15", "30", "60", "120", "d", "w", "m"]);
   const timeframe = knownTimeframes.has(chartTimeframe) ? chartTimeframe : "d";
 
-  if (timeframe === "d" && normalizedLevel <= 3) {
-    const displayPeriod = (["d", "w", "m"] as const)[normalizedLevel - 1];
+  if (["d", "w", "m"].includes(timeframe)) {
     return {
-      color: periodStructureColor(paletteTheme, displayPeriod),
-      colorKey: `period-${displayPeriod}`,
-      displayPeriod,
-    };
-  }
-  if (timeframe === "w" && normalizedLevel <= 2) {
-    const displayPeriod = (["w", "m"] as const)[normalizedLevel - 1];
-    return {
-      color: periodStructureColor(paletteTheme, displayPeriod),
-      colorKey: `period-${displayPeriod}`,
-      displayPeriod,
-    };
-  }
-  if (timeframe === "m" && normalizedLevel === 1) {
-    return {
-      color: periodStructureColor(paletteTheme, "m"),
-      colorKey: "period-m",
-      displayPeriod: "m",
+      color: normalizedLevel === 1
+        ? periodStructureColor(paletteTheme, timeframe)
+        : higherLevelColor(paletteTheme, normalizedLevel),
+      colorKey: normalizedLevel === 1
+        ? `period-${timeframe}`
+        : `period-${timeframe}-level-L${normalizedLevel}`,
+      displayPeriod: timeframe,
     };
   }
 

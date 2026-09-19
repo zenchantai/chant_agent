@@ -182,6 +182,7 @@ class IntradayService:
         self._guard = threading.Lock()
         self._locks: dict[tuple, threading.Lock] = {}
         self._attempts: dict[tuple, dict] = {}
+        self._daily_source_errors: dict[tuple[str, str], str] = {}
         self._calendar_lock = threading.Lock()
         self._calendar_attempt = float("-inf")
         self._calendar_error = None
@@ -236,7 +237,7 @@ class IntradayService:
 
     def replace_current_period(self, symbol: str, timeframe: str, adjustflag: str,
                                rows: list[dict], finalize_before: datetime,
-                               calendar: dict[str, bool]) -> tuple[int, str | None]:
+                               calendar: dict[str, bool], *, fetched_at: datetime | None = None) -> tuple[int, str | None]:
         if timeframe == "1" or timeframe not in REALTIME_PERIODS:
             raise ValueError("该周期不支持周期确认")
         confirmed = []
@@ -247,7 +248,9 @@ class IntradayService:
         if not confirmed:
             return 0, None
         return self.store.upsert_bars_with_changes(
-            symbol, timeframe, adjustflag, confirmed, source="tencent", allow_lower_priority=True
+            symbol, timeframe, adjustflag, confirmed, source="tencent", allow_lower_priority=True,
+            **({"fetched_at": fetched_at or finalize_before, "request_started_at": finalize_before}
+               if timeframe == "d" else {}),
         )
 
     def calendar(self, fetch: bool) -> dict[str, bool]:
@@ -275,6 +278,33 @@ class IntradayService:
 
     def refresh(self, symbol: str, adjustflag: str = "2") -> dict:
         return self.refresh_period(symbol, "1", adjustflag)
+
+    def daily_source_error(self, symbol: str, adjustflag: str = "2") -> str | None:
+        """Keep failed formal-source refreshes visible across cache-only reads."""
+        with self._guard:
+            return self._daily_source_errors.get((symbol, adjustflag))
+
+    def _record_daily_source_attempt(self, symbol: str, adjustflag: str, attempt: dict) -> None:
+        with self._guard:
+            key = (symbol, adjustflag)
+            if attempt.get("result") != "success":
+                self._daily_source_errors[key] = attempt.get("error") or "日线刷新失败，显示已确认数据"
+            elif attempt.get("formal_daily_confirmed"):
+                self._daily_source_errors.pop(key, None)
+
+    def record_formal_daily_refresh(self, symbol: str, adjustflag: str,
+                                    fetched_at: datetime, confirmed_through: str) -> None:
+        """Publish a historical-sync recovery after its accepted row was verified."""
+        with self._guard:
+            key = (symbol, "d", adjustflag)
+            self._daily_source_errors.pop((symbol, adjustflag), None)
+            self._attempts[key] = {
+                "result": "success", "error": None, "last_success_at": fetched_at.isoformat(),
+                "changed_from": None, "finalized_count": 0, "formal_daily_confirmed": True,
+                "finished": time.monotonic(),
+            }
+            self._live_rows[key] = [row for row in self._live_rows.get(key, [])
+                                    if row["trade_date"] > confirmed_through]
 
     def refresh_period(self, symbol: str, timeframe: str, adjustflag: str = "2", include_quote: bool = False) -> dict:
         if timeframe not in REALTIME_PERIODS:
@@ -315,18 +345,25 @@ class IntradayService:
                                error=None if available else "实时刷新失败：暂无有效集合竞价报价",
                                finished=time.monotonic())
                 self._attempts[key] = attempt
+                if timeframe == "d":
+                    self._record_daily_source_attempt(symbol, adjustflag, attempt)
                 return attempt
             try:
                 start, _ = period_date_range(now, timeframe)
                 if timeframe in INTRADAY_TIMEFRAMES or timeframe == "d":
                     start = now.date().isoformat()
+                request_started_at = self.clock()
                 rows = validate_period_rows(
                     fetch_tencent(symbol, timeframe, start, now.date().isoformat(), adjustflag),
                     timeframe, self.clock(),
                 )
+                fetched_at = self.clock()
                 if quote and rows:
                     quote_stamp = datetime.strptime(quote["quote_time"], "%Y%m%d%H%M%S").replace(tzinfo=TZ)
-                    if quote_stamp.date() == self.clock().date():
+                    daily_close = self.period_finalize_at(rows[-1], "d", calendar) if timeframe == "d" else None
+                    # A pre-close quote cannot alter a completed daily response.
+                    quote_is_current = not (daily_close and request_started_at >= daily_close and quote_stamp < daily_close)
+                    if quote_stamp.date() == self.clock().date() and quote_is_current:
                         rows[-1] = {**rows[-1], "close": float(quote["latest"]),
                                     "high": max(float(rows[-1]["high"]), float(quote["latest"])),
                                     "low": min(float(rows[-1]["low"]), float(quote["latest"]))}
@@ -335,11 +372,20 @@ class IntradayService:
                 else:
                     accepted = True
                     finalized_count, changed_from = self.replace_current_period(
-                        symbol, timeframe, adjustflag, rows, self.clock(), calendar
+                        symbol, timeframe, adjustflag, rows,
+                        request_started_at if timeframe == "d" else fetched_at, calendar,
+                        fetched_at=fetched_at,
                     )
                     attempt.update(finalized_count=finalized_count, changed_from=changed_from)
+                    if timeframe == "d" and finalized_count:
+                        formal = self.store.confirmed_daily_bars(symbol, adjustflag)
+                        attempt["formal_daily_confirmed"] = bool(
+                            formal and formal[-1]["trade_date"] == rows[-1]["trade_date"]
+                        )
                     finalize_at = self.period_finalize_at(rows[-1], timeframe, calendar)
-                    latest_is_forming = finalize_at is None or self.clock() < finalize_at
+                    latest_is_forming = finalize_at is None or (
+                        request_started_at if timeframe == "d" else fetched_at
+                    ) < finalize_at
                     self._live_rows[key] = rows if latest_is_forming else []
                 attempt.update(result="success" if accepted else "stale", last_success_at=self.clock().isoformat(),
                                error=None if accepted else "行情源数据早于已有缓存，已保留缓存")
@@ -347,6 +393,8 @@ class IntradayService:
                 attempt["error"] = f"实时刷新失败：{type(exc).__name__}"
             attempt["finished"] = time.monotonic()
             self._attempts[key] = attempt
+            if timeframe == "d":
+                self._record_daily_source_attempt(symbol, adjustflag, attempt)
             return attempt
 
     def metadata(self, symbol: str, adjustflag: str = "2") -> dict:
@@ -442,15 +490,24 @@ class IntradayService:
                      if previous_close else None, "market_status": metadata["market_status"],
                      "quote_time": snapshot.get("quote_time"), "source": snapshot.get("source", "tencent"),
                      "status": snapshot.get("status", "success")}
-        return {"symbol": symbol, "timeframe": "1", "adjustflag": adjustflag, "bars": page,
-                "previous_close": previous_close, "quote": quote, "intraday_refresh": metadata,
+        return {
+                "meta": {"symbol": symbol, "timeframe": "1", "adjustflag": adjustflag,
+                         "available": bool(rows), "definition_version": PERIOD_DEFINITION_VERSION,
+                         "structure_version": "", "active_level": 1, "max_level": 0,
+                         "diagnostics": False},
+                "market": {"symbol": symbol, "timeframe": "1", "adjustflag": adjustflag,
+                           "bars": page, "previous_close": previous_close, "quote": quote,
+                           "intraday_refresh": metadata},
+                "structure": {"pens": [], "components": [], "centers": [],
+                              "center_revisions": [], "movements": [], "movement_revisions": [],
+                              "points": [], "point_revisions": [], "relations": [], "issues": [],
+                              "levels": [], "unassigned_by_level": {}, "pen_diagnostics": []},
                 "indicators": {
                     "macd": [item for item in calculate_macd(rows) if item["trade_date"] in stamps],
                     "ma": [{**item, "values": {str(period): item.get(f"ma{period}") for period in ma_periods}}
                            for item in calculate_moving_averages(rows, ma_periods) if item["trade_date"] in stamps],
                     "boll": [item for item in calculate_bollinger(rows, boll_period, boll_multiplier) if item["trade_date"] in stamps]},
-                "has_more": len(eligible) > limit, "next_before": page[0]["trade_date"] if page else None,
-                "available": bool(rows), "definition_version": PERIOD_DEFINITION_VERSION, "structure_version": "",
-                "pens": [], "pen_diagnostics": [], "centers": [], "pen_centers": [], "movements": [],
-                "center_relations": [], "center_levels": [], "movement_levels": [],
-                "drawings": drawings, "drawings_version": drawings_version, "structure_overrides_enabled": False}
+                "drawings": {"items": drawings, "version": drawings_version},
+                "pagination": {"has_more": len(eligible) > limit,
+                               "next_before": page[0]["trade_date"] if page else None},
+        }

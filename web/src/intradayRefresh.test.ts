@@ -159,30 +159,30 @@ describe("分时刷新调度", () => {
 
 describe("静默行情合并", () => {
   const data = (symbol: string, close: number): ChartData => ({
-    symbol, timeframe: "1", bars: [{ trade_date: "2026-09-16 10:00:00", open: 10, high: 12, low: 9, close, volume: 10, amount: 0 }],
-    pens: [], movements: [], indicators: { macd: [] }, has_more: false, available: true,
-    definition_version: "test", structure_version: "", intraday_refresh: state(),
+    symbol, timeframe: "1", adjustflag: "2", bars: [{ trade_date: "2026-09-16 10:00:00", open: 10, high: 12, low: 9, close, volume: 10, amount: 0 }],
+    pens: [], centers: [], center_revisions: [], movements: [], movement_revisions: [], components: [], points: [], point_revisions: [], relations: [], issues: [], levels: [], unassigned_by_level: {}, center_levels: [], movement_levels: [],
+    drawings: [], drawings_version: "", indicators: { macd: [] }, has_more: false, available: true,
+    definition_version: "test", calculator_fingerprint: "test", structure_version: "", active_structure_level: 1, max_available_center_level: 0, intraday_refresh: state(),
   });
 
-  it("只更新行情，不替换绘图或结构编辑状态", () => {
-    const current = { ...data("000001", 10), drawings: [], drawings_version: "local-draft", override_version: "draft" };
+  it("只更新行情，不替换本地绘图", () => {
+    const current = { ...data("000001", 10), drawings_version: "local-draft" };
     const fresh = { ...data("000001", 11), drawings_version: "server" };
     const merged = mergeIntradayData(current, fresh);
     expect(merged.bars[0].close).toBe(11);
     expect(merged.drawings).toBe(current.drawings);
     expect(merged.drawings_version).toBe("local-draft");
-    expect(merged.override_version).toBe("draft");
   });
 
   it("合并5分钟实时结构和形成中K线，同时保留本地绘图", () => {
     const current = { ...data("000001", 10), timeframe: "5", drawings: [], drawings_version: "local-draft" };
     const fresh = { ...data("000001", 11), timeframe: "5", forming_bar: {
       trade_date: "2026-09-16 10:05:00", is_forming: true, status: "provisional" as const,
-    }, structure_preview: true, preview_structure_version: "preview-1", drawings_version: "server" };
+    }, structure_preview: true, structure_version: "preview-1", drawings_version: "server" };
     const merged = mergeIntradayData(current, fresh);
     expect(merged.forming_bar?.is_forming).toBe(true);
     expect(merged.structure_preview).toBe(true);
-    expect(merged.preview_structure_version).toBe("preview-1");
+    expect(merged.structure_version).toBe("preview-1");
     expect(merged.drawings).toBe(current.drawings);
     expect(merged.drawings_version).toBe("local-draft");
   });

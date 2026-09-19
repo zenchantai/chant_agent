@@ -14,8 +14,25 @@ export const initialChartZoom = (count: number, intraday: boolean, saved: string
   return { start: intraday || count <= 120 ? 0 : (count - 120) / (count - 1) * 100, end: 100 };
 };
 
+export const chartZoomFromDataZoomEvent = (event: any, dates: string[]): ChartZoom | null => {
+  const value = event?.batch?.[0] || event;
+  const percentage = (percent: unknown, rawValue: unknown) => {
+    if (Number.isFinite(percent)) return Number(percent);
+    const index = typeof rawValue === "string" ? dates.indexOf(rawValue) : Number(rawValue);
+    return Number.isFinite(index) && index >= 0 ? index / Math.max(1, dates.length - 1) * 100 : null;
+  };
+  const start = percentage(value?.start, value?.startValue);
+  const end = percentage(value?.end, value?.endValue);
+  return start !== null && end !== null && start < end ? { start, end } : null;
+};
+
 export const rebaseChartZoom = (zoom: ChartZoom, previous: string[], dates: string[]): ChartZoom => {
   if (!previous.length || dates.length <= previous.length || dates[0] === previous[0]) return zoom;
+  const previousStart = dates.indexOf(previous[0]);
+  if (previousStart > 0 && zoom.start <= 15) {
+    const previousWindow = Math.max(1, Math.round((zoom.end - zoom.start) / 100 * (previous.length - 1)));
+    return { start: 0, end: Math.min(100, previousWindow / (dates.length - 1) * 100) };
+  }
   const start = dates.indexOf(previous[Math.round(zoom.start / 100 * (previous.length - 1))]);
   const end = dates.indexOf(previous[Math.round(zoom.end / 100 * (previous.length - 1))]);
   return start >= 0 && end >= 0

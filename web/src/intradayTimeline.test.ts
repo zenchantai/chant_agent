@@ -9,9 +9,9 @@ const makeBar = (clock: string, close = 10) => ({
 });
 const dataFor = (clocks: string[]): ChartData => {
   const bars = clocks.map((clock, index) => makeBar(clock, 10 + index));
-  return { symbol: "000001", timeframe: "1", bars, pens: [], movements: [],
+  return { symbol: "000001", timeframe: "1", adjustflag: "2", bars, pens: [], centers: [], center_revisions: [], movements: [], movement_revisions: [], components: [], points: [], point_revisions: [], relations: [], issues: [], levels: [], unassigned_by_level: {}, center_levels: [], movement_levels: [], drawings: [], drawings_version: "",
     indicators: { macd: bars.map((bar) => ({ trade_date: bar.trade_date, dif: 1, dea: 2, histogram: 3 })) },
-    has_more: false, available: true, definition_version: "test", structure_version: "" };
+    has_more: false, available: true, definition_version: "test", calculator_fingerprint: "test", structure_version: "", active_structure_level: 1, max_available_center_level: 0 };
 };
 
 describe("完整交易日分时时间轴", () => {

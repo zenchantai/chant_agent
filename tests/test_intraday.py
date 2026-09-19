@@ -67,7 +67,7 @@ def test_refresh_replaces_day_preserves_other_data_and_updates_same_minute(servi
     assert current[-1]["close"] == 12
     assert len(store.market_bars("000001", "d", "2")) == 1
     assert store.market_bars("000002", "1", "2")[0]["trade_date"].startswith("2026-09-15")
-    assert store.db.execute("SELECT COUNT(*) FROM period_structure_runs").fetchone()[0] == 0
+    assert store.db.execute("SELECT COUNT(*) FROM chan_structure_runs").fetchone()[0] == 0
     supplied[-1] = bar(close=11.5)
     service._attempts.clear()
     service.refresh("000001")
@@ -125,7 +125,7 @@ def test_concurrent_live_and_scheduled_refresh_share_request(service, monkeypatc
         assert live.result()["result"] == second.result()["result"] == "success"
         scheduled.result()
     assert len(calls) == 1
-    assert service.store.db.execute("SELECT COUNT(*) FROM period_structure_runs").fetchone()[0] == 0
+    assert service.store.db.execute("SELECT COUNT(*) FROM chan_structure_runs").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize(("timeframe", "now_clock", "valid_stamps", "future_stamp"), [
@@ -190,7 +190,7 @@ def test_period_refresh_preserves_history_and_persists_only_after_boundary(
     stored = service.store.market_bars("000001", timeframe, "2")
     assert [row["trade_date"] for row in stored] == [historical["trade_date"], confirmed_stamp]
     assert stored[-1]["close"] == 11
-    assert service.store.db.execute("SELECT COUNT(*) FROM market_data_conflicts").fetchone()[0] == 1
+    assert first["changed_from"] == confirmed_stamp
 
     clock[0] = datetime.fromisoformat(finalized)
     second = service.refresh_period("000001", timeframe)
@@ -281,17 +281,17 @@ def test_api_lightweight_quote_and_parameter_validation(service, monkeypatch):
     assert client.get("/api/chart-data/000001?timeframe=1&refresh=true&before=").status_code == 400
     assert client.get("/api/chart-data/000001?timeframe=5&refresh=true&before=2026-09-16%2010:00:00").status_code == 400
     cached = client.get("/api/chart-data/000001?timeframe=1").json()
-    assert cached["bars"] == []
+    assert cached["market"]["bars"] == []
     fresh = client.get("/api/chart-data/000001?timeframe=1&refresh=true").json()
-    assert fresh["quote"]["latest"] == 11
-    assert fresh["quote"]["change_pct"] == 10
-    assert fresh["quote"]["trade_date"].startswith("2026-09-16")
-    assert fresh["quote"]["amount"] is None
-    assert fresh["intraday_refresh"]["is_today"] is True
-    assert fresh["intraday_refresh"]["result"] == "success"
-    assert len(fresh["indicators"]["macd"]) == len(fresh["bars"])
-    assert fresh["pens"] == fresh["centers"] == fresh["movements"] == []
-    assert service.store.db.execute("SELECT COUNT(*) FROM period_structure_runs").fetchone()[0] == 0
+    assert fresh["market"]["quote"]["latest"] == 11
+    assert fresh["market"]["quote"]["change_pct"] == 10
+    assert fresh["market"]["quote"]["trade_date"].startswith("2026-09-16")
+    assert fresh["market"]["quote"]["amount"] is None
+    assert fresh["market"]["intraday_refresh"]["is_today"] is True
+    assert fresh["market"]["intraday_refresh"]["result"] == "success"
+    assert len(fresh["indicators"]["macd"]) == len(fresh["market"]["bars"])
+    assert fresh["structure"]["pens"] == fresh["structure"]["centers"] == fresh["structure"]["movements"] == []
+    assert service.store.db.execute("SELECT COUNT(*) FROM chan_structure_runs").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize(("timeframe", "stamp"), [
@@ -341,9 +341,9 @@ def test_previous_close_requires_confirmed_previous_trading_date(service):
     service.replace_intraday("000001", "2", [bar()])
     service.store.upsert_bars("000001", "d", "2", [bar("2026-09-14", 8)])
     data = service.chart_page("000001", "2", None, 300, (5, 10), 20, 2)
-    assert data["previous_close"] is None
-    assert data["quote"]["change_pct"] is None
-    assert data["quote"]["previous_close"] is None
+    assert data["market"]["previous_close"] is None
+    assert data["market"]["quote"]["change_pct"] is None
+    assert data["market"]["quote"]["previous_close"] is None
 
 
 def test_off_hours_latest_day_not_mislabelled(service, monkeypatch):

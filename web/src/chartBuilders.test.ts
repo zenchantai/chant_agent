@@ -9,7 +9,10 @@ import {
   defaultPaneRatios,
   buildEndpointLabels,
   buildMovementSeries,
+  movementVisualStyle,
   buildCenterAreas,
+  buildBuySellPointSeries,
+  buildPenSeries,
   buildComponentSeries,
   normalizeChartData,
   paneLayoutStorageKey,
@@ -23,14 +26,65 @@ import {
 const bar = (date: string, close = 10) => ({
   trade_date: date, open: close - 0.2, high: close + 0.4, low: close - 0.4, close, volume: 100, amount: 1000,
 });
+
+it("never renders undetermined or truncated movements as confirmed solid lines", () => {
+  for (const status of ["undetermined", "truncated"]) {
+    expect(movementVisualStyle("dark", { status, level: 1 } as any).lineType).toBe("dotted");
+  }
+  expect(movementVisualStyle("dark", { status: "provisional", level: 1 } as any).lineType).toBe("dashed");
+  expect(movementVisualStyle("dark", { status: "confirmed", level: 1 } as any).lineType).toBe("solid");
+});
 const base = (overrides: Record<string, unknown> = {}) => ({
   symbol: "1A0001", timeframe: "d", bars: [bar("2026-01-01"), bar("2026-01-02", 11), bar("2026-01-03", 10.5)],
-  pens: [], centers: [], pen_centers: [], movements: [], center_relations: [], indicators: { macd: [], ma: [], boll: [] },
+  pens: [], centers: [], center_revisions: [], movement_revisions: [], components: [], movements: [], relations: [], indicators: { macd: [], ma: [], boll: [] },
   active_structure_level: 1, max_available_center_level: 1, has_more: false, available: true,
   definition_version: "v12", structure_version: "v12", ...overrides,
 }) as any;
+const movement = (overrides: Record<string, unknown> = {}) => ({
+  id: "m1", family_id: "mf1", revision_no: 1, ordinal: 0, level: 1, kind: "movement",
+  direction: "up", classification: "trend", status: "confirmed", start_date: "2026-01-01",
+  end_date: "2026-01-03", start_price: 8, end_price: 12, source_unit_ids: [],
+  center_family_ids: ["cf1", "cf2"], center_revision_ids: ["cr1", "cr2"], center_levels: [1],
+  child_movement_ids: [], price_envelope_low: 8, price_envelope_high: 12, recursive_eligible: true,
+  termination_reason: "first_buy_sell_point", ...overrides,
+});
+const center = (overrides: Record<string, unknown> = {}) => ({
+  id: "c1", family_id: "cf1", revision_no: 1, ordinal: 0, level: 1, kind: "center",
+  status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", zd: 9, zg: 10,
+  fixed_zd: 9, fixed_zg: 10, dd: 8, gg: 12, fluctuation_dd: 8, fluctuation_gg: 12,
+  entry_unit_ids: [], core_unit_ids: [], extension_unit_ids: [], peripheral_unit_ids: [],
+  departure_unit_ids: [], retest_unit_ids: [], owned_unit_ids: [], context_unit_ids: [],
+  child_center_ids: [], child_movement_ids: [], formation_modes: ["strict_three_unit_core"], recursive_eligible: true,
+  ...overrides,
+});
+const component = (overrides: Record<string, unknown> = {}) => ({
+  id: "component-1", ordinal: 0, kind: "component", level: 1, role: "entry", direction: "up",
+  status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-02", start_price: 9,
+  end_price: 11, low: 9, high: 11, source_unit_ids: ["p1"], ...overrides,
+});
+const point = (overrides: Record<string, unknown> = {}) => ({
+  id: "point-1", family_id: "pf1", revision_no: 1, ordinal: 0, kind: "structural_point", level: 1,
+  point_type: "third_buy", status: "confirmed", start_date: "2026-01-02", end_date: "2026-01-02",
+  point_date: "2026-01-02", point_price: 10.2, source_unit_id: "p1", source_component_ids: [],
+  center_family_id: "cf1", center_revision_id: "cr1", ...overrides,
+});
 
 describe("chart builders", () => {
+  it("区分核心、Z延伸、进入和连接笔的选择高亮，不绘制历史中枢", () => {
+    const pens = ["entry", "core", "z", "connection"].map((id, ordinal) => ({ id, ordinal, kind: "pen", level: 0, status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", start_price: 9, end_price: 11 }));
+    const selected = center({ entry_unit_ids: ["entry"], core_unit_ids: ["core"], z_unit_ids: ["core", "z"], connection_component_ids: ["join"] });
+    const data = base({ pens, centers: [selected], center_revisions: [center({ id: "old", active: false })], components: [component({ id: "join", source_unit_ids: ["connection"] })] });
+    const series = buildPenSeries({ data, selectedStructureId: "c1" }, data.bars.map((item: any) => item.trade_date));
+    expect(new Set(series.map((item) => item.lineStyle.color)).size).toBe(4);
+    expect(series.every((item) => item.lineStyle.width === 3.4)).toBe(true);
+    expect(normalizeChartData(data)?.centers.map((item) => item.id)).toEqual(["c1"]);
+  });
+
+  it("全量层级元数据在空分页中保留，历史子修订不会冒充活动L1", () => {
+    const data = normalizeChartData(base({ levels: [2], centers: [], center_revisions: [center({ active: false })] }));
+    expect(data?.center_levels).toEqual([2]);
+    expect(data?.centers).toEqual([]);
+  });
   it("分时昨收未知时不使用开盘价冒充昨收线", () => {
     const data = base({ timeframe: "1", previous_close: null });
     const artifacts = buildChartArtifacts({ data, theme: "light" });
@@ -98,6 +152,17 @@ describe("chart builders", () => {
     expect(result?.bars).toHaveLength(1);
     expect(result?.pens).toEqual([]);
     expect(result?.indicators).toEqual({ macd: [], ma: [], boll: [] });
+  });
+
+  it("uses nested API levels for center and movement filters", () => {
+    const result = normalizeChartData({
+      meta: { active_level: null, max_level: 2 },
+      market: { symbol: "1A0688", timeframe: "d", adjustflag: "2", bars: [bar("2026-01-01")] },
+      structure: { pens: [], components: [], centers: [], center_revisions: [], movements: [], movement_revisions: [], points: [], point_revisions: [], relations: [], issues: [], levels: [1, 2], unassigned_by_level: {} },
+      indicators: { macd: [], ma: [], boll: [] }, drawings: { items: [], version: "" }, pagination: { has_more: false },
+    } as any);
+    expect(result?.center_levels).toEqual([1, 2]);
+    expect(result?.movement_levels).toEqual([1, 2]);
   });
 
   it("keeps intraday price and volume in separate chart grids", () => {
@@ -194,21 +259,29 @@ describe("chart builders", () => {
     expect(result.visibleCenters).toEqual([]);
   });
 
+  it("does not create hit targets for hidden pens", () => {
+    const data = base({
+      pens: [{ id: "p1", ordinal: 0, kind: "standard", status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-02", start_price: 9, end_price: 11, direction: "up" }],
+    });
+    const result = buildChartArtifacts({ data, visible: { pens: false } });
+    expect((result.option?.series as any[]).some((item) => item.id === "pen-hit-p1")).toBe(false);
+  });
+
   it("draws every hierarchy level by default and supports per-level visibility", () => {
     const data = base({
       center_levels: [1, 2, 3],
       movement_levels: [1, 2, 3],
       max_available_center_level: 3,
       centers: [1, 2, 3].map((level) => ({ id: `c${level}`, ordinal: level - 1, level, role: "hierarchy", kind: "center", status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", zd: 9 + level, zg: 10 + level })),
-      movements: [1, 2, 3].map((level) => ({ id: `m${level}`, ordinal: level - 1, level, role: "hierarchy_component", kind: "movement", classification: "trend", status: "confirmed", direction: "up", start_date: "2026-01-01", end_date: "2026-01-03", start_price: 9, end_price: 12 })),
+      movements: [1, 2, 3].map((level) => movement({ id: `m${level}`, family_id: `mf${level}`, ordinal: level - 1, level, start_price: 9, end_price: 12 })),
     });
     const defaultArtifacts = buildChartArtifacts({ data, theme: "dark" });
-    expect(defaultArtifacts.visibleCenters.map((item) => item.level)).toEqual([1, 2, 3]);
+    expect(defaultArtifacts.visibleCenters.map((item) => item.level)).toEqual([3, 2, 1]);
     expect(defaultArtifacts.visibleMovements.map((item) => item.level)).toEqual([1, 2, 3]);
     const movementArtifacts = buildMovementSeries({ data, theme: "dark" }, data.bars.map((item: any) => item.trade_date));
-    expect(movementArtifacts.series.filter((item: any) => item.type === "line").map((item: any) => item.lineStyle.color)).toEqual(["#F2C14E", "#A78BFA", "#FF7043"]);
+    expect(movementArtifacts.series.filter((item: any) => item.type === "line").map((item: any) => item.lineStyle.color)).toEqual(["#F2C14E", "#4DD0E1", "#EC75B5"]);
     const filtered = buildChartArtifacts({ data, theme: "dark", visible: { centers: true, movements: true, centerLevels: { "2": false }, movementLevels: { "3": false } } });
-    expect(filtered.visibleCenters.map((item) => item.level)).toEqual([1, 3]);
+    expect(filtered.visibleCenters.map((item) => item.level)).toEqual([3, 1]);
     expect(filtered.visibleMovements.map((item) => item.level)).toEqual([1, 2]);
     const hidden = buildChartArtifacts({ data, theme: "dark", visible: { centers: false, movements: false } });
     expect(hidden.visibleCenters).toEqual([]);
@@ -265,18 +338,18 @@ describe("chart builders", () => {
   });
 
   it("renders a clipped direct movement and deduplicated H/L labels", () => {
-    const movement = { id: "m1", ordinal: 0, level: 1, role: "hierarchy_component", direction: "up", classification: "consolidation", status: "confirmed", start_date: "2025-12-01", end_date: "2026-01-03", start_price: 8, end_price: 12, path_points: [{ trade_date: "2026-01-01", price: 10 }] };
-    const data = base({ movements: [movement] });
+    const currentMovement = movement({ classification: "consolidation", start_date: "2025-12-01", path_points: [{ trade_date: "2026-01-01", price: 10 }] });
+    const data = base({ movements: [currentMovement] });
     const result = buildMovementSeries({ data, theme: "dark", visible: { movements: true } }, data.bars.map((item: any) => item.trade_date));
     expect(result.series.filter((item: any) => item.type === "line")).toHaveLength(1);
     expect(result.visibleMovements[0].start_date).toBe("2026-01-01");
-    expect(buildEndpointLabels([movement] as any, ["2026-01-01", "2026-01-02", "2026-01-03"]).map((item) => item.label)).toEqual(["L1", "H1"]);
+    expect(buildEndpointLabels([currentMovement] as any, ["2026-01-01", "2026-01-02", "2026-01-03"]).map((item) => item.label)).toEqual(["低点1", "高点1"]);
   });
 
   it("keeps the complete movement option valid after adding arrows and endpoints", () => {
-    const movement = { id: "m1", ordinal: 0, level: 1, role: "hierarchy_component", direction: "up", classification: "trend", status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", start_price: 8, end_price: 12 };
+    const currentMovement = movement();
     const result = buildChartArtifacts({
-      data: base({ movements: [movement] }),
+      data: base({ movements: [currentMovement] }),
       visible: { pens: true, centers: true, movements: true },
       subplotIndicators: ["volume"],
       subplotVisible: [true],
@@ -287,8 +360,8 @@ describe("chart builders", () => {
   });
 
   it("keeps original movement boundaries for tooltip callbacks after clipping", () => {
-    const movement = { id: "m1", ordinal: 0, level: 1, role: "hierarchy_component", direction: "up", classification: "consolidation", status: "confirmed", start_date: "2025-12-01", end_date: "2026-01-03", start_price: 8, end_price: 12, path_points: [{ trade_date: "2026-01-01", price: 10 }] };
-    const data = base({ movements: [movement] });
+    const currentMovement = movement({ classification: "consolidation", start_date: "2025-12-01", path_points: [{ trade_date: "2026-01-01", price: 10 }] });
+    const data = base({ movements: [currentMovement] });
     let callbackNode: any;
     const result = buildMovementSeries({ data, theme: "dark", formatMovementTooltip: (node) => { callbackNode = node; return "movement"; } }, ["2026-01-01", "2026-01-02", "2026-01-03"]);
     const endpoint = result.series.find((item: any) => item.id === "movement-boundaries");
@@ -296,19 +369,19 @@ describe("chart builders", () => {
     expect(callbackNode.start_date).toBe("2025-12-01");
   });
 
-  it("marks provisional centers with upgrade progress", () => {
-    const data = base({ centers: [{ id: "candidate", ordinal: 0, level: 1, kind: "center", status: "provisional", upgrade_kind: "extension_3x3", progress: "2/3", start_date: "2026-01-01", end_date: "2026-01-03", zd: 9, zg: 10 }] });
+  it("marks provisional centers as candidates", () => {
+    const data = base({ centers: [center({ id: "candidate", status: "provisional", recursive_eligible: false })] });
     const option = buildChartOption({ data, theme: "dark" });
     const mark = option?.series.find((item: any) => item.name === "K线")?.markArea?.data?.[0]?.[0];
     expect(mark?.itemStyle?.borderType).toBe("dashed");
-    expect(mark?.label?.formatter).toContain("2/3");
+    expect(mark?.label?.formatter).toContain("候选");
   });
 
   it("renders confirmed and candidate buy-sell points with distinct fills", () => {
-    const data = base({ buy_sell_points: [
-      { id: "p1", ordinal: 0, kind: "buy_sell_point", level: 1, point_type: "third_buy", status: "confirmed", start_date: "2026-01-02", end_date: "2026-01-02", point_date: "2026-01-02", point_price: 10.2 },
-      { id: "p2", ordinal: 1, kind: "buy_sell_point", level: 1, point_type: "first_sell", status: "candidate", start_date: "2026-01-03", end_date: "2026-01-03", point_date: "2026-01-03", point_price: 10.8 },
-      { id: "p3", ordinal: 2, kind: "buy_sell_point", level: 1, point_type: "third_sell", status: "invalidated", start_date: "2026-01-03", end_date: "2026-01-03", point_date: "2026-01-03", point_price: 10.7 },
+    const data = base({ points: [
+      point({ id: "p1" }),
+      point({ id: "p2", family_id: "pf2", ordinal: 1, point_type: "first_sell", status: "candidate", start_date: "2026-01-03", end_date: "2026-01-03", point_date: "2026-01-03", point_price: 10.8 }),
+      point({ id: "p3", family_id: "pf3", ordinal: 2, point_type: "third_sell", status: "invalidated", start_date: "2026-01-03", end_date: "2026-01-03", point_date: "2026-01-03", point_price: 10.7 }),
     ] });
     const option = buildChartOption({ data, theme: "dark" });
     const series = option?.series.find((item: any) => item.id === "buy-sell-points");
@@ -317,12 +390,48 @@ describe("chart builders", () => {
     expect(series.data[1].itemStyle.color).toBe("transparent");
   });
 
+  it.each(["light", "dark"])("matches point colors to exact historical center revisions in %s theme", (theme) => {
+    const historical = center({ id: "cr1", active: false, level: 1 });
+    const parent = center({ id: "cr2", active: true, revision_no: 2, level: 2 });
+    const data = base({ centers: [parent], center_revisions: [historical, parent], points: [
+      point({ id: "buy", level: 2, confirmed_at: "2026-01-03" }),
+      point({ id: "sell", point_type: "third_sell", status: "candidate" }),
+      point({ id: "parent-point", center_revision_id: parent.id }),
+    ] });
+    const before = JSON.stringify(data);
+    const dates = data.bars.map((item: any) => item.trade_date);
+    const childColor = buildCenterAreas({ data, theme, selectedStructureId: historical.id }, dates).areas.find((area) => area[0].centerId === historical.id)?.[0].itemStyle.borderColor;
+    const parentColor = buildCenterAreas({ data, theme }, dates).areas[0][0].itemStyle.borderColor;
+    const [series] = buildBuySellPointSeries({ data, theme, visible: { centers: false, centerLevels: { 1: false } } }, dates);
+    expect(series.data.map((item: any) => item.label.color)).toEqual([childColor, childColor, parentColor]);
+    expect(series.data.map((item: any) => item.itemStyle.borderColor)).toEqual([childColor, childColor, parentColor]);
+    expect(series.data.map((item: any) => item.itemStyle.color)).toEqual([childColor, "transparent", parentColor]);
+    expect(series.data.map((item: any) => item.label.position)).toEqual(["bottom", "top", "bottom"]);
+    expect(series.data.map((item: any) => item.value)).toEqual(data.points.map((item: any) => [item.point_date, item.point_price]));
+    expect(childColor).not.toBe(parentColor);
+    expect(JSON.stringify(data)).toBe(before);
+  });
+
+  it("uses the center's supplied color for both buy and sell labels and markers", () => {
+    const associated = center({ id: "cr1", color: "#123456" });
+    const data = base({ centers: [associated], points: [point(), point({ id: "sell", point_type: "third_sell" })] });
+    const [series] = buildBuySellPointSeries({ data }, data.bars.map((item: any) => item.trade_date));
+    expect(series.data.every((item: any) => item.label.color === "#123456" && item.itemStyle.color === "#123456" && item.itemStyle.borderColor === "#123456")).toBe(true);
+  });
+
+  it.each(["light", "dark"])("uses neutral %s markers rather than a same-family parent when evidence is missing", (theme) => {
+    const data = base({ centers: [center({ id: "parent", level: 2 })], points: [point()] });
+    const [series] = buildBuySellPointSeries({ data, theme }, data.bars.map((item: any) => item.trade_date));
+    expect(series.data[0].label.color).toBe(theme === "light" ? "#64748b" : "#94a3b8");
+    expect(series.tooltip.formatter({ data: { pointId: "point-1" } })).toContain("中枢证据缺失");
+  });
+
   it("keeps components hidden by default and highlights selected center roles", () => {
-    const component = { id: "component-1", ordinal: 0, kind: "center_free_component", level: 1, direction: "up", status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-02", start_price: 9, end_price: 11 };
-    const center = { id: "center-1", ordinal: 0, kind: "center", level: 1, status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", zd: 9.5, zg: 10.5, formation_component_ids: [component.id] };
-    const data = base({ components: [component], centers: [center] });
+    const entryComponent = component();
+    const selectedCenter = center({ id: "center-1", entry_component_id: entryComponent.id });
+    const data = base({ components: [entryComponent], centers: [selectedCenter] });
     expect(buildComponentSeries({ data, visible: { components: false } }, ["2026-01-01", "2026-01-02", "2026-01-03"]).series).toHaveLength(0);
-    const selected = buildComponentSeries({ data, visible: { components: false }, selectedStructureId: center.id }, ["2026-01-01", "2026-01-02", "2026-01-03"]);
+    const selected = buildComponentSeries({ data, visible: { components: false }, selectedStructureId: selectedCenter.id }, ["2026-01-01", "2026-01-02", "2026-01-03"]);
     expect(selected.series).toHaveLength(1);
     expect(selected.series[0].lineStyle.width).toBe(3.2);
   });

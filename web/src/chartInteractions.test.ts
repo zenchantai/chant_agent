@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { bindChartGestures, ChartGesture, gestureOwner, initialChartZoom, rebaseChartZoom } from "./chartInteractions";
+import { bindChartGestures, chartZoomFromDataZoomEvent, ChartGesture, gestureOwner, initialChartZoom, rebaseChartZoom } from "./chartInteractions";
 import type { GestureOwner } from "./chartInteractions";
 
 describe("K线浏览范围", () => {
@@ -21,20 +21,46 @@ describe("K线浏览范围", () => {
   it.each(["broken", "null", "{}", '{"start":80,"end":20}', '{"start":-1,"end":100}', '{"start":0,"end":101}', '{"start":0,"end":0}', '{"start":"1","end":100}'])("损坏存储回退 %s", (saved) => {
     expect(initialChartZoom(300, false, saved)).toEqual(initialChartZoom(300, false, null));
   });
-  it("补入历史后保持可见日期", () => {
+  it("补入历史且不在左边缘时保持可见日期", () => {
     const dates = Array.from({ length: 600 }, (_, index) => String(index));
     const previous = dates.slice(300);
-    const zoom = { start: 12, end: 52 };
+    const zoom = { start: 20, end: 60 };
     const rebased = rebaseChartZoom(zoom, previous, dates);
     for (const edge of ["start", "end"] as const) {
       expect(dates[Math.round(rebased[edge] / 100 * 599)]).toBe(previous[Math.round(zoom[edge] / 100 * 299)]);
     }
+  });
+  it("左边缘补入历史后展示新增的更早数据", () => {
+    const dates = Array.from({ length: 600 }, (_, index) => String(index));
+    const previous = dates.slice(300);
+    const rebased = rebaseChartZoom({ start: 12, end: 52 }, previous, dates);
+    expect(rebased.start).toBe(0);
+    expect(Math.round(rebased.end / 100 * 599)).toBe(120);
+  });
+  it("左边缘显示整页时补入历史后切换到上一页", () => {
+    const dates = Array.from({ length: 600 }, (_, index) => String(index));
+    const previous = dates.slice(300);
+    const rebased = rebaseChartZoom({ start: 0, end: 100 }, previous, dates);
+    expect(rebased.start).toBe(0);
+    expect(Math.round(rebased.end / 100 * 599)).toBe(299);
   });
   it("无补入或找不到原日期时不改视野", () => {
     const zoom = { start: 30, end: 90 };
     expect(rebaseChartZoom(zoom, [], ["a"])).toEqual(zoom);
     expect(rebaseChartZoom(zoom, ["b", "c"], ["b", "c", "d"])).toEqual(zoom);
     expect(rebaseChartZoom(zoom, ["b", "c"], ["a", "d", "e"])).toEqual(zoom);
+  });
+  it("兼容百分比格式的缩放事件", () => {
+    expect(chartZoomFromDataZoomEvent({ batch: [{ start: 10, end: 50 }] }, ["a", "b", "c"])).toEqual({ start: 10, end: 50 });
+  });
+  it("兼容索引和值格式的缩放事件", () => {
+    const dates = ["a", "b", "c", "d", "e"];
+    expect(chartZoomFromDataZoomEvent({ startValue: 0, endValue: 2 }, dates)).toEqual({ start: 0, end: 50 });
+    expect(chartZoomFromDataZoomEvent({ batch: [{ startValue: "b", endValue: "e" }] }, dates)).toEqual({ start: 25, end: 100 });
+  });
+  it("忽略不完整或倒序的缩放事件", () => {
+    expect(chartZoomFromDataZoomEvent({ startValue: 2 }, ["a", "b", "c"])).toBeNull();
+    expect(chartZoomFromDataZoomEvent({ start: 80, end: 20 }, ["a", "b", "c"])).toBeNull();
   });
 });
 
