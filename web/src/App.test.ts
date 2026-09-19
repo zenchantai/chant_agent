@@ -1,5 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { centersForStructureLevel, formatCenterTooltip, formatCompactNumber, formatKlineTooltip, formatMovementTooltip, formatPrice, formatTradeDate, formatVolume, movementEndpointMarkers, movementLineEndpoints, movementVisualStyle, normalizeChartData, watchlistStocksForGroup, watchlistUngroupedStocks } from "./App";
+import type { Center, Movement } from "./types";
+
+const movement = (overrides: Partial<Movement> = {}): Movement => ({
+  id: "m1", family_id: "mf1", revision_no: 1, ordinal: 0, level: 1, kind: "movement",
+  direction: "up", classification: "trend", status: "confirmed", start_date: "2026-01-01",
+  end_date: "2026-02-01", start_price: 10, end_price: 20, source_unit_ids: [],
+  center_family_ids: ["cf1", "cf2"], center_revision_ids: ["cr1", "cr2"], center_levels: [1],
+  child_movement_ids: [], price_envelope_low: 10, price_envelope_high: 20, recursive_eligible: true,
+  termination_reason: "first_buy_sell_point", ...overrides,
+});
+
+const center = (overrides: Partial<Center> = {}): Center => ({
+  id: "c1", family_id: "cf1", revision_no: 1, ordinal: 0, level: 1, kind: "center",
+  status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", zd: 10, zg: 11,
+  fixed_zd: 10, fixed_zg: 11, dd: 8, gg: 13, fluctuation_dd: 8, fluctuation_gg: 13,
+  entry_unit_ids: [], core_unit_ids: [], extension_unit_ids: [], peripheral_unit_ids: [],
+  departure_unit_ids: [], retest_unit_ids: [], owned_unit_ids: [], context_unit_ids: [],
+  z_unit_ids: [], connection_component_ids: [], overlap_witness_unit_ids: [], missing_evidence: [],
+  child_center_ids: [], child_movement_ids: [], formation_modes: ["strict_three_unit_core"],
+  recursive_eligible: true, ...overrides,
+});
 
 describe("行情数值格式", () => {
   it("交易日期显示中文星期", () => {
@@ -101,35 +122,26 @@ describe("K线 tooltip", () => {
 
 describe("走势 tooltip", () => {
   it("区分实际边界与确认时间", () => {
-    const html = formatMovementTooltip({
-      id:"m1", ordinal:0, kind:"movement", direction:"up", classification:"trend", status:"confirmed",
-      start_date:"2026-01-01", end_date:"2026-02-01", start_price:10, end_price:20,
-      center_count:2, confirmed_at:"2026-02-10",
-    });
-    expect(html).toContain("结束原因：尚未确认");
+    const html = formatMovementTooltip(movement({ confirmed_at:"2026-02-10" }));
+    expect(html).toContain("结束原因：一类买卖点确认结束");
     expect(html).toContain("趋势 · 向上");
     expect(html).toContain("实际边界：2026-01-01 → 2026-02-01");
     expect(html).toContain("确认时间：2026-02-10");
   });
 
   it("展示正式层级走势来源和级别语义", () => {
-    const html = formatMovementTooltip({
-      id:"m1", ordinal:0, level:1, role:"hierarchy_component", kind:"movement", direction:"up", classification:"trend", status:"confirmed",
-      start_date:"2026-01-01", end_date:"2026-02-01", start_price:10, end_price:20,
-      center_count:2, confirmed_at:"2026-02-10",
-    }, "d");
+    const html = formatMovementTooltip(movement({ confirmed_at:"2026-02-10" }), "d");
     expect(html).toContain("结构级别：L1");
     expect(html).toContain("计算来源：日线独立结构");
-    expect(html).toContain("语义对应：日线内部 L1 走势（反向独立中枢确认结束）");
+    expect(html).toContain("语义对应：日线内部 L1 走势（结构买卖点定边界）");
     expect(html).not.toContain("简化的周线一笔");
   });
 });
 
 describe("中枢级别显示", () => {
   const centers = [
-    { id:"l1", ordinal:0, level:1, kind:"center", status:"confirmed", start_date:"2026-01-01", end_date:"2026-01-03", zd:10, zg:11 },
-    { id:"l2", ordinal:1, level:2, kind:"center", status:"confirmed", start_date:"2026-01-04", end_date:"2026-01-08", zd:10.5, zg:11.5 },
-    { id:"legacy", ordinal:2, kind:"center", status:"confirmed", start_date:"2026-01-09", end_date:"2026-01-12", zd:10, zg:12 },
+    center({ id:"l1", family_id:"f1" }),
+    center({ id:"l2", family_id:"f2", ordinal:1, level:2, start_date:"2026-01-04", end_date:"2026-01-08", zd:10.5, fixed_zd:10.5, zg:11.5, fixed_zg:11.5 }),
   ];
 
   it("只返回与 active level 严格相等的中枢", () => {
@@ -137,42 +149,33 @@ describe("中枢级别显示", () => {
     expect(centersForStructureLevel(centers, 2).map((center) => center.id)).toEqual(["l2"]);
   });
 
-  it("不把未知角色中枢当作层级中枢绘制", () => {
-    expect(centersForStructureLevel([
-      ...centers,
-      { id:"evidence", ordinal:3, level:1, role:"legacy", kind:"center", status:"confirmed", start_date:"2026-01-13", end_date:"2026-01-14", zd:10, zg:11 },
-    ] as any, 1).map((center) => center.id)).toEqual(["l1"]);
-  });
-
-  it("tooltip 展示后端提供的显示周期、颜色标识和独立计算来源", () => {
-    const html = formatCenterTooltip({
-      id:"l2", ordinal:1, level:2, kind:"center", status:"confirmed",
-      display_period:"w", color_key:"period-w",
-      start_date:"2026-01-04", end_date:"2026-01-08", zd:10.5, zg:11.5,
-      confirmed_at:"2026-01-09",
-    }, "d");
+  it("tooltip 展示当前周期内部级别和独立计算来源", () => {
+    const html = formatCenterTooltip(center({
+      id:"l2", family_id:"f2", ordinal:1, level:2, start_date:"2026-01-04", end_date:"2026-01-08",
+      zd:10.5, fixed_zd:10.5, zg:11.5, fixed_zg:11.5, confirmed_at:"2026-01-09",
+    }), "d");
     expect(html).toContain("L2 中枢");
-    expect(html).toContain("配色参考（非结构周期）：周线");
+    expect(html).toContain("配色参考（非结构周期）：日线");
     expect(html).toContain("计算来源：日线独立结构");
     expect(html).toContain("语义对应：日线内部 L2 中枢（非跨周期递归）");
-    expect(html).toContain("颜色标识：period-w");
+    expect(html).toContain("颜色标识：period-d-level-L2");
     expect(html).toContain("实际边界：2026-01-04 → 2026-01-08");
   });
 });
 
 describe("走势端点", () => {
   const movements = [
-    { id:"m1", ordinal:0, level:1, direction:"up", start_date:"2026-01-01", end_date:"2026-01-03", start_price:10, end_price:15, status:"confirmed" },
-    { id:"m2", ordinal:1, level:1, direction:"down", start_date:"2026-01-03", end_date:"2026-01-05", start_price:15, end_price:9, status:"confirmed" },
-    { id:"m3", ordinal:2, level:1, direction:"up", start_date:"2026-01-05", end_date:"2026-01-06", start_price:9, end_price:12, status:"provisional" },
-  ] as any;
+    movement({ id:"m1", family_id:"mf1", end_date:"2026-01-03", end_price:15, price_envelope_high:15 }),
+    movement({ id:"m2", family_id:"mf2", ordinal:1, direction:"down", start_date:"2026-01-03", end_date:"2026-01-05", start_price:15, end_price:9, price_envelope_low:9, price_envelope_high:15 }),
+    movement({ id:"m3", family_id:"mf3", ordinal:2, status:"provisional", start_date:"2026-01-05", end_date:"2026-01-06", start_price:9, end_price:12, price_envelope_low:9, price_envelope_high:12, recursive_eligible:false }),
+  ];
 
   it("共享端点按日期和价格去重并稳定编号高低点", () => {
     const markers = movementEndpointMarkers(movements);
     expect(markers).toHaveLength(4);
-    expect(markers.filter((marker) => marker.kind === "high").map((marker) => marker.label)).toEqual(["H1", "H2"]);
-    expect(markers.filter((marker) => marker.kind === "low").map((marker) => marker.label)).toEqual(["L1", "L2"]);
-    expect(markers.find((marker) => marker.key === "2026-01-03|15")?.label).toBe("H1");
+    expect(markers.filter((marker) => marker.kind === "high").map((marker) => marker.label)).toEqual(["高点1", "高点2"]);
+    expect(markers.filter((marker) => marker.kind === "low").map((marker) => marker.label)).toEqual(["低点1", "低点2"]);
+    expect(markers.find((marker) => marker.key === "2026-01-03|15")?.label).toBe("高点1");
   });
 
   it("忽略内部 path_points，仅用真实起止点生成直线", () => {
@@ -202,7 +205,7 @@ describe("图表数据归一化", () => {
     const result = normalizeChartData({ bars: [
       { trade_date: "2026-01-02", open: 1, high: 2, low: 0.5, close: 1.5, volume: 1, amount: 2 },
       { trade_date: "bad", open: Number.NaN, high: 2, low: 1, close: 1.5, volume: 1, amount: 2 },
-    ], pens: undefined as any, pen_centers: [], movements: undefined as any, indicators: {} as any } as any);
+    ], pens: undefined as any, centers: [], movements: undefined as any, indicators: {} as any } as any);
     expect(result?.bars).toHaveLength(1);
     expect(result?.pens).toEqual([]);
     expect(result?.movements).toEqual([]);

@@ -1,25 +1,51 @@
-import json
 import sqlite3
 
-from scripts.migrate_remove_same_level import migrate
 from app.store import Store
+from scripts.rebuild_v25_database import PRESERVED_TABLES, dry_run, execute
 
 
-def test_remove_same_level_migration_cleans_payloads_and_columns(tmp_path):
-    db = tmp_path / "migration.db"
-    store = Store(str(db))
-    store.db.execute("ALTER TABLE period_structure_runs ADD COLUMN decomposition_meta TEXT NOT NULL DEFAULT '{}'")
-    store.db.execute("ALTER TABLE period_structure_runs ADD COLUMN movement_input_hash TEXT NOT NULL DEFAULT ''")
-    store.db.execute("ALTER TABLE period_structure_runs ADD COLUMN hierarchy_input_hash TEXT NOT NULL DEFAULT ''")
-    store.db.execute("INSERT INTO period_pen_centers(run_id,symbol,timeframe,adjustflag,definition_version,ordinal,start_date,end_date,payload) VALUES(1,'s','d','2','v',0,'2026-01-01','2026-01-02',?)", (json.dumps({"id": "same-level-center-x", "role": "same_level"}),))
-    store.db.execute("INSERT INTO period_movements(run_id,symbol,timeframe,adjustflag,definition_version,ordinal,start_date,end_date,payload) VALUES(1,'s','d','2','v',0,'2026-01-01','2026-01-02',?)", (json.dumps({"id": "m", "role": "same_level_decomposition"}),))
+def _legacy_database(path):
+    store = Store(str(path))
+    store.upsert_bars("000001", "d", "2", [{
+        "trade_date": "2026-01-05", "open": 10, "high": 11, "low": 9,
+        "close": 10.5, "volume": 100, "amount": 1000,
+    }])
+    store.upsert_stock("000001", "平安银行")
+    store.db.execute("UPDATE stock_pool SET enabled=0 WHERE symbol='000001'")
+    store.db.execute("CREATE TABLE period_structure_runs(id INTEGER PRIMARY KEY, payload TEXT)")
+    store.db.execute("INSERT INTO period_structure_runs VALUES(1, '{\"legacy\":true}')")
     store.db.commit()
     store.db.close()
 
-    result = migrate(db, True, tmp_path / "backup")
-    assert result["deleted_same_level_movements"] == 1
-    connection = sqlite3.connect(db)
-    assert all(name not in {row[1] for row in connection.execute("PRAGMA table_info(period_structure_runs)")} for name in ("decomposition_meta", "movement_input_hash", "hierarchy_input_hash"))
-    assert connection.execute("SELECT COUNT(*) FROM period_pen_centers").fetchone()[0] == 0
-    assert connection.execute("SELECT COUNT(*) FROM period_movements").fetchone()[0] == 0
-    connection.close()
+
+def test_dry_run_reports_exact_preserved_scope_without_mutation(tmp_path):
+    database = tmp_path / "legacy.db"
+    _legacy_database(database)
+    result = dry_run(database)
+    assert result["mode"] == "dry-run"
+    assert result["integrity_check"] == "ok"
+    assert result["missing_preserved_tables"] == []
+    assert {item["table"] for item in result["preserved_tables"]} == set(PRESERVED_TABLES)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM period_structure_runs").fetchone()[0] == 1
+
+
+def test_execute_rebuilds_schema_and_preserves_application_data(tmp_path):
+    database = tmp_path / "legacy.db"
+    _legacy_database(database)
+    result = execute(database)
+    assert result["status"] == "success"
+    assert result["final_integrity_check"] == "ok"
+    assert result["active_run_count"] == 0
+    assert result["backup"]
+    assert result["rollback"]
+    with sqlite3.connect(database) as connection:
+        tables = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert set(PRESERVED_TABLES) <= tables
+        assert "chan_structure_runs" in tables
+        assert "period_structure_runs" not in tables
+        assert connection.execute("SELECT COUNT(*) FROM market_bars").fetchone()[0] == 1
+        assert connection.execute("SELECT name FROM stock_pool WHERE symbol='000001'").fetchone()[0] == "平安银行"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

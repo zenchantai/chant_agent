@@ -105,20 +105,15 @@ def test_stock_pool_upsert_and_delete(tmp_path):
     assert store.delete_stock("000001") is False
 
 
-def test_stock_pool_sort_and_sync_summary(tmp_path):
+def test_stock_pool_sort_and_structure_summary(tmp_path):
     store = Store(str(tmp_path / "pool.db"))
     store.upsert_stock("000001", "平安银行")
     store.upsert_stock("600000", "浦发银行")
     store.update_stock("600000", move="up")
     assert [item["symbol"] for item in store.list_stock_pool()] == ["600000", "000001"]
-    first = store.create_sync_run("600000", "d", "incremental", "2026-09-01T20:30:00+08:00")
-    store.finish_sync_run(first, "success", 3, "2026-08-28", "2026-09-01")
-    second = store.create_sync_run("600000", "5", "incremental", "2026-09-01T20:30:00+08:00")
-    store.finish_sync_run(second, "failed", error="timeout")
     item = store.list_stock_pool()[0]
-    assert item["sync_status"] == "partial_failed"
-    assert "timeout" in item["sync_error"]
-    assert store.has_successful_sync("600000", "d", "2026-09-01T20:30:00+08:00")
+    assert item["sync_status"] is None
+    assert item["sync_error"] == ""
 
 
 def test_watchlist_groups_memberships_and_legacy_migration(tmp_path):
@@ -245,7 +240,7 @@ def test_scheduler_next_target():
     assert (target.hour, target.minute) == (18, 0)
 
 
-def test_full_sync_starts_at_2015_and_writes_log(tmp_path, monkeypatch):
+def test_full_sync_starts_at_2015_and_precomputes_structure(tmp_path, monkeypatch):
     store = Store(str(tmp_path / "sync.db"))
     store.upsert_stock("000001", "平安银行")
     calls = []
@@ -255,8 +250,8 @@ def test_full_sync_starts_at_2015_and_writes_log(tmp_path, monkeypatch):
         return [{"trade_date": "2026-09-01", "open": 1, "high": 2, "low": .5, "close": 1.5, "volume": 10, "amount": 15}]
 
     monkeypatch.setattr("app.sync.fetch_baostock", fake_fetch)
-    asyncio.run(SyncService(store).sync_one("000001", "d", "full"))
+    result = asyncio.run(SyncService(store).sync_one("000001", "d", "full"))
     assert calls == [("000001", "d", "2015-01-01", "2")]
-    assert store.list_sync_runs()[0]["status"] == "success"
+    assert result["result"] == "success"
     assert store.market_range("000001", "d", "2") == ("2026-09-01", "2026-09-01")
-    assert store.active_period_structure_run("000001", "d", "2") is not None
+    assert store.active_chan_run("000001", "d", "2") is not None

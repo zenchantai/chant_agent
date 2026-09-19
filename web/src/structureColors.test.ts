@@ -27,24 +27,24 @@ describe("period structure colors", () => {
 });
 
 describe("structure level colors", () => {
-  it("maps daily L1/L2/L3 to the daily, weekly and monthly palettes", () => {
+  it("keeps daily L1/L2/L3 inside the daily data domain", () => {
     expect(levelStructureAppearance("dark", "d", 1)).toEqual({
       color: "#F2C14E", colorKey: "period-d", displayPeriod: "d",
     });
     expect(levelStructureAppearance("dark", "d", 2)).toEqual({
-      color: "#A78BFA", colorKey: "period-w", displayPeriod: "w",
+      color: "#4DD0E1", colorKey: "period-d-level-L2", displayPeriod: "d",
     });
     expect(levelStructureAppearance("light", "d", 3)).toEqual({
-      color: "#C43F24", colorKey: "period-m", displayPeriod: "m",
+      color: "#AD1457", colorKey: "period-d-level-L3", displayPeriod: "d",
     });
   });
 
-  it("maps weekly and monthly levels without changing their calculation timeframe", () => {
+  it("keeps weekly and monthly higher levels inside their calculation timeframe", () => {
     expect(levelStructureAppearance("dark", "w", 1).colorKey).toBe("period-w");
-    expect(levelStructureAppearance("dark", "w", 2).colorKey).toBe("period-m");
-    expect(levelStructureAppearance("dark", "w", 3).colorKey).toBe("structure-higher-L3");
+    expect(levelStructureAppearance("dark", "w", 2).colorKey).toBe("period-w-level-L2");
+    expect(levelStructureAppearance("dark", "w", 3).colorKey).toBe("period-w-level-L3");
     expect(levelStructureAppearance("dark", "m", 1).colorKey).toBe("period-m");
-    expect(levelStructureAppearance("dark", "m", 2).colorKey).toBe("structure-higher-L2");
+    expect(levelStructureAppearance("dark", "m", 2).colorKey).toBe("period-m-level-L2");
   });
 
   it("keeps intraday higher levels as stable variants of their own timeframe", () => {
@@ -59,8 +59,8 @@ describe("structure level colors", () => {
 
   it("uses a dedicated higher-level palette beyond the named daily periods", () => {
     const l4 = levelStructureAppearance("dark", "d", 4);
-    expect(l4.colorKey).toBe("structure-higher-L4");
-    expect(l4.displayPeriod).toBe("higher");
+    expect(l4.colorKey).toBe("period-d-level-L4");
+    expect(l4.displayPeriod).toBe("d");
     expect(l4.color).not.toBe(periodStructureColor("dark", "d"));
   });
 
@@ -70,7 +70,7 @@ describe("structure level colors", () => {
 
   it("exposes API-compatible snake_case metadata", () => {
     expect(levelStructureMetadata("dark", "d", 2)).toEqual({
-      color: "#A78BFA", color_key: "period-w", display_period: "w",
+      color: "#4DD0E1", color_key: "period-d-level-L2", display_period: "d",
     });
   });
 });
