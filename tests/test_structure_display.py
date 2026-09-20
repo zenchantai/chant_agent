@@ -2,12 +2,12 @@ from copy import deepcopy
 
 from app.chan_structure import build_structure_hierarchy
 from app.structure_display import center_display_catalog, project_center_display
-from tests.chan_fixtures import pens_from_prices
+from tests.chan_fixtures import pens_from_prices, legacy_expansion_snapshot
 
 
 def sample():
     pens = pens_from_prices([1, 10, 6, 15, 8, 20, 12, 25, 21, 30, 26, 35])
-    return {"pens": pens, **build_structure_hierarchy(pens)}
+    return legacy_expansion_snapshot()
 
 
 def page(source, start=None, end=None):
@@ -46,7 +46,7 @@ def test_catalog_does_not_draw_all_history_and_is_pagination_stable():
 
 
 def test_touch_candidate_does_not_create_a_display_parent():
-    source = {"pens": [], **build_structure_hierarchy(pens_from_prices([1, 10, 6, 15, 8, 20, 15, 25, 21, 30, 26, 35]))}
+    source = {"pens": [], **build_structure_hierarchy(pens_from_prices([1, 10, 6, 15, 8, 20, 15, 25, 18, 30, 26, 35]))}
     assert [item["display_role"] for item in center_display_catalog(source)] == ["active", "active"]
 
 

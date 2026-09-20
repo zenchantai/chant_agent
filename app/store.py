@@ -956,13 +956,14 @@ class Store:
 
     def replace_chan_structure(
         self, symbol: str, timeframe: str, adjustflag: str,
-        result: dict[str, Any], market_version: str,
+        result: dict[str, Any], market_version: str, *, activate: bool = True,
     ) -> int:
         from .chan_structure import assert_valid_structure
 
         assert_valid_structure(result)
-        meta = result["meta"]
         structure = result["structure"]
+        meta = {**result["meta"], "structure_aux": {k: structure[k] for k in
+                ("hierarchy_version", "unassigned_by_level", "pen_diagnostics") if k in structure}}
         started_at = datetime.now(timezone.utc).isoformat()
         with self._lock:
             try:
@@ -1000,15 +1001,13 @@ class Store:
                     ))
                 finished_at = datetime.now(timezone.utc).isoformat()
                 self.db.execute("UPDATE chan_structure_runs SET status='success',finished_at=? WHERE id=?", (finished_at, run_id))
-                self.db.execute("""INSERT INTO chan_active_runs(symbol,timeframe,adjustflag,run_id,activated_at)
-                    VALUES(?,?,?,?,?) ON CONFLICT(symbol,timeframe,adjustflag) DO UPDATE SET
-                    run_id=excluded.run_id,activated_at=excluded.activated_at""",
-                    (symbol, timeframe, adjustflag, run_id, finished_at))
-                stale = [row[0] for row in self.db.execute("""SELECT id FROM chan_structure_runs
-                    WHERE symbol=? AND timeframe=? AND adjustflag=? AND status='success' AND id!=?""",
-                    (symbol, timeframe, adjustflag, run_id)).fetchall()]
-                if stale:
-                    self.db.executemany("DELETE FROM chan_structure_runs WHERE id=?", [(item,) for item in stale])
+                if activate:
+                    self.db.execute("""INSERT INTO chan_active_runs(symbol,timeframe,adjustflag,run_id,activated_at)
+                        VALUES(?,?,?,?,?) ON CONFLICT(symbol,timeframe,adjustflag) DO UPDATE SET
+                        run_id=excluded.run_id,activated_at=excluded.activated_at""",
+                        (symbol, timeframe, adjustflag, run_id, finished_at))
+                # Successful runs are immutable evidence and rollback targets.
+                # Retention is an explicit maintenance operation, never activation.
                 self.db.commit()
                 return run_id
             except Exception as exc:
@@ -1029,6 +1028,26 @@ class Store:
                     (symbol, timeframe, adjustflag, symbol, timeframe, adjustflag))
                 self.db.commit()
                 raise
+
+    def activate_chan_runs(self, run_ids: list[int], *, definition_version: str, calculator_fingerprint: str) -> None:
+        """Switch a validated release matrix in one transaction, retaining old runs."""
+        if not run_ids or len(run_ids) != len(set(run_ids)):
+            raise ValueError("运行矩阵为空或重复")
+        with self._lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            rows = [self.db.execute("SELECT * FROM chan_structure_runs WHERE id=?", (i,)).fetchone() for i in run_ids]
+            if any(not row or row["status"] != "success" or row["definition_version"] != definition_version
+                   or row["calculator_fingerprint"] != calculator_fingerprint for row in rows):
+                raise ValueError("运行矩阵版本或状态不匹配")
+            keys = [(r["symbol"], r["timeframe"], r["adjustflag"]) for r in rows]
+            if len(keys) != len(set(keys)):
+                raise ValueError("运行矩阵有重复标的周期")
+            stamp = datetime.now(timezone.utc).isoformat()
+            for row in rows:
+                self.db.execute("""INSERT INTO chan_active_runs(symbol,timeframe,adjustflag,run_id,activated_at)
+                    VALUES(?,?,?,?,?) ON CONFLICT(symbol,timeframe,adjustflag) DO UPDATE SET
+                    run_id=excluded.run_id,activated_at=excluded.activated_at""",
+                    (row["symbol"], row["timeframe"], row["adjustflag"], row["id"], stamp))
 
     def _load_json_rows(self, table: str, run_id: int, column: str) -> list[dict[str, Any]]:
         with self._lock:
@@ -1065,6 +1084,7 @@ class Store:
         structure["levels"] = sorted({int(item["level"]) for item in structure["centers"]})
         structure["max_level"] = max(structure["levels"], default=0)
         structure["unassigned_by_level"] = meta.get("unassigned_by_level", {})
+        structure.update(meta.pop("structure_aux", {}))
         return {"meta": meta, "structure": structure}
 
     def drawings(self, symbol: str, timeframe: str):

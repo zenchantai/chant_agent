@@ -58,7 +58,7 @@ def test_single_center_only_produces_consolidation_divergence_not_first_point():
 
 
 def test_latest_movement_remains_provisional_without_confirmed_boundary_point():
-    result = build_structure_hierarchy(pens_from_prices([1, 5, 3, 10, 7, 15, 13]), [], [])
+    result = build_structure_hierarchy(pens_from_prices([1, 10, 6, 15, 8]), [], [])
     assert len(result["movements"]) == 1
     movement = result["movements"][0]
     assert movement["status"] == "provisional"

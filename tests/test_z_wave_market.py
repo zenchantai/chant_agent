@@ -42,15 +42,19 @@ def test_real_daily_expansions_have_actual_z_witness_and_connection(symbol):
     result = build_structure_hierarchy(fixture["pens"], calculate_macd(fixture["bars"]), [bar["trade_date"] for bar in fixture["bars"]])
     centers = {center["id"]: center for center in result["center_revisions"]}
     units = {unit["id"]: unit for unit in fixture["pens"]}
-    for parent in result["centers"]:
-        if "expansion_envelope_overlap" not in parent["formation_modes"]:
-            continue
-        left, right = [centers[identifier] for identifier in parent["child_center_ids"]]
-        witness_left, witness_right = parent["overlap_witness_unit_ids"]
+    events = [r for r in result["relations"] if r.get("expansion_status") == "confirmed"]
+    assert events, symbol
+    for event in events:
+        left, right = centers[event["from_id"]], centers[event["to_id"]]
+        witness_left, witness_right = event["evidence"]["overlap_witness_unit_ids"]
         assert witness_left in left["z_unit_ids"] and witness_right in right["z_unit_ids"]
-        assert parent["connection_component_ids"]
         if left["level"] == 1:
-            low = max(min(units[identifier]["start_price"], units[identifier]["end_price"]) for identifier in (witness_left, witness_right))
-            high = min(max(units[identifier]["start_price"], units[identifier]["end_price"]) for identifier in (witness_left, witness_right))
-            assert low + 1e-9 < high
-        assert (parent["zd"], parent["zg"]) == (max(left["dd"], right["dd"]), min(left["gg"], right["gg"]))
+            low = max(min(units[i]["start_price"], units[i]["end_price"]) for i in (witness_left, witness_right))
+            high = min(max(units[i]["start_price"], units[i]["end_price"]) for i in (witness_left, witness_right))
+            assert low <= high + 1e-9
+        assert event["confirmed_at"] >= max(left["formed_at"], right["formed_at"])
+        assert event["boundary_status"] in {"unresolved", "dynamic", "fixed"}
+    for parent in result["centers"]:
+        if "expansion_decomposition" in parent["formation_modes"]:
+            parts = parent["decomposition_proof"]["segments"]
+            assert (parent["zd"], parent["zg"]) == (max(p["low"] for p in parts), min(p["high"] for p in parts))

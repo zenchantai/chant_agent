@@ -62,3 +62,10 @@ def session_rows(days: int = 12, mutate: float | None = None) -> list[dict]:
 
 def seed(store, symbol: str, rows: list[dict], timeframe: str = "5") -> None:
     store.upsert_bars(symbol, timeframe, "2", rows)
+
+
+def legacy_expansion_snapshot():
+    """Frozen v27 run: projection/display must continue to read old revisions."""
+    import json
+    from pathlib import Path
+    return json.loads((Path(__file__).parent / "fixtures" / "legacy_expansion_v27.json").read_text())

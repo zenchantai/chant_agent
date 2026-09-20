@@ -12,10 +12,10 @@ from app.store import Store
 from tests.chan_fixtures import seed, session_rows
 
 
-def test_rulebook_and_definition_version_are_v27():
+def test_rulebook_and_definition_version_are_v28():
     rulebook = load_rulebook()
     assert rulebook["version"] == PERIOD_DEFINITION_VERSION
-    assert PERIOD_DEFINITION_VERSION == "chan-period-daily-led-reference-v27"
+    assert PERIOD_DEFINITION_VERSION == "chan-period-directional-z-center-v28"
 
 
 def test_calculator_fingerprint_is_deterministic_and_fails_closed(tmp_path):

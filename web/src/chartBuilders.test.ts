@@ -70,12 +70,27 @@ const point = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("chart builders", () => {
+  it("方向核心、Z 范围和扩展见证使用独立证据", () => {
+    const selected = center({formation_stage:"directional",formation_type:"pullback",core_unit_ids:["a","b","c"],z_unit_ids:["a","c"],context_low:7,context_high:13});
+    const pens = ["a","b","c","witness"].map((id,ordinal) => ({id,ordinal,kind:"pen",level:0,status:"confirmed",start_date:"2026-01-01",end_date:"2026-01-03",start_price:9,end_price:11}));
+    const data = base({pens,centers:[selected],center_revisions:[selected],relations:[{id:"contact",from_id:"other",to_id:"c1",expansion_status:"confirmed",evidence:{overlap_witness_unit_ids:["c","witness"]}}]});
+    const series = buildPenSeries({data,selectedStructureId:"c1"},data.bars.map((b:any)=>b.trade_date));
+    expect(series.find(s=>s.id==="a")?.name).toContain("核心 A");
+    expect(series.find(s=>s.id==="c")?.name).toContain("核心 C");
+    expect(series.find(s=>s.id==="c")?.lineStyle.color).toBe("#e11d9b");
+    expect(series.find(s=>s.id==="witness")?.lineStyle.color).toBe("#e11d9b");
+    const artifacts = buildChartArtifacts({data,selectedStructureId:"c1"});
+    const areas = artifacts.option?.series.find((s:any)=>s.id==="kline").markArea.data;
+    expect(areas.map((a:any)=>a[0].name)).toContain("Z 波动范围");
+    expect(areas.map((a:any)=>a[0].name)).toContain("上下文范围");
+  });
+
   it("区分核心、Z延伸、进入和连接笔的选择高亮，不绘制历史中枢", () => {
     const pens = ["entry", "core", "z", "connection"].map((id, ordinal) => ({ id, ordinal, kind: "pen", level: 0, status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", start_price: 9, end_price: 11 }));
     const selected = center({ entry_unit_ids: ["entry"], core_unit_ids: ["core"], z_unit_ids: ["core", "z"], connection_component_ids: ["join"] });
     const data = base({ pens, centers: [selected], center_revisions: [center({ id: "old", active: false })], components: [component({ id: "join", source_unit_ids: ["connection"] })] });
     const series = buildPenSeries({ data, selectedStructureId: "c1" }, data.bars.map((item: any) => item.trade_date));
-    expect(new Set(series.map((item) => item.lineStyle.color)).size).toBe(4);
+    expect(new Set(series.map((item) => item.lineStyle.color)).size).toBe(3);
     expect(series.every((item) => item.lineStyle.width === 3.4)).toBe(true);
     expect(normalizeChartData(data)?.centers.map((item) => item.id)).toEqual(["c1"]);
   });

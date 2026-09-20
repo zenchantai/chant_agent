@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-DEFINITION_VERSION = "chan-period-daily-led-reference-v27"
+DEFINITION_VERSION = "chan-period-directional-z-center-v28"
 PERIOD_DEFINITION_VERSION = DEFINITION_VERSION
 REQUIRED_RUNTIME_RULES = {
     "RAW-5M-001", "INC-001", "FX-001", "PEN-NEW-001", "PEN-NEW-002",

@@ -1,0 +1,2284 @@
+{
+  "pens": [
+    {
+      "id": "p0",
+      "kind": "pen",
+      "level": 0,
+      "ordinal": 0,
+      "start_date": "2026-01-01",
+      "end_date": "2026-01-02",
+      "start_price": 1.0,
+      "end_price": 10.0,
+      "direction": "up",
+      "status": "confirmed",
+      "confirmed_at": "2026-01-02",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0"
+    },
+    {
+      "id": "p1",
+      "kind": "pen",
+      "level": 0,
+      "ordinal": 1,
+      "start_date": "2026-01-02",
+      "end_date": "2026-01-03",
+      "start_price": 10.0,
+      "end_price": 6.0,
+      "direction": "down",
+      "status": "confirmed",
+      "confirmed_at": "2026-01-03",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0"
+    },
+    {
+      "id": "p2",
+      "kind": "pen",
+      "level": 0,
+      "ordinal": 2,
+      "start_date": "2026-01-03",
+      "end_date": "2026-01-04",
+      "start_price": 6.0,
+      "end_price": 15.0,
+      "direction": "up",
+      "status": "confirmed",
+      "confirmed_at": "2026-01-04",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0"
+    },
+    {
+      "id": "p3",
+      "kind": "pen",
+      "level": 0,
+      "ordinal": 3,
+      "start_date": "2026-01-04",
+      "end_date": "2026-01-05",
+      "start_price": 15.0,
+      "end_price": 8.0,
+      "direction": "down",
+      "status": "confirmed",
+      "confirmed_at": "2026-01-05",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0"
+    },
+    {
+      "id": "p4",
+      "kind": "pen",
+      "level": 0,
+      "ordinal": 4,
+      "start_date": "2026-01-05",
+      "end_date": "2026-01-06",
+      "start_price": 8.0,
+      "end_price": 20.0,
+      "direction": "up",
+      "status": "confirmed",
+      "confirmed_at": "2026-01-06",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0"
+    },
+    {
+      "id": "p5",
+      "kind": "pen",
+      "level": 0,
+      "ordinal": 5,
+      "start_date": "2026-01-06",
+      "end_date": "2026-01-07",
+      "start_price": 20.0,
+      "end_price": 12.0,
+      "direction": "down",
+      "status": "confirmed",
+      "confirmed_at": "2026-01-07",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0"
+    },
+    {
+      "id": "p6",
+      "kind": "pen",
+      "level": 0,
+      "ordinal": 6,
+      "start_date": "2026-01-07",
+      "end_date": "2026-01-08",
+      "start_price": 12.0,
+      "end_price": 25.0,
+      "direction": "up",
+      "status": "confirmed",
+      "confirmed_at": "2026-01-08",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0"
+    },
+    {
+      "id": "p7",
+      "kind": "pen",
+      "level": 0,
+      "ordinal": 7,
+      "start_date": "2026-01-08",
+      "end_date": "2026-01-09",
+      "start_price": 25.0,
+      "end_price": 21.0,
+      "direction": "down",
+      "status": "confirmed",
+      "confirmed_at": "2026-01-09",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0"
+    },
+    {
+      "id": "p8",
+      "kind": "pen",
+      "level": 0,
+      "ordinal": 8,
+      "start_date": "2026-01-09",
+      "end_date": "2026-01-10",
+      "start_price": 21.0,
+      "end_price": 30.0,
+      "direction": "up",
+      "status": "confirmed",
+      "confirmed_at": "2026-01-10",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0"
+    },
+    {
+      "id": "p9",
+      "kind": "pen",
+      "level": 0,
+      "ordinal": 9,
+      "start_date": "2026-01-10",
+      "end_date": "2026-01-11",
+      "start_price": 30.0,
+      "end_price": 26.0,
+      "direction": "down",
+      "status": "confirmed",
+      "confirmed_at": "2026-01-11",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0"
+    },
+    {
+      "id": "p10",
+      "kind": "pen",
+      "level": 0,
+      "ordinal": 10,
+      "start_date": "2026-01-11",
+      "end_date": "2026-01-12",
+      "start_price": 26.0,
+      "end_price": 35.0,
+      "direction": "up",
+      "status": "confirmed",
+      "confirmed_at": "2026-01-12",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0"
+    }
+  ],
+  "centers": [
+    {
+      "id": "center-family-797dc28c05ba43:r7",
+      "kind": "center",
+      "family_id": "center-family-797dc28c05ba43",
+      "revision_no": 7,
+      "previous_revision_id": "center-family-797dc28c05ba43:r6",
+      "active": true,
+      "level": 2,
+      "status": "formed",
+      "start_date": "2026-01-02",
+      "end_date": "2026-01-10",
+      "core_start_date": "2026-01-02",
+      "core_end_date": "2026-01-10",
+      "entry_component_id": "component-752b9c9f13e5af",
+      "entry_unit_ids": [],
+      "core_unit_ids": [],
+      "unit_kind": "center_revision",
+      "z_unit_ids": [],
+      "z_direction": null,
+      "formed_at": "2026-01-10",
+      "promotion_confirmed_at": "2026-01-10",
+      "connection_component_ids": [
+        "component-76c5dee8b09acc"
+      ],
+      "overlap_witness_unit_ids": [
+        "p3",
+        "p6"
+      ],
+      "missing_evidence": [],
+      "extension_unit_ids": [],
+      "peripheral_unit_ids": [],
+      "departure_unit_ids": [],
+      "retest_unit_ids": [],
+      "owned_unit_ids": [
+        "center-family-797dc28c05ba43:r6",
+        "center-family-a64b1c40749712:r1"
+      ],
+      "context_unit_ids": [
+        "center-family-797dc28c05ba43:r6",
+        "center-family-a64b1c40749712:r1"
+      ],
+      "source_pen_ids": [
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "child_center_ids": [
+        "center-family-797dc28c05ba43:r6",
+        "center-family-a64b1c40749712:r1"
+      ],
+      "child_movement_ids": [],
+      "zd": 12.0,
+      "zg": 15.0,
+      "fixed_zd": 12.0,
+      "fixed_zg": 15.0,
+      "dd": 6.0,
+      "gg": 30.0,
+      "fluctuation_dd": 6.0,
+      "fluctuation_gg": 30.0,
+      "context_low": 1.0,
+      "context_high": 30.0,
+      "entry_direction": "up",
+      "core_formation_pattern": "down-up-down",
+      "departure_direction": "up",
+      "owner_movement_id": null,
+      "formation_modes": [
+        "expansion_envelope_overlap"
+      ],
+      "recursive_eligible": true,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "relation_id": "relation-5dced89ec67e55",
+        "non_transitive_pair": true,
+        "previous_core": [
+          8.0,
+          10.0
+        ],
+        "current_core": [
+          21.0,
+          25.0
+        ],
+        "previous_envelope": [
+          6.0,
+          15.0
+        ],
+        "current_envelope": [
+          12.0,
+          30.0
+        ],
+        "child_revision_ids": [
+          "center-family-797dc28c05ba43:r6",
+          "center-family-a64b1c40749712:r1"
+        ],
+        "missing_evidence": [],
+        "connection_component_ids": [
+          "component-76c5dee8b09acc"
+        ],
+        "overlap_witness_unit_ids": [
+          "p3",
+          "p6"
+        ],
+        "source_unit_ids": [
+          "p1",
+          "p2",
+          "p3",
+          "p4",
+          "p5",
+          "p6",
+          "p7",
+          "p8"
+        ],
+        "source_pen_ids": [
+          "p1",
+          "p2",
+          "p3",
+          "p4",
+          "p5",
+          "p6",
+          "p7",
+          "p8"
+        ],
+        "evidence_available_at": "2026-01-10"
+      },
+      "revision_at": "2026-01-10",
+      "departure_component_id": "component-db90a2d3c82ff8",
+      "retest_component_id": "component-7cf4b82bd42674",
+      "ordinal": 0
+    }
+  ],
+  "center_revisions": [
+    {
+      "id": "center-family-797dc28c05ba43:r1",
+      "kind": "center",
+      "family_id": "center-family-797dc28c05ba43",
+      "revision_no": 1,
+      "previous_revision_id": null,
+      "active": false,
+      "level": 1,
+      "status": "formed",
+      "start_date": "2026-01-02",
+      "end_date": "2026-01-05",
+      "core_start_date": "2026-01-02",
+      "core_end_date": "2026-01-05",
+      "entry_component_id": "component-752b9c9f13e5af",
+      "entry_unit_ids": [
+        "p0"
+      ],
+      "core_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "unit_kind": "pen",
+      "z_unit_ids": [
+        "p1",
+        "p3"
+      ],
+      "z_direction": "down",
+      "formed_at": "2026-01-05",
+      "promotion_confirmed_at": null,
+      "connection_component_ids": [],
+      "overlap_witness_unit_ids": [],
+      "missing_evidence": [],
+      "extension_unit_ids": [],
+      "peripheral_unit_ids": [],
+      "departure_unit_ids": [],
+      "retest_unit_ids": [],
+      "owned_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "context_unit_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "source_pen_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "child_center_ids": [],
+      "child_movement_ids": [],
+      "zd": 8.0,
+      "zg": 10.0,
+      "fixed_zd": 8.0,
+      "fixed_zg": 10.0,
+      "dd": 6.0,
+      "gg": 15.0,
+      "fluctuation_dd": 6.0,
+      "fluctuation_gg": 15.0,
+      "context_low": 1.0,
+      "context_high": 15.0,
+      "entry_direction": "up",
+      "core_formation_pattern": "down-up-down",
+      "departure_direction": null,
+      "owner_movement_id": "movement-family-16e1b193f41ce4",
+      "formation_modes": [
+        "entry_then_earliest_three_unit_core"
+      ],
+      "recursive_eligible": true,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "entry_is_center_free": true,
+        "strict_core": true,
+        "z_endpoints": [
+          {
+            "id": "p1",
+            "start_date": "2026-01-02",
+            "end_date": "2026-01-03",
+            "start_price": 10.0,
+            "end_price": 6.0,
+            "confirmed_at": "2026-01-03"
+          },
+          {
+            "id": "p3",
+            "start_date": "2026-01-04",
+            "end_date": "2026-01-05",
+            "start_price": 15.0,
+            "end_price": 8.0,
+            "confirmed_at": "2026-01-05"
+          }
+        ]
+      },
+      "revision_at": "2026-01-05",
+      "ordinal": 0
+    },
+    {
+      "id": "center-family-797dc28c05ba43:r2",
+      "kind": "center",
+      "family_id": "center-family-797dc28c05ba43",
+      "revision_no": 2,
+      "previous_revision_id": "center-family-797dc28c05ba43:r1",
+      "active": false,
+      "level": 1,
+      "status": "formed",
+      "start_date": "2026-01-02",
+      "end_date": "2026-01-05",
+      "core_start_date": "2026-01-02",
+      "core_end_date": "2026-01-05",
+      "entry_component_id": "component-752b9c9f13e5af",
+      "entry_unit_ids": [
+        "p0"
+      ],
+      "core_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "unit_kind": "pen",
+      "z_unit_ids": [
+        "p1",
+        "p3"
+      ],
+      "z_direction": "down",
+      "formed_at": "2026-01-05",
+      "promotion_confirmed_at": null,
+      "connection_component_ids": [],
+      "overlap_witness_unit_ids": [],
+      "missing_evidence": [],
+      "extension_unit_ids": [],
+      "peripheral_unit_ids": [],
+      "departure_unit_ids": [
+        "p4"
+      ],
+      "retest_unit_ids": [],
+      "owned_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "context_unit_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4"
+      ],
+      "source_pen_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "child_center_ids": [],
+      "child_movement_ids": [],
+      "zd": 8.0,
+      "zg": 10.0,
+      "fixed_zd": 8.0,
+      "fixed_zg": 10.0,
+      "dd": 6.0,
+      "gg": 15.0,
+      "fluctuation_dd": 6.0,
+      "fluctuation_gg": 15.0,
+      "context_low": 1.0,
+      "context_high": 20.0,
+      "entry_direction": "up",
+      "core_formation_pattern": "down-up-down",
+      "departure_direction": "up",
+      "owner_movement_id": "movement-family-16e1b193f41ce4",
+      "formation_modes": [
+        "entry_then_earliest_three_unit_core"
+      ],
+      "recursive_eligible": true,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "entry_is_center_free": true,
+        "strict_core": true,
+        "z_endpoints": [
+          {
+            "id": "p1",
+            "start_date": "2026-01-02",
+            "end_date": "2026-01-03",
+            "start_price": 10.0,
+            "end_price": 6.0,
+            "confirmed_at": "2026-01-03"
+          },
+          {
+            "id": "p3",
+            "start_date": "2026-01-04",
+            "end_date": "2026-01-05",
+            "start_price": 15.0,
+            "end_price": 8.0,
+            "confirmed_at": "2026-01-05"
+          }
+        ]
+      },
+      "revision_at": "2026-01-06",
+      "departure_component_id": "component-7663e05c571326",
+      "ordinal": 0
+    },
+    {
+      "id": "center-family-797dc28c05ba43:r3",
+      "kind": "center",
+      "family_id": "center-family-797dc28c05ba43",
+      "revision_no": 3,
+      "previous_revision_id": "center-family-797dc28c05ba43:r2",
+      "active": false,
+      "level": 1,
+      "status": "broken",
+      "start_date": "2026-01-02",
+      "end_date": "2026-01-05",
+      "core_start_date": "2026-01-02",
+      "core_end_date": "2026-01-05",
+      "entry_component_id": "component-752b9c9f13e5af",
+      "entry_unit_ids": [
+        "p0"
+      ],
+      "core_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "unit_kind": "pen",
+      "z_unit_ids": [
+        "p1",
+        "p3"
+      ],
+      "z_direction": "down",
+      "formed_at": "2026-01-05",
+      "promotion_confirmed_at": null,
+      "connection_component_ids": [],
+      "overlap_witness_unit_ids": [],
+      "missing_evidence": [],
+      "extension_unit_ids": [],
+      "peripheral_unit_ids": [],
+      "departure_unit_ids": [
+        "p4",
+        "p5"
+      ],
+      "retest_unit_ids": [
+        "p5"
+      ],
+      "owned_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "context_unit_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5"
+      ],
+      "source_pen_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "child_center_ids": [],
+      "child_movement_ids": [],
+      "zd": 8.0,
+      "zg": 10.0,
+      "fixed_zd": 8.0,
+      "fixed_zg": 10.0,
+      "dd": 6.0,
+      "gg": 15.0,
+      "fluctuation_dd": 6.0,
+      "fluctuation_gg": 15.0,
+      "context_low": 1.0,
+      "context_high": 20.0,
+      "entry_direction": "up",
+      "core_formation_pattern": "down-up-down",
+      "departure_direction": "up",
+      "owner_movement_id": "movement-family-16e1b193f41ce4",
+      "formation_modes": [
+        "entry_then_earliest_three_unit_core"
+      ],
+      "recursive_eligible": true,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "entry_is_center_free": true,
+        "strict_core": true,
+        "z_endpoints": [
+          {
+            "id": "p1",
+            "start_date": "2026-01-02",
+            "end_date": "2026-01-03",
+            "start_price": 10.0,
+            "end_price": 6.0,
+            "confirmed_at": "2026-01-03"
+          },
+          {
+            "id": "p3",
+            "start_date": "2026-01-04",
+            "end_date": "2026-01-05",
+            "start_price": 15.0,
+            "end_price": 8.0,
+            "confirmed_at": "2026-01-05"
+          }
+        ]
+      },
+      "revision_at": "2026-01-07",
+      "departure_component_id": "component-db90a2d3c82ff8",
+      "retest_component_id": "component-7cf4b82bd42674",
+      "ordinal": 0
+    },
+    {
+      "id": "center-family-797dc28c05ba43:r4",
+      "kind": "center",
+      "family_id": "center-family-797dc28c05ba43",
+      "revision_no": 4,
+      "previous_revision_id": "center-family-797dc28c05ba43:r3",
+      "active": false,
+      "level": 1,
+      "status": "broken",
+      "start_date": "2026-01-02",
+      "end_date": "2026-01-05",
+      "core_start_date": "2026-01-02",
+      "core_end_date": "2026-01-05",
+      "entry_component_id": "component-752b9c9f13e5af",
+      "entry_unit_ids": [
+        "p0"
+      ],
+      "core_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "unit_kind": "pen",
+      "z_unit_ids": [
+        "p1",
+        "p3"
+      ],
+      "z_direction": "down",
+      "formed_at": "2026-01-05",
+      "promotion_confirmed_at": null,
+      "connection_component_ids": [],
+      "overlap_witness_unit_ids": [],
+      "missing_evidence": [],
+      "extension_unit_ids": [],
+      "peripheral_unit_ids": [],
+      "departure_unit_ids": [
+        "p4",
+        "p5",
+        "p6"
+      ],
+      "retest_unit_ids": [
+        "p5"
+      ],
+      "owned_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "context_unit_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6"
+      ],
+      "source_pen_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "child_center_ids": [],
+      "child_movement_ids": [],
+      "zd": 8.0,
+      "zg": 10.0,
+      "fixed_zd": 8.0,
+      "fixed_zg": 10.0,
+      "dd": 6.0,
+      "gg": 15.0,
+      "fluctuation_dd": 6.0,
+      "fluctuation_gg": 15.0,
+      "context_low": 1.0,
+      "context_high": 25.0,
+      "entry_direction": "up",
+      "core_formation_pattern": "down-up-down",
+      "departure_direction": "up",
+      "owner_movement_id": "movement-family-16e1b193f41ce4",
+      "formation_modes": [
+        "entry_then_earliest_three_unit_core"
+      ],
+      "recursive_eligible": true,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "entry_is_center_free": true,
+        "strict_core": true,
+        "z_endpoints": [
+          {
+            "id": "p1",
+            "start_date": "2026-01-02",
+            "end_date": "2026-01-03",
+            "start_price": 10.0,
+            "end_price": 6.0,
+            "confirmed_at": "2026-01-03"
+          },
+          {
+            "id": "p3",
+            "start_date": "2026-01-04",
+            "end_date": "2026-01-05",
+            "start_price": 15.0,
+            "end_price": 8.0,
+            "confirmed_at": "2026-01-05"
+          }
+        ]
+      },
+      "revision_at": "2026-01-08",
+      "departure_component_id": "component-fdeb7e0a653bb0",
+      "retest_component_id": "component-7cf4b82bd42674",
+      "ordinal": 0
+    },
+    {
+      "id": "center-family-797dc28c05ba43:r5",
+      "kind": "center",
+      "family_id": "center-family-797dc28c05ba43",
+      "revision_no": 5,
+      "previous_revision_id": "center-family-797dc28c05ba43:r4",
+      "active": false,
+      "level": 1,
+      "status": "broken",
+      "start_date": "2026-01-02",
+      "end_date": "2026-01-05",
+      "core_start_date": "2026-01-02",
+      "core_end_date": "2026-01-05",
+      "entry_component_id": "component-752b9c9f13e5af",
+      "entry_unit_ids": [
+        "p0"
+      ],
+      "core_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "unit_kind": "pen",
+      "z_unit_ids": [
+        "p1",
+        "p3"
+      ],
+      "z_direction": "down",
+      "formed_at": "2026-01-05",
+      "promotion_confirmed_at": null,
+      "connection_component_ids": [],
+      "overlap_witness_unit_ids": [],
+      "missing_evidence": [],
+      "extension_unit_ids": [],
+      "peripheral_unit_ids": [],
+      "departure_unit_ids": [
+        "p4",
+        "p5",
+        "p6",
+        "p7"
+      ],
+      "retest_unit_ids": [
+        "p5"
+      ],
+      "owned_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "context_unit_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7"
+      ],
+      "source_pen_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "child_center_ids": [],
+      "child_movement_ids": [],
+      "zd": 8.0,
+      "zg": 10.0,
+      "fixed_zd": 8.0,
+      "fixed_zg": 10.0,
+      "dd": 6.0,
+      "gg": 15.0,
+      "fluctuation_dd": 6.0,
+      "fluctuation_gg": 15.0,
+      "context_low": 1.0,
+      "context_high": 25.0,
+      "entry_direction": "up",
+      "core_formation_pattern": "down-up-down",
+      "departure_direction": "up",
+      "owner_movement_id": "movement-family-16e1b193f41ce4",
+      "formation_modes": [
+        "entry_then_earliest_three_unit_core"
+      ],
+      "recursive_eligible": true,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "entry_is_center_free": true,
+        "strict_core": true,
+        "z_endpoints": [
+          {
+            "id": "p1",
+            "start_date": "2026-01-02",
+            "end_date": "2026-01-03",
+            "start_price": 10.0,
+            "end_price": 6.0,
+            "confirmed_at": "2026-01-03"
+          },
+          {
+            "id": "p3",
+            "start_date": "2026-01-04",
+            "end_date": "2026-01-05",
+            "start_price": 15.0,
+            "end_price": 8.0,
+            "confirmed_at": "2026-01-05"
+          }
+        ]
+      },
+      "revision_at": "2026-01-09",
+      "departure_component_id": "component-b2ce1c27c547e4",
+      "retest_component_id": "component-7cf4b82bd42674",
+      "ordinal": 0
+    },
+    {
+      "id": "center-family-797dc28c05ba43:r6",
+      "kind": "center",
+      "family_id": "center-family-797dc28c05ba43",
+      "revision_no": 6,
+      "previous_revision_id": "center-family-797dc28c05ba43:r5",
+      "active": false,
+      "level": 1,
+      "status": "closed",
+      "start_date": "2026-01-02",
+      "end_date": "2026-01-05",
+      "core_start_date": "2026-01-02",
+      "core_end_date": "2026-01-05",
+      "entry_component_id": "component-752b9c9f13e5af",
+      "entry_unit_ids": [
+        "p0"
+      ],
+      "core_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "unit_kind": "pen",
+      "z_unit_ids": [
+        "p1",
+        "p3"
+      ],
+      "z_direction": "down",
+      "formed_at": "2026-01-05",
+      "promotion_confirmed_at": null,
+      "connection_component_ids": [],
+      "overlap_witness_unit_ids": [],
+      "missing_evidence": [],
+      "extension_unit_ids": [],
+      "peripheral_unit_ids": [],
+      "departure_unit_ids": [
+        "p4",
+        "p5"
+      ],
+      "retest_unit_ids": [
+        "p5"
+      ],
+      "owned_unit_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "context_unit_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5"
+      ],
+      "source_pen_ids": [
+        "p1",
+        "p2",
+        "p3"
+      ],
+      "child_center_ids": [],
+      "child_movement_ids": [],
+      "zd": 8.0,
+      "zg": 10.0,
+      "fixed_zd": 8.0,
+      "fixed_zg": 10.0,
+      "dd": 6.0,
+      "gg": 15.0,
+      "fluctuation_dd": 6.0,
+      "fluctuation_gg": 15.0,
+      "context_low": 1.0,
+      "context_high": 20.0,
+      "entry_direction": "up",
+      "core_formation_pattern": "down-up-down",
+      "departure_direction": "up",
+      "owner_movement_id": "movement-family-16e1b193f41ce4",
+      "formation_modes": [
+        "entry_then_earliest_three_unit_core"
+      ],
+      "recursive_eligible": true,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "entry_is_center_free": true,
+        "strict_core": true,
+        "z_endpoints": [
+          {
+            "id": "p1",
+            "start_date": "2026-01-02",
+            "end_date": "2026-01-03",
+            "start_price": 10.0,
+            "end_price": 6.0,
+            "confirmed_at": "2026-01-03"
+          },
+          {
+            "id": "p3",
+            "start_date": "2026-01-04",
+            "end_date": "2026-01-05",
+            "start_price": 15.0,
+            "end_price": 8.0,
+            "confirmed_at": "2026-01-05"
+          }
+        ]
+      },
+      "revision_at": "2026-01-10",
+      "departure_component_id": "component-db90a2d3c82ff8",
+      "retest_component_id": "component-7cf4b82bd42674",
+      "ordinal": 0
+    },
+    {
+      "id": "center-family-797dc28c05ba43:r7",
+      "kind": "center",
+      "family_id": "center-family-797dc28c05ba43",
+      "revision_no": 7,
+      "previous_revision_id": "center-family-797dc28c05ba43:r6",
+      "active": true,
+      "level": 2,
+      "status": "formed",
+      "start_date": "2026-01-02",
+      "end_date": "2026-01-10",
+      "core_start_date": "2026-01-02",
+      "core_end_date": "2026-01-10",
+      "entry_component_id": "component-752b9c9f13e5af",
+      "entry_unit_ids": [],
+      "core_unit_ids": [],
+      "unit_kind": "center_revision",
+      "z_unit_ids": [],
+      "z_direction": null,
+      "formed_at": "2026-01-10",
+      "promotion_confirmed_at": "2026-01-10",
+      "connection_component_ids": [
+        "component-76c5dee8b09acc"
+      ],
+      "overlap_witness_unit_ids": [
+        "p3",
+        "p6"
+      ],
+      "missing_evidence": [],
+      "extension_unit_ids": [],
+      "peripheral_unit_ids": [],
+      "departure_unit_ids": [],
+      "retest_unit_ids": [],
+      "owned_unit_ids": [
+        "center-family-797dc28c05ba43:r6",
+        "center-family-a64b1c40749712:r1"
+      ],
+      "context_unit_ids": [
+        "center-family-797dc28c05ba43:r6",
+        "center-family-a64b1c40749712:r1"
+      ],
+      "source_pen_ids": [
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "child_center_ids": [
+        "center-family-797dc28c05ba43:r6",
+        "center-family-a64b1c40749712:r1"
+      ],
+      "child_movement_ids": [],
+      "zd": 12.0,
+      "zg": 15.0,
+      "fixed_zd": 12.0,
+      "fixed_zg": 15.0,
+      "dd": 6.0,
+      "gg": 30.0,
+      "fluctuation_dd": 6.0,
+      "fluctuation_gg": 30.0,
+      "context_low": 1.0,
+      "context_high": 30.0,
+      "entry_direction": "up",
+      "core_formation_pattern": "down-up-down",
+      "departure_direction": "up",
+      "owner_movement_id": null,
+      "formation_modes": [
+        "expansion_envelope_overlap"
+      ],
+      "recursive_eligible": true,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "relation_id": "relation-5dced89ec67e55",
+        "non_transitive_pair": true,
+        "previous_core": [
+          8.0,
+          10.0
+        ],
+        "current_core": [
+          21.0,
+          25.0
+        ],
+        "previous_envelope": [
+          6.0,
+          15.0
+        ],
+        "current_envelope": [
+          12.0,
+          30.0
+        ],
+        "child_revision_ids": [
+          "center-family-797dc28c05ba43:r6",
+          "center-family-a64b1c40749712:r1"
+        ],
+        "missing_evidence": [],
+        "connection_component_ids": [
+          "component-76c5dee8b09acc"
+        ],
+        "overlap_witness_unit_ids": [
+          "p3",
+          "p6"
+        ],
+        "source_unit_ids": [
+          "p1",
+          "p2",
+          "p3",
+          "p4",
+          "p5",
+          "p6",
+          "p7",
+          "p8"
+        ],
+        "source_pen_ids": [
+          "p1",
+          "p2",
+          "p3",
+          "p4",
+          "p5",
+          "p6",
+          "p7",
+          "p8"
+        ],
+        "evidence_available_at": "2026-01-10"
+      },
+      "revision_at": "2026-01-10",
+      "departure_component_id": "component-db90a2d3c82ff8",
+      "retest_component_id": "component-7cf4b82bd42674",
+      "ordinal": 0
+    },
+    {
+      "id": "center-family-a64b1c40749712:r1",
+      "kind": "center",
+      "family_id": "center-family-a64b1c40749712",
+      "revision_no": 1,
+      "previous_revision_id": null,
+      "active": false,
+      "level": 1,
+      "status": "formed",
+      "start_date": "2026-01-07",
+      "end_date": "2026-01-10",
+      "core_start_date": "2026-01-07",
+      "core_end_date": "2026-01-10",
+      "entry_component_id": "component-76c5dee8b09acc",
+      "entry_unit_ids": [
+        "p4",
+        "p5"
+      ],
+      "core_unit_ids": [
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "unit_kind": "pen",
+      "z_unit_ids": [
+        "p6",
+        "p8"
+      ],
+      "z_direction": "up",
+      "formed_at": "2026-01-10",
+      "promotion_confirmed_at": null,
+      "connection_component_ids": [],
+      "overlap_witness_unit_ids": [],
+      "missing_evidence": [],
+      "extension_unit_ids": [],
+      "peripheral_unit_ids": [],
+      "departure_unit_ids": [],
+      "retest_unit_ids": [],
+      "owned_unit_ids": [
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "context_unit_ids": [
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "source_pen_ids": [
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "child_center_ids": [],
+      "child_movement_ids": [],
+      "zd": 21.0,
+      "zg": 25.0,
+      "fixed_zd": 21.0,
+      "fixed_zg": 25.0,
+      "dd": 12.0,
+      "gg": 30.0,
+      "fluctuation_dd": 12.0,
+      "fluctuation_gg": 30.0,
+      "context_low": 8.0,
+      "context_high": 30.0,
+      "entry_direction": "up",
+      "core_formation_pattern": "up-down-up",
+      "departure_direction": null,
+      "owner_movement_id": "movement-family-16e1b193f41ce4",
+      "formation_modes": [
+        "entry_then_earliest_three_unit_core"
+      ],
+      "recursive_eligible": true,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "entry_is_center_free": true,
+        "strict_core": true,
+        "z_endpoints": [
+          {
+            "id": "p6",
+            "start_date": "2026-01-07",
+            "end_date": "2026-01-08",
+            "start_price": 12.0,
+            "end_price": 25.0,
+            "confirmed_at": "2026-01-08"
+          },
+          {
+            "id": "p8",
+            "start_date": "2026-01-09",
+            "end_date": "2026-01-10",
+            "start_price": 21.0,
+            "end_price": 30.0,
+            "confirmed_at": "2026-01-10"
+          }
+        ]
+      },
+      "revision_at": "2026-01-10",
+      "absorbed_into_family_id": "center-family-797dc28c05ba43",
+      "ordinal": 1
+    },
+    {
+      "id": "center-family-a64b1c40749712:r2",
+      "kind": "center",
+      "family_id": "center-family-a64b1c40749712",
+      "revision_no": 2,
+      "previous_revision_id": "center-family-a64b1c40749712:r1",
+      "active": false,
+      "level": 1,
+      "status": "formed",
+      "start_date": "2026-01-07",
+      "end_date": "2026-01-10",
+      "core_start_date": "2026-01-07",
+      "core_end_date": "2026-01-10",
+      "entry_component_id": "component-76c5dee8b09acc",
+      "entry_unit_ids": [
+        "p4",
+        "p5"
+      ],
+      "core_unit_ids": [
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "unit_kind": "pen",
+      "z_unit_ids": [
+        "p6",
+        "p8"
+      ],
+      "z_direction": "up",
+      "formed_at": "2026-01-10",
+      "promotion_confirmed_at": null,
+      "connection_component_ids": [],
+      "overlap_witness_unit_ids": [],
+      "missing_evidence": [],
+      "extension_unit_ids": [],
+      "peripheral_unit_ids": [],
+      "departure_unit_ids": [
+        "p9"
+      ],
+      "retest_unit_ids": [],
+      "owned_unit_ids": [
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "context_unit_ids": [
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8",
+        "p9"
+      ],
+      "source_pen_ids": [
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "child_center_ids": [],
+      "child_movement_ids": [],
+      "zd": 21.0,
+      "zg": 25.0,
+      "fixed_zd": 21.0,
+      "fixed_zg": 25.0,
+      "dd": 12.0,
+      "gg": 30.0,
+      "fluctuation_dd": 12.0,
+      "fluctuation_gg": 30.0,
+      "context_low": 8.0,
+      "context_high": 30.0,
+      "entry_direction": "up",
+      "core_formation_pattern": "up-down-up",
+      "departure_direction": "down",
+      "owner_movement_id": "movement-family-16e1b193f41ce4",
+      "formation_modes": [
+        "entry_then_earliest_three_unit_core"
+      ],
+      "recursive_eligible": true,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "entry_is_center_free": true,
+        "strict_core": true,
+        "z_endpoints": [
+          {
+            "id": "p6",
+            "start_date": "2026-01-07",
+            "end_date": "2026-01-08",
+            "start_price": 12.0,
+            "end_price": 25.0,
+            "confirmed_at": "2026-01-08"
+          },
+          {
+            "id": "p8",
+            "start_date": "2026-01-09",
+            "end_date": "2026-01-10",
+            "start_price": 21.0,
+            "end_price": 30.0,
+            "confirmed_at": "2026-01-10"
+          }
+        ]
+      },
+      "revision_at": "2026-01-11",
+      "departure_component_id": "component-c10488ca70b62c",
+      "absorbed_into_family_id": "center-family-797dc28c05ba43",
+      "ordinal": 1
+    },
+    {
+      "id": "center-family-a64b1c40749712:r3",
+      "kind": "center",
+      "family_id": "center-family-a64b1c40749712",
+      "revision_no": 3,
+      "previous_revision_id": "center-family-a64b1c40749712:r2",
+      "active": false,
+      "level": 1,
+      "status": "formed",
+      "start_date": "2026-01-07",
+      "end_date": "2026-01-10",
+      "core_start_date": "2026-01-07",
+      "core_end_date": "2026-01-10",
+      "entry_component_id": "component-76c5dee8b09acc",
+      "entry_unit_ids": [
+        "p4",
+        "p5"
+      ],
+      "core_unit_ids": [
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "unit_kind": "pen",
+      "z_unit_ids": [
+        "p6",
+        "p8"
+      ],
+      "z_direction": "up",
+      "formed_at": "2026-01-10",
+      "promotion_confirmed_at": null,
+      "connection_component_ids": [],
+      "overlap_witness_unit_ids": [],
+      "missing_evidence": [],
+      "extension_unit_ids": [],
+      "peripheral_unit_ids": [],
+      "departure_unit_ids": [
+        "p9",
+        "p10"
+      ],
+      "retest_unit_ids": [],
+      "owned_unit_ids": [
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "context_unit_ids": [
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8",
+        "p9",
+        "p10"
+      ],
+      "source_pen_ids": [
+        "p6",
+        "p7",
+        "p8"
+      ],
+      "child_center_ids": [],
+      "child_movement_ids": [],
+      "zd": 21.0,
+      "zg": 25.0,
+      "fixed_zd": 21.0,
+      "fixed_zg": 25.0,
+      "dd": 12.0,
+      "gg": 30.0,
+      "fluctuation_dd": 12.0,
+      "fluctuation_gg": 30.0,
+      "context_low": 8.0,
+      "context_high": 35.0,
+      "entry_direction": "up",
+      "core_formation_pattern": "up-down-up",
+      "departure_direction": "up",
+      "owner_movement_id": "movement-family-16e1b193f41ce4",
+      "formation_modes": [
+        "entry_then_earliest_three_unit_core"
+      ],
+      "recursive_eligible": true,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "entry_is_center_free": true,
+        "strict_core": true,
+        "z_endpoints": [
+          {
+            "id": "p6",
+            "start_date": "2026-01-07",
+            "end_date": "2026-01-08",
+            "start_price": 12.0,
+            "end_price": 25.0,
+            "confirmed_at": "2026-01-08"
+          },
+          {
+            "id": "p8",
+            "start_date": "2026-01-09",
+            "end_date": "2026-01-10",
+            "start_price": 21.0,
+            "end_price": 30.0,
+            "confirmed_at": "2026-01-10"
+          }
+        ]
+      },
+      "revision_at": "2026-01-12",
+      "departure_component_id": "component-801034e7b0f444",
+      "absorbed_into_family_id": "center-family-797dc28c05ba43",
+      "ordinal": 1
+    }
+  ],
+  "movements": [
+    {
+      "id": "movement-family-16e1b193f41ce4:r2",
+      "kind": "movement",
+      "family_id": "movement-family-16e1b193f41ce4",
+      "revision_no": 2,
+      "active": true,
+      "level": 2,
+      "status": "provisional",
+      "classification": "consolidation",
+      "direction": "up",
+      "start_date": "2026-01-01",
+      "start_price": 1.0,
+      "end_date": "2026-01-12",
+      "end_price": 35.0,
+      "point_date": null,
+      "confirmed_at": null,
+      "start_point_id": null,
+      "end_point_id": null,
+      "source_unit_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8",
+        "p9",
+        "p10"
+      ],
+      "source_pen_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8",
+        "p9",
+        "p10"
+      ],
+      "center_family_ids": [
+        "center-family-797dc28c05ba43"
+      ],
+      "center_revision_ids": [
+        "center-family-797dc28c05ba43:r7"
+      ],
+      "center_levels": [
+        2
+      ],
+      "child_movement_ids": [],
+      "price_envelope_low": 1.0,
+      "price_envelope_high": 35.0,
+      "candidate_extreme_date": "2026-01-12",
+      "candidate_extreme_price": 35.0,
+      "recursive_eligible": false,
+      "termination_reason": "provisional_tail",
+      "undetermined_reason": null,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "boundary_point_revision_id": null,
+        "promoted_with_center_revision_ids": [
+          "center-family-797dc28c05ba43:r7"
+        ]
+      },
+      "ordinal": 0,
+      "previous_revision_id": "movement-family-16e1b193f41ce4:r1"
+    }
+  ],
+  "movement_revisions": [
+    {
+      "id": "movement-family-16e1b193f41ce4:r1",
+      "kind": "movement",
+      "family_id": "movement-family-16e1b193f41ce4",
+      "revision_no": 1,
+      "active": false,
+      "level": 1,
+      "status": "undetermined",
+      "classification": null,
+      "direction": "up",
+      "start_date": "2026-01-01",
+      "start_price": 1.0,
+      "end_date": "2026-01-12",
+      "end_price": 35.0,
+      "point_date": null,
+      "confirmed_at": null,
+      "start_point_id": null,
+      "end_point_id": null,
+      "source_unit_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8",
+        "p9",
+        "p10"
+      ],
+      "source_pen_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8",
+        "p9",
+        "p10"
+      ],
+      "center_family_ids": [
+        "center-family-797dc28c05ba43",
+        "center-family-a64b1c40749712"
+      ],
+      "center_revision_ids": [
+        "center-family-797dc28c05ba43:r6",
+        "center-family-a64b1c40749712:r3"
+      ],
+      "center_levels": [
+        1
+      ],
+      "child_movement_ids": [],
+      "price_envelope_low": 1.0,
+      "price_envelope_high": 35.0,
+      "candidate_extreme_date": "2026-01-12",
+      "candidate_extreme_price": 35.0,
+      "recursive_eligible": false,
+      "termination_reason": "provisional_tail",
+      "undetermined_reason": "mixed_or_incomplete_center_relation",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "boundary_point_revision_id": null
+      },
+      "ordinal": 0
+    },
+    {
+      "id": "movement-family-16e1b193f41ce4:r2",
+      "kind": "movement",
+      "family_id": "movement-family-16e1b193f41ce4",
+      "revision_no": 2,
+      "active": true,
+      "level": 2,
+      "status": "provisional",
+      "classification": "consolidation",
+      "direction": "up",
+      "start_date": "2026-01-01",
+      "start_price": 1.0,
+      "end_date": "2026-01-12",
+      "end_price": 35.0,
+      "point_date": null,
+      "confirmed_at": null,
+      "start_point_id": null,
+      "end_point_id": null,
+      "source_unit_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8",
+        "p9",
+        "p10"
+      ],
+      "source_pen_ids": [
+        "p0",
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "p5",
+        "p6",
+        "p7",
+        "p8",
+        "p9",
+        "p10"
+      ],
+      "center_family_ids": [
+        "center-family-797dc28c05ba43"
+      ],
+      "center_revision_ids": [
+        "center-family-797dc28c05ba43:r7"
+      ],
+      "center_levels": [
+        2
+      ],
+      "child_movement_ids": [],
+      "price_envelope_low": 1.0,
+      "price_envelope_high": 35.0,
+      "candidate_extreme_date": "2026-01-12",
+      "candidate_extreme_price": 35.0,
+      "recursive_eligible": false,
+      "termination_reason": "provisional_tail",
+      "undetermined_reason": null,
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "boundary_point_revision_id": null,
+        "promoted_with_center_revision_ids": [
+          "center-family-797dc28c05ba43:r7"
+        ]
+      },
+      "ordinal": 0,
+      "previous_revision_id": "movement-family-16e1b193f41ce4:r1"
+    }
+  ],
+  "points": [
+    {
+      "id": "point-family-e6a1d840262f29:r1",
+      "kind": "structural_point",
+      "family_id": "point-family-e6a1d840262f29",
+      "revision_no": 1,
+      "active": true,
+      "level": 1,
+      "point_type": "consolidation_divergence_sell",
+      "status": "candidate",
+      "point_date": "2026-01-06",
+      "point_price": 20.0,
+      "confirmed_at": null,
+      "source_unit_id": "p4",
+      "source_component_ids": [
+        "component-bb4d4a550ab28b",
+        "component-3de8beed6422a7"
+      ],
+      "center_family_id": "center-family-797dc28c05ba43",
+      "center_revision_id": "center-family-797dc28c05ba43:r6",
+      "movement_family_id": null,
+      "parent_point_id": null,
+      "evidence": {
+        "before_strength": {
+          "max_internal_center_level": 0,
+          "confirmed_child_movement_count": 0,
+          "amplitude": 9.0,
+          "bar_span": 1,
+          "average_slope": 9.0
+        },
+        "after_strength": {
+          "max_internal_center_level": 0,
+          "confirmed_child_movement_count": 0,
+          "amplitude": 12.0,
+          "bar_span": 1,
+          "average_slope": 12.0
+        },
+        "structural_conclusion": false,
+        "structural_reason": "amplitude_and_slope_stronger",
+        "new_extreme": true,
+        "before_macd": {
+          "area": null,
+          "peak": null
+        },
+        "after_macd": {
+          "area": null,
+          "peak": null
+        },
+        "auxiliary_indicator_conclusion": "unavailable"
+      },
+      "invalidated_reason": null,
+      "start_date": "2026-01-06",
+      "end_date": "2026-01-06",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "ordinal": 0
+    },
+    {
+      "id": "point-family-7c01c399218675:r1",
+      "kind": "structural_point",
+      "family_id": "point-family-7c01c399218675",
+      "revision_no": 1,
+      "active": true,
+      "level": 1,
+      "point_type": "third_buy",
+      "status": "confirmed",
+      "point_date": "2026-01-07",
+      "point_price": 12.0,
+      "confirmed_at": "2026-01-07",
+      "source_unit_id": "p5",
+      "source_component_ids": [
+        "component-7663e05c571326",
+        "component-7cf4b82bd42674"
+      ],
+      "center_family_id": "center-family-797dc28c05ba43",
+      "center_revision_id": "center-family-797dc28c05ba43:r3",
+      "movement_family_id": null,
+      "parent_point_id": null,
+      "evidence": {
+        "departure_component_id": "component-7663e05c571326",
+        "retest_component_id": "component-7cf4b82bd42674",
+        "strictly_outside_core": true
+      },
+      "invalidated_reason": null,
+      "start_date": "2026-01-07",
+      "end_date": "2026-01-07",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "ordinal": 1
+    }
+  ],
+  "point_revisions": [
+    {
+      "id": "point-family-e6a1d840262f29:r1",
+      "kind": "structural_point",
+      "family_id": "point-family-e6a1d840262f29",
+      "revision_no": 1,
+      "active": true,
+      "level": 1,
+      "point_type": "consolidation_divergence_sell",
+      "status": "candidate",
+      "point_date": "2026-01-06",
+      "point_price": 20.0,
+      "confirmed_at": null,
+      "source_unit_id": "p4",
+      "source_component_ids": [
+        "component-bb4d4a550ab28b",
+        "component-3de8beed6422a7"
+      ],
+      "center_family_id": "center-family-797dc28c05ba43",
+      "center_revision_id": "center-family-797dc28c05ba43:r6",
+      "movement_family_id": null,
+      "parent_point_id": null,
+      "evidence": {
+        "before_strength": {
+          "max_internal_center_level": 0,
+          "confirmed_child_movement_count": 0,
+          "amplitude": 9.0,
+          "bar_span": 1,
+          "average_slope": 9.0
+        },
+        "after_strength": {
+          "max_internal_center_level": 0,
+          "confirmed_child_movement_count": 0,
+          "amplitude": 12.0,
+          "bar_span": 1,
+          "average_slope": 12.0
+        },
+        "structural_conclusion": false,
+        "structural_reason": "amplitude_and_slope_stronger",
+        "new_extreme": true,
+        "before_macd": {
+          "area": null,
+          "peak": null
+        },
+        "after_macd": {
+          "area": null,
+          "peak": null
+        },
+        "auxiliary_indicator_conclusion": "unavailable"
+      },
+      "invalidated_reason": null,
+      "start_date": "2026-01-06",
+      "end_date": "2026-01-06",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "ordinal": 0
+    },
+    {
+      "id": "point-family-7c01c399218675:r1",
+      "kind": "structural_point",
+      "family_id": "point-family-7c01c399218675",
+      "revision_no": 1,
+      "active": true,
+      "level": 1,
+      "point_type": "third_buy",
+      "status": "confirmed",
+      "point_date": "2026-01-07",
+      "point_price": 12.0,
+      "confirmed_at": "2026-01-07",
+      "source_unit_id": "p5",
+      "source_component_ids": [
+        "component-7663e05c571326",
+        "component-7cf4b82bd42674"
+      ],
+      "center_family_id": "center-family-797dc28c05ba43",
+      "center_revision_id": "center-family-797dc28c05ba43:r3",
+      "movement_family_id": null,
+      "parent_point_id": null,
+      "evidence": {
+        "departure_component_id": "component-7663e05c571326",
+        "retest_component_id": "component-7cf4b82bd42674",
+        "strictly_outside_core": true
+      },
+      "invalidated_reason": null,
+      "start_date": "2026-01-07",
+      "end_date": "2026-01-07",
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "ordinal": 1
+    }
+  ],
+  "components": [
+    {
+      "id": "component-752b9c9f13e5af",
+      "kind": "component",
+      "level": 1,
+      "role": "entry",
+      "owner_id": "center-family-797dc28c05ba43",
+      "direction": "up",
+      "status": "confirmed",
+      "start_date": "2026-01-01",
+      "end_date": "2026-01-02",
+      "start_price": 1.0,
+      "end_price": 10.0,
+      "low": 1.0,
+      "high": 10.0,
+      "source_unit_ids": [
+        "p0"
+      ],
+      "unit_kind": "pen",
+      "confirmed_at": "2026-01-02",
+      "source_pen_ids": [
+        "p0"
+      ],
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "center_free": true,
+        "unit_count": 1
+      }
+    },
+    {
+      "id": "component-bb4d4a550ab28b",
+      "kind": "component",
+      "level": 1,
+      "role": "consolidation_before",
+      "owner_id": "center-family-797dc28c05ba43",
+      "direction": "up",
+      "status": "confirmed",
+      "start_date": "2026-01-01",
+      "end_date": "2026-01-02",
+      "start_price": 1.0,
+      "end_price": 10.0,
+      "low": 1.0,
+      "high": 10.0,
+      "source_unit_ids": [
+        "p0"
+      ],
+      "unit_kind": "pen",
+      "confirmed_at": "2026-01-02",
+      "source_pen_ids": [
+        "p0"
+      ],
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "center_free": true,
+        "unit_count": 1
+      }
+    },
+    {
+      "id": "component-3de8beed6422a7",
+      "kind": "component",
+      "level": 1,
+      "role": "consolidation_after",
+      "owner_id": "center-family-797dc28c05ba43",
+      "direction": "up",
+      "status": "confirmed",
+      "start_date": "2026-01-05",
+      "end_date": "2026-01-06",
+      "start_price": 8.0,
+      "end_price": 20.0,
+      "low": 8.0,
+      "high": 20.0,
+      "source_unit_ids": [
+        "p4"
+      ],
+      "unit_kind": "pen",
+      "confirmed_at": "2026-01-06",
+      "source_pen_ids": [
+        "p4"
+      ],
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "center_free": true,
+        "unit_count": 1
+      }
+    },
+    {
+      "id": "component-7663e05c571326",
+      "kind": "component",
+      "level": 1,
+      "role": "departure",
+      "owner_id": "center-family-797dc28c05ba43",
+      "direction": "up",
+      "status": "confirmed",
+      "start_date": "2026-01-05",
+      "end_date": "2026-01-06",
+      "start_price": 8.0,
+      "end_price": 20.0,
+      "low": 8.0,
+      "high": 20.0,
+      "source_unit_ids": [
+        "p4"
+      ],
+      "unit_kind": "pen",
+      "confirmed_at": "2026-01-06",
+      "source_pen_ids": [
+        "p4"
+      ],
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "center_free": true,
+        "unit_count": 1
+      }
+    },
+    {
+      "id": "component-76c5dee8b09acc",
+      "kind": "component",
+      "level": 1,
+      "role": "entry",
+      "owner_id": "center-family-a64b1c40749712",
+      "direction": "up",
+      "status": "confirmed",
+      "start_date": "2026-01-05",
+      "end_date": "2026-01-07",
+      "start_price": 8.0,
+      "end_price": 12.0,
+      "low": 8.0,
+      "high": 20.0,
+      "source_unit_ids": [
+        "p4",
+        "p5"
+      ],
+      "unit_kind": "pen",
+      "confirmed_at": "2026-01-07",
+      "source_pen_ids": [
+        "p4",
+        "p5"
+      ],
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "center_free": true,
+        "unit_count": 2
+      }
+    },
+    {
+      "id": "component-b2ce1c27c547e4",
+      "kind": "component",
+      "level": 1,
+      "role": "departure",
+      "owner_id": "center-family-797dc28c05ba43",
+      "direction": "up",
+      "status": "confirmed",
+      "start_date": "2026-01-05",
+      "end_date": "2026-01-09",
+      "start_price": 8.0,
+      "end_price": 21.0,
+      "low": 8.0,
+      "high": 25.0,
+      "source_unit_ids": [
+        "p4",
+        "p5",
+        "p6",
+        "p7"
+      ],
+      "unit_kind": "pen",
+      "confirmed_at": "2026-01-09",
+      "source_pen_ids": [
+        "p4",
+        "p5",
+        "p6",
+        "p7"
+      ],
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "center_free": false,
+        "unit_count": 4
+      }
+    },
+    {
+      "id": "component-db90a2d3c82ff8",
+      "kind": "component",
+      "level": 1,
+      "role": "departure",
+      "owner_id": "center-family-797dc28c05ba43",
+      "direction": "up",
+      "status": "confirmed",
+      "start_date": "2026-01-05",
+      "end_date": "2026-01-07",
+      "start_price": 8.0,
+      "end_price": 12.0,
+      "low": 8.0,
+      "high": 20.0,
+      "source_unit_ids": [
+        "p4",
+        "p5"
+      ],
+      "unit_kind": "pen",
+      "confirmed_at": "2026-01-07",
+      "source_pen_ids": [
+        "p4",
+        "p5"
+      ],
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "center_free": true,
+        "unit_count": 2
+      }
+    },
+    {
+      "id": "component-fdeb7e0a653bb0",
+      "kind": "component",
+      "level": 1,
+      "role": "departure",
+      "owner_id": "center-family-797dc28c05ba43",
+      "direction": "up",
+      "status": "confirmed",
+      "start_date": "2026-01-05",
+      "end_date": "2026-01-08",
+      "start_price": 8.0,
+      "end_price": 25.0,
+      "low": 8.0,
+      "high": 25.0,
+      "source_unit_ids": [
+        "p4",
+        "p5",
+        "p6"
+      ],
+      "unit_kind": "pen",
+      "confirmed_at": "2026-01-08",
+      "source_pen_ids": [
+        "p4",
+        "p5",
+        "p6"
+      ],
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "center_free": false,
+        "unit_count": 3
+      }
+    },
+    {
+      "id": "component-7cf4b82bd42674",
+      "kind": "component",
+      "level": 1,
+      "role": "retest",
+      "owner_id": "center-family-797dc28c05ba43",
+      "direction": "down",
+      "status": "confirmed",
+      "start_date": "2026-01-06",
+      "end_date": "2026-01-07",
+      "start_price": 20.0,
+      "end_price": 12.0,
+      "low": 12.0,
+      "high": 20.0,
+      "source_unit_ids": [
+        "p5"
+      ],
+      "unit_kind": "pen",
+      "confirmed_at": "2026-01-07",
+      "source_pen_ids": [
+        "p5"
+      ],
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "center_free": true,
+        "unit_count": 1
+      }
+    },
+    {
+      "id": "component-801034e7b0f444",
+      "kind": "component",
+      "level": 1,
+      "role": "departure",
+      "owner_id": "center-family-a64b1c40749712",
+      "direction": "up",
+      "status": "confirmed",
+      "start_date": "2026-01-10",
+      "end_date": "2026-01-12",
+      "start_price": 30.0,
+      "end_price": 35.0,
+      "low": 26.0,
+      "high": 35.0,
+      "source_unit_ids": [
+        "p9",
+        "p10"
+      ],
+      "unit_kind": "pen",
+      "confirmed_at": "2026-01-12",
+      "source_pen_ids": [
+        "p9",
+        "p10"
+      ],
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "center_free": true,
+        "unit_count": 2
+      }
+    },
+    {
+      "id": "component-c10488ca70b62c",
+      "kind": "component",
+      "level": 1,
+      "role": "departure",
+      "owner_id": "center-family-a64b1c40749712",
+      "direction": "down",
+      "status": "confirmed",
+      "start_date": "2026-01-10",
+      "end_date": "2026-01-11",
+      "start_price": 30.0,
+      "end_price": 26.0,
+      "low": 26.0,
+      "high": 30.0,
+      "source_unit_ids": [
+        "p9"
+      ],
+      "unit_kind": "pen",
+      "confirmed_at": "2026-01-11",
+      "source_pen_ids": [
+        "p9"
+      ],
+      "continuous_range_id": 0,
+      "sequence_id": 0,
+      "structure_sequence_id": "range-0-sequence-0",
+      "evidence": {
+        "center_free": true,
+        "unit_count": 1
+      }
+    }
+  ],
+  "relations": [
+    {
+      "id": "relation-5dced89ec67e55",
+      "kind": "center_relation",
+      "level": 1,
+      "relation_type": "expansion_up",
+      "status": "confirmed",
+      "missing_evidence": [],
+      "from_id": "center-family-797dc28c05ba43:r6",
+      "to_id": "center-family-a64b1c40749712:r1",
+      "start_date": "2026-01-02",
+      "end_date": "2026-01-10",
+      "evidence": {
+        "previous_core": [
+          8.0,
+          10.0
+        ],
+        "current_core": [
+          21.0,
+          25.0
+        ],
+        "previous_envelope": [
+          6.0,
+          15.0
+        ],
+        "current_envelope": [
+          12.0,
+          30.0
+        ],
+        "child_revision_ids": [
+          "center-family-797dc28c05ba43:r6",
+          "center-family-a64b1c40749712:r1"
+        ],
+        "missing_evidence": [],
+        "connection_component_ids": [
+          "component-76c5dee8b09acc"
+        ],
+        "overlap_witness_unit_ids": [
+          "p3",
+          "p6"
+        ],
+        "source_unit_ids": [
+          "p1",
+          "p2",
+          "p3",
+          "p4",
+          "p5",
+          "p6",
+          "p7",
+          "p8"
+        ],
+        "source_pen_ids": [
+          "p1",
+          "p2",
+          "p3",
+          "p4",
+          "p5",
+          "p6",
+          "p7",
+          "p8"
+        ],
+        "evidence_available_at": "2026-01-10"
+      },
+      "confirmed_at": "2026-01-10"
+    },
+    {
+      "id": "relation-edff5f87476278",
+      "kind": "center_relation",
+      "level": 2,
+      "relation_type": "promoted_into",
+      "from_id": "center-family-797dc28c05ba43:r6",
+      "to_id": "center-family-797dc28c05ba43:r7",
+      "start_date": "2026-01-02",
+      "end_date": "2026-01-10",
+      "evidence": {
+        "formation_mode": "expansion_envelope_overlap"
+      }
+    },
+    {
+      "id": "relation-25a646af1e710d",
+      "kind": "center_relation",
+      "level": 2,
+      "relation_type": "promoted_into",
+      "from_id": "center-family-a64b1c40749712:r1",
+      "to_id": "center-family-797dc28c05ba43:r7",
+      "start_date": "2026-01-07",
+      "end_date": "2026-01-10",
+      "evidence": {
+        "formation_mode": "expansion_envelope_overlap"
+      }
+    }
+  ],
+  "issues": [],
+  "unassigned_by_level": {
+    "1": []
+  },
+  "levels": [
+    2
+  ],
+  "max_level": 2,
+  "hierarchy_version": "center-hierarchy-v27-daily-led-reference"
+}

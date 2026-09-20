@@ -50,6 +50,8 @@ def test_prefix_stability_keeps_fixed_core_when_tail_is_appended():
 
 def test_no_valid_entry_keeps_units_unassigned_instead_of_forcing_center():
     centers, components, issues = build_level_centers(pens_from_prices([1, 5, 3, 7]), 1)
-    assert centers == []
+    assert len(centers) == 1
+    assert centers[0]["formation_stage"] == "origin_overlap"
+    assert not centers[0]["recursive_eligible"]
     assert components == []
     assert issues == []

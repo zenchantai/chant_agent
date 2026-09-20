@@ -7,10 +7,13 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from .chan_direction import breakout_context, select_context
+from .chan_expansion import decomposition_proofs, internal_decomposition_proofs
+
 
 EPSILON = 1e-9
 MAX_LEVEL = 8
-HIERARCHY_VERSION = "center-hierarchy-v27-daily-led-reference"
+HIERARCHY_VERSION = "center-hierarchy-v28-directional-z"
 
 
 def _stable_id(prefix: str, *values: Any) -> str:
@@ -47,6 +50,10 @@ def _stream_key(unit: dict[str, Any]) -> tuple[int, int, str]:
 
 def _strict_interval_overlap(low_a: float, high_a: float, low_b: float, high_b: float) -> bool:
     return max(low_a, low_b) + EPSILON < min(high_a, high_b)
+
+
+def _closed_interval_overlap(low_a: float, high_a: float, low_b: float, high_b: float) -> bool:
+    return max(low_a, low_b) <= min(high_a, high_b) + EPSILON
 
 
 def _crosses_out_of_core(unit: dict[str, Any], zd: float, zg: float) -> bool:
@@ -202,21 +209,23 @@ class CoreSeed:
     core_end: int
     zd: float
     zg: float
+    direction_context: dict[str, Any] | None = None
 
 
-def _find_earliest_core(units: list[dict[str, Any]], workspace_start: int, core_floor: int = 0) -> CoreSeed | None:
-    for core_start in range(max(workspace_start + 1, core_floor), len(units) - 2):
-        core = units[core_start:core_start + 3]
-        if not _alternating(core):
+def _find_earliest_core(units: list[dict[str, Any]], workspace_start: int, core_floor: int = 0,
+                        direction_context: dict[str, Any] | None = None) -> CoreSeed | None:
+    context = direction_context or select_context(units, workspace_start, [u["direction_evidence"] for u in units if u.get("direction_evidence")])
+    if not context:
+        return None
+    expected = "down" if context["process_direction"] == "up" else "up"
+    floor = max(workspace_start, core_floor, int(context.get("start_index", workspace_start)) + 1)
+    for start in range(floor, len(units) - 2):
+        core = units[start:start + 3]
+        if _direction(core[0]) != expected or not _alternating(core) or not _span_contiguous(core):
             continue
         overlap = _strict_overlap(core)
-        if overlap is None:
-            continue
-        starts = range(workspace_start, core_start) if core_floor > workspace_start + 1 else [workspace_start]
-        for entry_start in starts:
-            entry = units[entry_start:core_start]
-            if _center_free(entry) and _span_contiguous([*entry, *core]):
-                return CoreSeed(entry_start, core_start, core_start + 3, overlap[0], overlap[1])
+        if overlap is not None and _strict_overlap([core[0], core[2]]) == overlap:
+            return CoreSeed(workspace_start, start, start + 3, *overlap, context)
     return None
 
 
@@ -263,7 +272,7 @@ def _make_center(
     z_units = [core[0], core[2]]
     family_id = _stable_id("center-family", level, _stream_key(core[0]), core[0]["id"])
     revision_id = f"{family_id}:r1"
-    entry_component = _component_record(entry, level, "entry", family_id)
+    entry_component = _component_record(entry, level, "entry" if _center_free(entry) else "pre_core", family_id)
     center = {
         "id": revision_id,
         "kind": "center",
@@ -279,11 +288,18 @@ def _make_center(
         "core_end_date": core[-1]["end_date"],
         "entry_component_id": entry_component["id"] if entry_component else None,
         "entry_unit_ids": [unit["id"] for unit in entry],
+        "pre_core_unit_ids": [unit["id"] for unit in entry],
+        "direction_context": deepcopy(seed.direction_context),
+        "process_direction_at_formation": (seed.direction_context or {}).get("process_direction", "unknown"),
+        "formation_type": ("pullback" if seed.direction_context["process_direction"] == "up" else "rebound") if seed.direction_context else "undetermined",
+        "formation_stage": "directional" if seed.direction_context else "origin_overlap",
+        "direction_established_at": (seed.direction_context or {}).get("available_at"),
         "core_unit_ids": [unit["id"] for unit in core],
+        "evidence_cursor_unit_id": core[-1]["id"],
         "unit_kind": "pen" if level == 1 else "movement",
         "z_unit_ids": [unit["id"] for unit in z_units],
         "z_direction": _direction(core[0]),
-        "formed_at": max(unit.get("confirmed_at") or unit["end_date"] for unit in [*entry, *core]),
+        "formed_at": max([unit.get("confirmed_at") or unit["end_date"] for unit in [*entry, *core]] + [(seed.direction_context or {}).get("available_at", "")]),
         "promotion_confirmed_at": None,
         "connection_component_ids": [],
         "overlap_witness_unit_ids": [],
@@ -303,6 +319,9 @@ def _make_center(
         "fixed_zg": seed.zg,
         "dd": min(_low(unit) for unit in z_units),
         "gg": max(_high(unit) for unit in z_units),
+        "z_high_min": min(_high(unit) for unit in z_units),
+        "z_low_max": max(_low(unit) for unit in z_units),
+        "touch_unit_ids": [],
         "fluctuation_dd": min(_low(unit) for unit in z_units),
         "fluctuation_gg": max(_high(unit) for unit in z_units),
         "context_low": min(_low(unit) for unit in [*entry, *core]),
@@ -311,13 +330,13 @@ def _make_center(
         "core_formation_pattern": "-".join(_direction(unit) for unit in core),
         "departure_direction": None,
         "owner_movement_id": None,
-        "formation_modes": ["entry_then_earliest_three_unit_core"],
-        "recursive_eligible": True,
+        "formation_modes": ["directional_core" if seed.direction_context else "origin_overlap"],
+        "recursive_eligible": bool(seed.direction_context),
         "continuous_range_id": _stream_key(core[0])[0],
         "sequence_id": _stream_key(core[0])[1],
         "structure_sequence_id": _stream_key(core[0])[2],
         "evidence": {
-            "entry_is_center_free": True,
+            "entry_is_center_free": _center_free(entry),
             "strict_core": True,
             "z_endpoints": [{key: unit[key] for key in ("id", "start_date", "end_date", "start_price", "end_price", "confirmed_at")} for unit in z_units],
         },
@@ -340,21 +359,24 @@ def _capture_center_revision(center: dict[str, Any], available_at: str) -> None:
     center["previous_revision_id"] = history[-1]["id"] if history else None
     center["revision_no"] = revision_no
     center["id"] = f"{center['family_id']}:r{revision_no}"
+    available_at = max([available_at, center["formed_at"], *[u["confirmed_at"] for u in context]])
     center["revision_at"] = available_at
+    center["available_at"] = available_at
     history.append(deepcopy({key: value for key, value in center.items() if not key.startswith("_")}))
 
 
 def _absorb_return(
     center: dict[str, Any], units: list[dict[str, Any]], start: int, end: int,
+    return_available_at: str = "",
 ) -> None:
     z_direction = center["core_formation_pattern"].split("-")[0]
     center["departure_unit_ids"] = []
     center["departure_component_id"] = None
     center["departure_direction"] = None
     center["context_unit_ids"] = _unique([*center["entry_unit_ids"], *center["owned_unit_ids"]])
-    available_at = max([center["revision_at"], *[unit.get("confirmed_at") or unit["end_date"] for unit in units[start:end]]])
+    available_at = max([center["revision_at"], return_available_at, *[unit.get("confirmed_at") or unit["end_date"] for unit in units[start:end]]])
     for unit in units[start:end]:
-        target = "extension_unit_ids" if _direction(unit) == z_direction and _strict_interval_overlap(
+        target = "extension_unit_ids" if _direction(unit) == z_direction and _closed_interval_overlap(
             _low(unit), _high(unit), float(center["fixed_zd"]), float(center["fixed_zg"])
         ) else "peripheral_unit_ids"
         center[target].append(unit["id"])
@@ -365,6 +387,10 @@ def _absorb_return(
             center["z_unit_ids"].append(unit["id"])
             center["dd"] = min(float(center["dd"]), _low(unit))
             center["gg"] = max(float(center["gg"]), _high(unit))
+            center["z_high_min"] = min(center["z_high_min"], _high(unit))
+            center["z_low_max"] = max(center["z_low_max"], _low(unit))
+            if not _strict_interval_overlap(_low(unit), _high(unit), center["zd"], center["zg"]):
+                center["touch_unit_ids"].append(unit["id"])
             center["evidence"]["z_endpoints"].append({key: unit[key] for key in ("id", "start_date", "end_date", "start_price", "end_price", "confirmed_at")})
         center["fluctuation_dd"] = center["dd"]
         center["fluctuation_gg"] = center["gg"]
@@ -394,94 +420,81 @@ def _set_departure(center: dict[str, Any], tail: list[dict[str, Any]], level: in
 
 
 def build_level_centers(
-    units: list[dict[str, Any]], level: int,
+    units: list[dict[str, Any]], level: int, *, origin_kind: str = "model_origin",
+    direction_context: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    centers: list[dict[str, Any]] = []
-    components: list[dict[str, Any]] = []
-    issues: list[dict[str, Any]] = []
-    for stream in _split_streams(units):
+    centers, components, issues = [], [], []
+    for stream_index, stream in enumerate(_split_streams(units)):
+        stream_origin = origin_kind if stream_index == 0 else "truncated_left"
         for ordinal, unit in enumerate(stream):
             unit["ordinal"] = ordinal
-        workspace_start = 0
-        core_floor = 0
-        while workspace_start < len(stream) - 3:
-            seed = _find_earliest_core(stream, workspace_start, core_floor)
+        workspace, floor, context = 0, 0, deepcopy(direction_context)
+        origin = None
+        if len(stream) >= 3 and _alternating(stream[:3]) and _strict_overlap(stream[:3]):
+            origin, _ = _make_center(stream, CoreSeed(0, 0, 3, *_strict_overlap(stream[:3])), level)
+            origin["origin_kind"] = stream_origin
+            if stream_origin == "truncated_left":
+                origin["formation_stage"] = "boundary_candidate"
+            origin["_history"] = []
+            _capture_center_revision(origin, origin["formed_at"])
+        while workspace <= len(stream) - 3:
+            seed = _find_earliest_core(stream, workspace, floor, context)
             if seed is None:
+                if origin:
+                    centers.append(origin)
                 break
-            if seed.workspace_start > workspace_start:
-                sequence = _stable_id("isolation", level, stream[seed.workspace_start]["id"])
-                isolation_start = max(seed.workspace_start, core_floor)
-                for unit in stream[isolation_start:]:
-                    unit["structure_sequence_id"] = sequence
-                issues.append({"id": sequence, "level": level, "issue_type": "entry_prefix_isolation", "status": "undetermined", "start_date": stream[isolation_start]["start_date"], "end_date": stream[seed.core_start]["start_date"], "evidence": {"reason": "confirmed_retest_boundary_excludes_earlier_core", "entry_context_unit_ids": [unit["id"] for unit in stream[seed.workspace_start:seed.core_start]]}})
-            center, entry_component = _make_center(stream, seed, level)
-            if entry_component:
-                components.append(entry_component)
-            scan = seed.core_end
-            departure_start: int | None = None
-            next_workspace: int | None = None
-            while scan < len(stream):
+            center, component = _make_center(stream, seed, level)
+            center["origin_kind"] = stream_origin if workspace == 0 else "confirmed_boundary"
+            if origin:
+                center["family_id"] = origin["family_id"]
+                center["_history"] = origin["_history"]
+                center["normalization_event"] = {"type": "origin_normalized", "previous_revision_id": origin["id"], "available_at": center["formed_at"]}
+                _capture_center_revision(center, center["formed_at"])
+                origin = None
+            if component:
+                components.append(component)
+            departure = None
+            next_workspace = None
+            for scan in range(seed.core_end, len(stream)):
                 unit = stream[scan]
-                if (
-                    _strict_interval_overlap(_low(unit), _high(unit), seed.zd, seed.zg)
-                    and not _crosses_out_of_core(unit, seed.zd, seed.zg)
-                    and not center.get("retest_unit_ids")
-                ):
-                    absorb_start = departure_start if departure_start is not None else scan
-                    _absorb_return(center, stream, absorb_start, scan + 1)
-                    departure_start = None
-                    scan += 1
+                center["evidence_cursor_unit_id"] = unit["id"]
+                reverse = breakout_context(stream[max(seed.core_start, scan - 2):scan + 1])
+                if reverse and reverse["process_direction"] != center["process_direction_at_formation"]:
+                    reverse.update(anchor_kind="successor_evidence", start_index=max(seed.core_start, scan - 2))
+                    center.setdefault("successor_direction_evidence", []).append(reverse)
+                intersects = _closed_interval_overlap(_low(unit), _high(unit), seed.zd, seed.zg)
+                leaving = ((_direction(unit) == "up" and unit["end_price"] > seed.zg + EPSILON)
+                           or (_direction(unit) == "down" and unit["end_price"] < seed.zd - EPSILON))
+                if departure is not None and intersects and _direction(unit) != _direction(stream[departure]):
+                    # Return proves the pending path's membership at this time.
+                    # A return crossing the whole core can simultaneously start a new departure.
+                    _absorb_return(center, stream, departure, scan if leaving else scan + 1,
+                                   unit.get("confirmed_at") or unit["end_date"])
+                    departure = None
+                    if not leaving:
+                        continue
+                elif intersects and not leaving:
+                    _absorb_return(center, stream, departure if departure is not None else scan, scan + 1)
+                    departure = None
                     continue
-                if departure_start is None:
-                    departure_start = scan
+                if departure is None:
+                    departure = scan
+                _set_departure(center, stream[departure:scan + 1], level, components, unit.get("confirmed_at") or unit["end_date"])
                 if center.get("retest_unit_ids"):
-                    retest_positions = [offset for offset, item in enumerate(stream) if item["id"] in center["retest_unit_ids"]]
-                    core_floor = max(core_floor, max(retest_positions, default=-1) + 1)
-                candidate = _find_earliest_core(stream[:scan + 1], departure_start, core_floor)
-                if candidate is None:
-                    _set_departure(center, stream[departure_start:scan + 1], level, components, unit.get("confirmed_at") or unit["end_date"])
-                    scan += 1
-                    continue
-                candidate_core = stream[candidate.core_start:candidate.core_end]
-                candidate_overlap = _strict_overlap(candidate_core)
-                if not center.get("retest_unit_ids") and candidate_overlap and _strict_interval_overlap(
-                    candidate_overlap[0], candidate_overlap[1], seed.zd, seed.zg,
-                ):
-                    _absorb_return(center, stream, departure_start, candidate.core_end)
-                    departure_start = None
-                    scan = candidate.core_end
-                    continue
-                entry = stream[departure_start:candidate.core_start]
-                center["departure_unit_ids"] = [unit["id"] for unit in entry]
-                center["context_unit_ids"] = _unique([*center["context_unit_ids"], *center["departure_unit_ids"]])
-                center["departure_direction"] = _component_direction(entry)
-                center["status"] = "closed"
-                departure_component = _component_record(entry, level, "departure", center["family_id"])
-                if departure_component:
-                    center["departure_component_id"] = departure_component["id"]
-                    components.append(departure_component)
-                next_workspace = departure_start
-                _set_departure(center, entry, level, components, unit.get("confirmed_at") or unit["end_date"])
-                break
-            if departure_start is not None and next_workspace is None:
-                tail = stream[departure_start:]
-                center["departure_unit_ids"] = [unit["id"] for unit in tail]
-                center["context_unit_ids"] = _unique([*center["context_unit_ids"], *center["departure_unit_ids"]])
-                center["departure_direction"] = _component_direction(tail)
-                departure_component = _component_record(tail, level, "departure", center["family_id"])
-                if departure_component:
-                    center["departure_component_id"] = departure_component["id"]
-                    components.append(departure_component)
-            context = [unit for unit in stream if unit["id"] in center["context_unit_ids"]]
-            center["context_low"] = min(_low(unit) for unit in context)
-            center["context_high"] = max(_high(unit) for unit in context)
-            center["owned_unit_ids"] = _unique(center["owned_unit_ids"])
-            center["context_unit_ids"] = _unique(center["context_unit_ids"])
-            center["source_pen_ids"] = _unique(center["source_pen_ids"])
+                    next_workspace = departure
+                    evidence_units = stream[departure:scan + 1]
+                    context = {
+                        "process_direction": _direction(evidence_units[0]), "reason": "confirmed_departure_retest",
+                        "anchor_kind": "confirmed_boundary", "anchor_date": evidence_units[0]["start_date"],
+                        "anchor_price": evidence_units[0]["start_price"], "source_unit_ids": [u["id"] for u in evidence_units],
+                        "source_revision_id": center["id"], "available_at": center["revision_at"], "start_index": departure,
+                    }
+                    floor = scan
+                    break
             centers.append(center)
-            if next_workspace is None or next_workspace <= workspace_start:
+            if next_workspace is None or next_workspace <= workspace:
                 break
-            workspace_start = next_workspace
+            workspace = next_workspace
     centers.sort(key=lambda item: (item["start_date"], item["end_date"], item["id"]))
     for ordinal, center in enumerate(centers):
         center["ordinal"] = ordinal
@@ -501,7 +514,7 @@ def classify_center_relation(previous: dict[str, Any], current: dict[str, Any]) 
         return "newborn_up"
     if float(current["gg"]) < float(previous["dd"]) - EPSILON:
         return "newborn_down"
-    envelope_overlap = _strict_interval_overlap(
+    envelope_overlap = _closed_interval_overlap(
         float(previous["dd"]), float(previous["gg"]),
         float(current["dd"]), float(current["gg"]),
     )
@@ -674,9 +687,9 @@ def _departure_retest_evidence(
     tail = [by_id[identifier] for identifier in center.get("departure_unit_ids", []) if identifier in by_id]
     if len(tail) < 2:
         return None, []
-    for split in range(1, len(tail)):
+    for split in (1,):
         departure = tail[:split]
-        retest = tail[split:]
+        retest = tail[split:split + 1]
         departure_direction = _component_direction(departure)
         retest_direction = _component_direction(retest)
         if not departure_direction or not retest_direction or departure_direction == retest_direction:
@@ -740,6 +753,8 @@ def build_structural_points(
     center_by_id = {center["id"]: center for center in centers}
     index = {unit["id"]: ordinal for ordinal, unit in enumerate(units)}
     for center in centers:
+        if center.get("formation_stage") in {"origin_overlap", "boundary_candidate"}:
+            continue
         point, created = _third_point(center, units, level)
         components.extend(created)
         if point:
@@ -997,7 +1012,7 @@ def build_movements(
     assigned: set[str] = set()
     for stream in _split_streams(units):
         unit_index = {unit["id"]: index for index, unit in enumerate(stream)}
-        stream_centers = [center for center in centers if _stream_key(center) == _stream_key(stream[0])]
+        stream_centers = [center for center in centers if _stream_key(center) == _stream_key(stream[0]) and center.get("formation_stage") != "origin_overlap" and center.get("formation_stage") != "boundary_candidate"]
         stream_points = [
             point for point in points
             if point.get("status") == "confirmed" and _stream_key(point) == _stream_key(stream[0])
@@ -1012,15 +1027,14 @@ def build_movements(
                 continue
             selected = stream[start:end + 1]
             selected_ids = {unit["id"] for unit in selected}
-            owned_centers = [
-                center for center in stream_centers
-                if set(center["owned_unit_ids"]) <= selected_ids
-            ]
             boundary_centers = []
-            for center in owned_centers:
+            owned_centers = []
+            for center in stream_centers:
                 available = [snapshot for snapshot in center.get("_history", []) if snapshot["revision_at"] <= point["confirmed_at"]]
-                if available:
-                    boundary_centers.append(available[-1])
+                snapshot = available[-1] if available else None
+                if snapshot and set(snapshot["owned_unit_ids"]) <= selected_ids:
+                    boundary_centers.append(snapshot)
+                    owned_centers.append(center)
             movement = _movement_record(level, selected, boundary_centers, build_relations(boundary_centers), "confirmed", point)
             if movement is None:
                 continue
@@ -1031,7 +1045,9 @@ def build_movements(
                 continue
             if movement["classification"] == "trend" and not point["point_type"].startswith("first_"):
                 continue
-            if any(set(center["core_unit_ids"]) & selected_ids and not set(center["core_unit_ids"]) <= selected_ids for center in stream_centers):
+            if any(center["formed_at"] <= point["confirmed_at"] and set(center["core_unit_ids"]) & selected_ids and not set(center["core_unit_ids"]) <= selected_ids for center in stream_centers):
+                continue
+            if movements and movement["direction"] == movements[-1]["direction"]:
                 continue
             movement["start_point_id"] = movements[-1]["end_point_id"] if movements else None
             movements.append(movement)
@@ -1044,7 +1060,7 @@ def build_movements(
             selected_ids = {unit["id"] for unit in selected}
             owned_centers = [center for center in stream_centers if set(center["owned_unit_ids"]) <= selected_ids]
             if not owned_centers and not movements:
-                selected = stream[min(unit_index.get(identifier, 0) for identifier in stream_centers[0]["entry_unit_ids"]):]
+                selected = stream[min((unit_index.get(identifier, 0) for identifier in stream_centers[0]["entry_unit_ids"]), default=0):]
                 selected_ids = {unit["id"] for unit in selected}
                 owned_centers = [center for center in stream_centers if set(center["owned_unit_ids"]) <= selected_ids]
             movement = _movement_record(level, selected, owned_centers, relations, "provisional", None)
@@ -1068,6 +1084,8 @@ def expansion_evidence(
     missing: list[str] = []
     if left["id"] == right["id"] or _stream_key(left) != _stream_key(right) or left["level"] != right["level"]:
         missing.append("distinct_same_level_sequence")
+    if left.get("formation_stage") in {"origin_overlap", "boundary_candidate"} or right.get("formation_stage") in {"origin_overlap", "boundary_candidate"}:
+        missing.append("directional_children")
     if not left.get("formed_at") or not right.get("formed_at"):
         missing.append("formed_children")
     if classify_center_relation(left, right) not in {"expansion_up", "expansion_down"}:
@@ -1088,7 +1106,7 @@ def expansion_evidence(
     connection = units[max(left_positions) + 1:min(right_positions)] if left_positions and right_positions else []
     connection_ids = [unit["id"] for unit in connection]
     matching = [component for component in components if component.get("source_unit_ids") == connection_ids and connection_ids]
-    if not matching or not _center_free(connection):
+    if connection and (not matching or not _span_contiguous(connection)):
         missing.append("connection_component")
     if any(unit.get("status") != "confirmed" or not unit.get("confirmed_at") for unit in span):
         missing.append("confirmed_inputs")
@@ -1097,7 +1115,7 @@ def expansion_evidence(
         for left_id in left.get("z_unit_ids", []) for right_id in right.get("z_unit_ids", [])
         if (left_unit := unit_by_id.get(left_id)) and (right_unit := unit_by_id.get(right_id))
         and left_id in left_ids and right_id in right_ids
-        and _strict_interval_overlap(_low(left_unit), _high(left_unit), _low(right_unit), _high(right_unit))
+        and _closed_interval_overlap(_low(left_unit), _high(left_unit), _low(right_unit), _high(right_unit))
         and left_unit.get("status") == right_unit.get("status") == "confirmed"
     ]
     witnesses.sort(key=lambda pair: (max(unit.get("confirmed_at") or unit["end_date"] for unit in pair), pair[0]["start_date"], pair[0]["id"], pair[1]["id"]))
@@ -1117,132 +1135,105 @@ def expansion_evidence(
 def _promote_expansions(
     centers: list[dict[str, Any]], relations: list[dict[str, Any]], next_level: int,
     units: list[dict[str, Any]], components: list[dict[str, Any]],
+    movements: list[dict[str, Any]] | None = None,
+    points: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    center_by_id = {center["id"]: center for center in centers}
-    consumed: set[str] = set()
-    promoted: list[dict[str, Any]] = []
-    absorption: list[dict[str, Any]] = []
-    ordered = []
+    by_id = {c["id"]: c for c in centers}
+    promoted, absorption, consumed = [], [], set()
     for relation in relations:
-        if relation["relation_type"] in {"expansion_up", "expansion_down"}:
-            final_left, final_right = center_by_id[relation["from_id"]], center_by_id[relation["to_id"]]
-            left_history = final_left.get("_history") or [final_left]
-            right_history = final_right.get("_history") or [final_right]
-            left, right = final_left, final_right
-            evidence = expansion_evidence(left, right, units, components)
-            for right_snapshot in right_history:
-                available_left = [snapshot for snapshot in left_history if snapshot.get("revision_at", snapshot["formed_at"]) <= right_snapshot.get("revision_at", right_snapshot["formed_at"])]
-                if not available_left:
-                    continue
-                left_snapshot = available_left[-1]
-                proof = expansion_evidence(left_snapshot, right_snapshot, units, components)
-                if not proof["missing_evidence"]:
-                    left, right, evidence = left_snapshot, right_snapshot, proof
-                    break
-            relation["evidence"]["child_revision_ids"] = [left["id"], right["id"]]
-            relation["_children"] = [left, right]
-            relation["evidence"].update(evidence)
-            relation["missing_evidence"] = evidence["missing_evidence"]
-            ordered.append(relation)
-    ordered.sort(key=lambda item: (item["evidence"]["evidence_available_at"], item["start_date"], item["id"]))
-    for relation in ordered:
         if relation["relation_type"] not in {"expansion_up", "expansion_down"}:
             continue
-        left, right = relation.pop("_children")
-        evidence = relation["evidence"]
-        if evidence["missing_evidence"]:
-            continue
-        if left["family_id"] in consumed or right["family_id"] in consumed:
-            relation["missing_evidence"] = ["child_already_promoted"]
-            relation["status"] = "invalidated"
-            continue
-        zd = max(float(left["fluctuation_dd"]), float(right["fluctuation_dd"]))
-        zg = min(float(left["fluctuation_gg"]), float(right["fluctuation_gg"]))
-        if zd + EPSILON >= zg:
-            continue
-        revision_no = int(left["revision_no"]) + 1
-        revision_id = f"{left['family_id']}:r{revision_no}"
-        event_id = _stable_id("relation", left["id"], right["id"], relation["relation_type"])
-        fixed_evidence = {
+        final_left, final_right = by_id[relation["from_id"]], by_id[relation["to_id"]]
+        left, right = final_left, final_right
+        evidence = expansion_evidence(left, right, units, components)
+        for snapshot in final_right.get("_history", [final_right]):
+            available = [c for c in final_left.get("_history", [final_left]) if c["revision_at"] <= snapshot["revision_at"]]
+            if not available:
+                continue
+            proof = expansion_evidence(available[-1], snapshot, units, components)
+            if not proof["missing_evidence"]:
+                left, right, evidence = available[-1], snapshot, proof
+                break
+        # The relation is rebuilt on every prefix replay.  Once a valid contact
+        # pair has been found, all geometry fields must come from that pair,
+        # rather than from the latest revision's expanded envelope.  Otherwise
+        # a later Z extension silently rewrites the historical contact proof.
+        contact_interval = [max(left["dd"], right["dd"]), min(left["gg"], right["gg"])]
+        relation["evidence"].update({
             **evidence,
             "previous_core": [left["zd"], left["zg"]],
             "current_core": [right["zd"], right["zg"]],
-            "previous_envelope": [left["dd"], left["gg"]],
-            "current_envelope": [right["dd"], right["gg"]],
-        }
-        item = {
-            **left,
-            "id": revision_id,
-            "revision_no": revision_no,
-            "previous_revision_id": left["id"],
-            "level": next_level,
-            "unit_kind": "center_revision",
-            "z_unit_ids": [],
-            "z_direction": None,
-            "formed_at": evidence["evidence_available_at"],
-            "promotion_confirmed_at": evidence["evidence_available_at"],
-            "revision_at": evidence["evidence_available_at"],
-            "connection_component_ids": evidence["connection_component_ids"],
-            "overlap_witness_unit_ids": evidence["overlap_witness_unit_ids"],
-            "missing_evidence": [],
-            "status": "formed",
-            "start_date": left["start_date"],
-            "end_date": right["end_date"],
-            "core_start_date": left["start_date"],
-            "core_end_date": right["end_date"],
-            "core_unit_ids": [],
-            "entry_unit_ids": [],
-            "extension_unit_ids": [],
-            "peripheral_unit_ids": [],
-            "departure_unit_ids": [],
-            "retest_unit_ids": [],
-            "owned_unit_ids": [left["id"], right["id"]],
-            "context_unit_ids": [left["id"], right["id"]],
-            "source_pen_ids": evidence["source_pen_ids"],
-            "child_center_ids": [left["id"], right["id"]],
-            "child_movement_ids": [],
-            "zd": zd,
-            "zg": zg,
-            "fixed_zd": zd,
-            "fixed_zg": zg,
-            "dd": min(float(left["dd"]), float(right["dd"])),
-            "gg": max(float(left["gg"]), float(right["gg"])),
-            "fluctuation_dd": min(float(left["fluctuation_dd"]), float(right["fluctuation_dd"])),
-            "fluctuation_gg": max(float(left["fluctuation_gg"]), float(right["fluctuation_gg"])),
-            "context_low": min(left["context_low"], right["context_low"]),
-            "context_high": max(left["context_high"], right["context_high"]),
-            "formation_modes": ["expansion_envelope_overlap"],
-            "recursive_eligible": True,
-            "evidence": {
-                "relation_id": event_id,
-                "non_transitive_pair": True,
-                **fixed_evidence,
-            },
-            "_workspace_start": 0,
-            "_core_start": 0,
-            "_core_end": 0,
-            "_last_owned": 0,
-        }
-        center_by_id[relation["from_id"]]["active"] = False
-        center_by_id[relation["to_id"]]["active"] = False
-        center_by_id[relation["to_id"]]["absorbed_into_family_id"] = left["family_id"]
-        relation.update(id=event_id, from_id=left["id"], to_id=right["id"], end_date=right["end_date"], evidence=fixed_evidence)
-        promoted.append(item)
-        relation["status"] = "confirmed"
-        relation["confirmed_at"] = evidence["evidence_available_at"]
-        consumed.update({left["family_id"], right["family_id"]})
+            "previous_envelope": [left["fluctuation_dd"], left["fluctuation_gg"]],
+            "current_envelope": [right["fluctuation_dd"], right["fluctuation_gg"]],
+            "previous_envelope_at_contact": [left["fluctuation_dd"], left["fluctuation_gg"]],
+            "current_envelope_at_contact": [right["fluctuation_dd"], right["fluctuation_gg"]],
+            "previous_center_revision_id": left["id"],
+            "current_center_revision_id": right["id"],
+            "contact_confirmed_at": evidence["evidence_available_at"],
+            "contact_interval": contact_interval,
+            "child_revision_ids": [left["id"], right["id"]],
+        })
+        relation["missing_evidence"] = evidence["missing_evidence"]
+        relation["boundary_status"] = "unresolved"
+        if evidence["missing_evidence"]:
+            relation["expansion_status"] = "candidate"
+            continue
+        relation.update(id=_stable_id("relation", left["family_id"], right["family_id"], relation["relation_type"]),
+                        status="confirmed", expansion_status="confirmed", confirmed_at=evidence["evidence_available_at"],
+                        from_id=left["id"], to_id=right["id"], start_date=left["start_date"], end_date=right["end_date"])
+        proofs = decomposition_proofs(movements or [], units, set(evidence["source_unit_ids"]), next_level - 1, centers)
+        first_owned = evidence["source_unit_ids"][0]
+        proofs = [p for p in proofs if p["source_unit_ids"][0] == first_owned]
+        internal = internal_decomposition_proofs(units, centers, points or [], set(evidence["source_unit_ids"]), next_level - 1)
+        if internal and (not proofs or (internal[0]["available_at"], internal[0]["segments"][0]["start_date"]) < (proofs[0]["available_at"], proofs[0]["segments"][0]["start_date"])):
+            proofs = internal
+        relation["boundary_missing_evidence"] = [] if proofs else ["three_subordinate_movement_boundaries"]
+        if not proofs or left["family_id"] in consumed or right["family_id"] in consumed:
+            continue
+        previous = final_left["id"]
+        base_revision = final_left["revision_no"]
+        for offset, proof in enumerate(proofs, 1):
+            parts = proof["segments"]
+            zd, zg = proof["zd"], proof["zg"]
+            stamp = max(evidence["evidence_available_at"], proof["available_at"])
+            dd, gg = min(p["low"] for p in parts[::2]), max(p["high"] for p in parts[::2])
+            item = {**deepcopy(left), "id": f"{left['family_id']}:r{base_revision + offset}",
+                "previous_revision_id": previous, "revision_no": base_revision + offset,
+                "level": next_level, "unit_kind": "center_revision", "formation_modes": ["expansion_decomposition"],
+                "boundary_status": proof["boundary_status"], "decomposition_proof": proof,
+                "status": "formed", "active": offset == len(proofs), "recursive_eligible": False,
+                "formed_at": stamp, "available_at": stamp, "revision_at": stamp,
+                "promotion_confirmed_at": evidence["evidence_available_at"],
+                "start_date": parts[0]["start_date"], "end_date": parts[-1]["end_date"],
+                "core_start_date": parts[0]["start_date"], "core_end_date": parts[-1]["end_date"],
+                "zd": zd, "zg": zg, "fixed_zd": zd, "fixed_zg": zg,
+                "dd": dd, "gg": gg, "fluctuation_dd": dd, "fluctuation_gg": gg,
+                "z_high_min": min(p["high"] for p in parts[::2]), "z_low_max": max(p["low"] for p in parts[::2]),
+                "formation_type": "pullback" if parts[0]["direction"] == "down" else "rebound",
+                "formation_stage": "directional", "z_direction": parts[0]["direction"],
+                "direction_context": None, "process_direction_at_formation": "unknown",
+                "z_unit_ids": [], "core_unit_ids": [], "entry_unit_ids": [], "extension_unit_ids": [],
+                "peripheral_unit_ids": [], "departure_unit_ids": [], "retest_unit_ids": [],
+                "owned_unit_ids": [left["id"], right["id"]], "context_unit_ids": [left["id"], right["id"]],
+                "child_center_ids": [left["id"], right["id"]],
+                "child_movement_ids": [p["movement_revision_id"] for p in parts if p.get("construction_scope") != "internal"],
+                "source_pen_ids": _unique(p for part in parts for p in part["source_pen_ids"]),
+                "context_low": min(p["low"] for p in parts), "context_high": max(p["high"] for p in parts),
+                "connection_component_ids": evidence["connection_component_ids"],
+                "overlap_witness_unit_ids": evidence["overlap_witness_unit_ids"], "missing_evidence": [],
+                "evidence": {**evidence, "relation_id": relation["id"], "decomposition_proof": proof}}
+            item.pop("_history", None)
+            promoted.append(item)
+            previous = item["id"]
+        final_left["active"] = final_right["active"] = False
+        final_right["absorbed_into_family_id"] = left["family_id"]
+        consumed.update([left["family_id"], right["family_id"]])
+        relation["boundary_status"] = proofs[-1]["boundary_status"]
         for child in (left, right):
-            absorption.append({
-                "id": _stable_id("relation", child["id"], item["id"], "promoted_into"),
-                "kind": "center_relation",
-                "level": next_level,
-                "relation_type": "promoted_into",
-                "from_id": child["id"],
-                "to_id": item["id"],
-                "start_date": child["start_date"],
-                "end_date": item["end_date"],
-                "evidence": {"formation_mode": "expansion_envelope_overlap"},
-            })
+            absorption.append({"id": _stable_id("relation", child["id"], previous), "kind": "center_relation",
+                "level": next_level, "relation_type": "promoted_into", "from_id": child["id"], "to_id": previous,
+                "start_date": child["start_date"], "end_date": promoted[-1]["end_date"],
+                "evidence": {"formation_mode": "expansion_decomposition"}})
     return promoted, absorption
 
 
@@ -1327,6 +1318,37 @@ def merge_formation_paths(centers: list[dict[str, Any]]) -> list[dict[str, Any]]
     return issues
 
 
+def _point_event_history(units, centers, level, market_dates, macd):
+    """Evaluate points as-of confirmation events; later extensions cannot erase an event."""
+    confirmed, components, tail = {}, {}, []
+    for count in range(3, len(units) + 1):
+        prefix = units[:count]
+        prefix_ids = {u["id"] for u in prefix}
+        cutoff = max(u["confirmed_at"] for u in prefix)
+        snapshots = []
+        for center in centers:
+            history = [h for h in center.get("_history", [center]) if h.get("revision_at", h["formed_at"]) <= cutoff
+                       and set(h.get("context_unit_ids", [])) <= prefix_ids
+                       and h.get("evidence_cursor_unit_id", h["core_unit_ids"][-1]) in prefix_ids]
+            if history:
+                snapshot = deepcopy(history[-1])
+                snapshot["_history"] = history
+                snapshots.append(snapshot)
+        if not snapshots:
+            continue
+        points, created = build_structural_points(prefix, snapshots, build_relations(snapshots), level, market_dates, macd)
+        components.update((c["id"], c) for c in created)
+        for point in points:
+            if point["status"] == "confirmed" and point["confirmed_at"] <= cutoff:
+                confirmed.setdefault(point["family_id"], point)
+        tail = points
+    result = list(confirmed.values()) + [p for p in tail if p["family_id"] not in confirmed]
+    result.sort(key=lambda p: (p.get("confirmed_at") or "9999", p["point_date"], p["id"]))
+    for ordinal, point in enumerate(result):
+        point["ordinal"] = ordinal
+    return result, list(components.values())
+
+
 def build_structure_hierarchy(
     pens: list[dict[str, Any]], macd: list[dict[str, Any]] | None = None,
     market_dates: list[str] | None = None,
@@ -1350,10 +1372,10 @@ def build_structure_hierarchy(
         centers, components, issues = build_level_centers(units, level)
         if full:
             relations = build_relations(centers)
-            promoted, absorption = _promote_expansions(centers, relations, level + 1, units, components) if level < MAX_LEVEL else ([], [])
-            points, point_components = build_structural_points(units, centers, relations, level, market_dates, macd)
+            points, point_components = _point_event_history(units, centers, level, market_dates, macd)
             movements, unassigned, movement_issues = build_movements(units, centers, relations, points, level)
-            movement_promotions = _promote_open_movements(movements, promoted)
+            promoted, absorption = _promote_expansions(centers, relations, level + 1, units, components, movements, points) if level < MAX_LEVEL else ([], [])
+            movement_promotions = _promote_open_movements(movements, [p for p in promoted if p.get("boundary_status") == "fixed"])
         else:
             relations, promoted, absorption, points, point_components = [], [], [], [], []
             movements, unassigned, movement_issues, movement_promotions = [], [], [], []
@@ -1428,6 +1450,8 @@ def validate_structure(payload: dict[str, Any]) -> list[str]:
     points = structure.get("point_revisions", structure.get("points", []))
     pens = structure.get("pens", payload.get("pens", []))
     pen_ids = {pen["id"] for pen in pens}
+    movement_by_id = {m["id"]: m for m in movements}
+    point_by_family = {p["family_id"]: p for p in points if p.get("status") == "confirmed"}
     errors: list[str] = []
     for name, values in (("centers", centers), ("movements", movements), ("points", points)):
         identifiers = [item.get("id") for item in values]
@@ -1459,26 +1483,46 @@ def validate_structure(payload: dict[str, Any]) -> list[str]:
             errors.append(prefix + "missing_formation_time")
         if center.get("fluctuation_dd") != center["dd"] or center.get("fluctuation_gg") != center["gg"]:
             errors.append(prefix + "inconsistent_z_envelope")
-        if center.get("unit_kind") == "center_revision" or center.get("formation_modes") == ["expansion_envelope_overlap"]:
-            children = [center_by_id[identifier] for identifier in center.get("child_center_ids", []) if identifier in center_by_id]
-            if len(children) != 2:
-                errors.append(prefix + "expansion_children")
-            else:
-                left, right = children
-                child_units = [unit for unit in units if int(unit["level"]) == int(left["level"]) - 1]
-                proof = expansion_evidence(left, right, child_units, components)
-                errors.extend(prefix + missing for missing in proof["missing_evidence"])
-                for field in ("connection_component_ids", "overlap_witness_unit_ids", "source_pen_ids"):
-                    if center.get(field) != proof[field] or not center.get(field):
-                        errors.append(prefix + field)
-                if center.get("unit_kind") != "center_revision" or center.get("z_unit_ids"):
-                    errors.append(prefix + "expansion_unit_kind")
-                if center["level"] != left["level"] + 1 or center["family_id"] != left["family_id"]:
-                    errors.append(prefix + "expansion_identity")
-                if (center["zd"], center["zg"]) != (max(left["dd"], right["dd"]), min(left["gg"], right["gg"])):
-                    errors.append(prefix + "expansion_core")
-                if center.get("promotion_confirmed_at") != proof["evidence_available_at"] or center.get("formed_at") != proof["evidence_available_at"]:
-                    errors.append(prefix + "promotion_time")
+        if center.get("unit_kind") == "center_revision":
+            proof = center.get("decomposition_proof", {})
+            parts = proof.get("segments", [])
+            if len(parts) != 3:
+                errors.append(prefix + "decomposition_count")
+                continue
+            if any(p.get("status") != "confirmed" or not p.get("completion_evidence_id") for p in parts[:2]):
+                errors.append(prefix + "decomposition_completion")
+            if (center["zd"], center["zg"]) != (max(p["low"] for p in parts), min(p["high"] for p in parts)):
+                errors.append(prefix + "expansion_core")
+            ids = [i for part in parts for i in part["source_unit_ids"]]
+            if len(ids) != len(set(ids)) or len(ids) < 9:
+                errors.append(prefix + "decomposition_ownership")
+            if parts[0]["direction"] != parts[2]["direction"] or parts[0]["direction"] == parts[1]["direction"]:
+                errors.append(prefix + "decomposition_direction")
+            if any(a["end_date"] != b["start_date"] for a, b in zip(parts, parts[1:])):
+                errors.append(prefix + "decomposition_boundary")
+            for part in parts:
+                movement = movement_by_id.get(part.get("movement_revision_id"))
+                if part.get("construction_scope") != "internal" and (not movement or movement["level"] != center["level"] - 1 or not set(part["source_unit_ids"]) <= set(movement["source_unit_ids"])):
+                    errors.append(prefix + "decomposition_movement")
+                if part.get("status") == "confirmed":
+                    point = point_by_family.get(part.get("completion_evidence_id"))
+                    if not point or point["confirmed_at"] > part["available_at"]:
+                        errors.append(prefix + "decomposition_completion")
+                if not part.get("level_evidence_ids"):
+                    errors.append(prefix + "decomposition_level")
+                for identifier in part.get("level_evidence_ids", []):
+                    witness = center_by_id.get(identifier)
+                    if not witness or witness["level"] != center["level"] - 1 or witness["revision_at"] > part["available_at"] or not set(witness["owned_unit_ids"]) <= set(part["source_unit_ids"]):
+                        errors.append(prefix + "decomposition_level")
+                selected = [unit_by_id[i] for i in part["source_unit_ids"] if i in unit_by_id]
+                if len(selected) != len(part["source_unit_ids"]) or not _span_contiguous(selected):
+                    errors.append(prefix + "decomposition_continuity")
+                elif (part["low"], part["high"]) != (min(_low(u) for u in selected), max(_high(u) for u in selected)):
+                    errors.append(prefix + "decomposition_range")
+            if center.get("boundary_status") == "dynamic" and center.get("recursive_eligible"):
+                errors.append(prefix + "dynamic_recursion")
+            if center["formed_at"] < proof.get("available_at", ""):
+                errors.append(prefix + "promotion_time")
             continue
         core_ids = center.get("core_unit_ids", [])
         if len(core_ids) != 3:
@@ -1500,7 +1544,7 @@ def validate_structure(payload: dict[str, Any]) -> list[str]:
             errors.append(prefix + "invalid_core_evidence")
             continue
         entry = [unit_by_id[identifier] for identifier in center.get("entry_unit_ids", [])]
-        if not _center_free(entry) or not _span_contiguous([*entry, *core]):
+        if not _span_contiguous([*entry, *core]):
             errors.append(prefix + "invalid_entry")
         expected_z = [core[0]["id"], core[2]["id"], *center.get("extension_unit_ids", [])]
         if center.get("z_unit_ids") != expected_z or not set(expected_z) <= set(owned_ids):
@@ -1510,7 +1554,7 @@ def validate_structure(payload: dict[str, Any]) -> list[str]:
             errors.append(prefix + "invalid_z_direction")
         if z_units and (center["dd"], center["gg"]) != (min(_low(unit) for unit in z_units), max(_high(unit) for unit in z_units)):
             errors.append(prefix + "invalid_z_envelope")
-        if any(not _strict_interval_overlap(_low(unit), _high(unit), center["zd"], center["zg"]) for unit in z_units):
+        if any(not _closed_interval_overlap(_low(unit), _high(unit), center["zd"], center["zg"]) for unit in z_units):
             errors.append(prefix + "invalid_z_extension")
         context = [unit_by_id[identifier] for identifier in context_ids]
         if context and (center.get("context_low"), center.get("context_high")) != (min(_low(unit) for unit in context), max(_high(unit) for unit in context)):
@@ -1523,7 +1567,12 @@ def validate_structure(payload: dict[str, Any]) -> list[str]:
             errors.append(prefix + "invalid_unit_kind")
         if center.get("source_pen_ids") != _source_pen_ids(owned):
             errors.append(prefix + "source_pen_ownership")
-        if center["formed_at"] != max(unit["confirmed_at"] for unit in [*entry, *core]):
+        context = center.get("direction_context") or {}
+        if center.get("formation_stage") == "directional":
+            expected = "down" if context.get("process_direction") == "up" else "up"
+            if not context or center.get("z_direction") != expected:
+                errors.append(prefix + "direction_context_mismatch")
+        if center["formed_at"] != max([unit["confirmed_at"] for unit in [*entry, *core]] + [context.get("available_at", "")]):
             errors.append(prefix + "formation_time")
     point_ids = {point["family_id"] for point in points}
     movement_unit_owner: dict[tuple[int, str], str] = {}
@@ -1549,7 +1598,7 @@ def validate_structure(payload: dict[str, Any]) -> list[str]:
         if movement.get("status") == "confirmed":
             selected_ids = set(movement.get("source_unit_ids", []))
             for center in centers:
-                if center["level"] == movement["level"] and set(center["core_unit_ids"]) & selected_ids and not set(center["core_unit_ids"]) <= selected_ids:
+                if center["level"] == movement["level"] and center["formed_at"] <= movement["confirmed_at"] and set(center["core_unit_ids"]) & selected_ids and not set(center["core_unit_ids"]) <= selected_ids:
                     errors.append(f"movement:{movement['id']}:split_core")
     for point in points:
         if point.get("center_revision_id") not in revision_ids:
@@ -1569,6 +1618,14 @@ def validate_structure(payload: dict[str, Any]) -> list[str]:
         elif relation["relation_type"] == "promoted_into":
             if left["id"] not in right.get("child_center_ids", []):
                 errors.append(f"relation:{relation['id']}:invalid_parent_link")
+        elif relation["relation_type"] in {"expansion_up", "expansion_down"} and relation.get("status") == "confirmed":
+            proof = expansion_evidence(left, right, [u for u in units if u["level"] == left["level"] - 1], components)
+            if proof["missing_evidence"]:
+                errors.extend(f"relation:{relation['id']}:{item}" for item in proof["missing_evidence"])
+            if relation.get("confirmed_at") != proof["evidence_available_at"]:
+                errors.append(f"relation:{relation['id']}:confirmation_time")
+            if relation.get("evidence", {}).get("overlap_witness_unit_ids") != proof["overlap_witness_unit_ids"]:
+                errors.append(f"relation:{relation['id']}:witness")
         elif classify_center_relation(left, right) != relation["relation_type"]:
             errors.append(f"relation:{relation['id']}:invalid_geometry")
     return errors

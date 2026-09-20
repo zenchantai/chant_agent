@@ -459,6 +459,20 @@ export const buildCenterAreas = (context: ChartBuildContext, dates: string[], is
       { xAxis: nearestDate(dates, range.end_date), yAxis: centerZg(center) },
     ];
   });
+  const selected = selectedCenterEvidence(data, context.selectedStructureId);
+  if (selected?.formation_stage && !isWeeklyCoreCenter(selected, data.timeframe) && visible.some(c => c.id === selected.id)) {
+    for (const [label, low, high, color] of [
+      ["Z 波动范围", selected.dd, selected.gg, "#0891b2"],
+      ["上下文范围", selected.context_low, selected.context_high, "#64748b"],
+    ] as const) {
+      if (typeof low === "number" && typeof high === "number" && Number.isFinite(low) && Number.isFinite(high)) areas.push([
+        {name: label, xAxis: nearestDate(dates, selected.start_date), yAxis: low, centerId: selected.id,
+         itemStyle: {color: "transparent", borderColor: color, borderWidth: 1, borderType: "dashed"},
+         label: {show: true, formatter: label, color, fontSize: 10, position: "insideBottomLeft"}},
+        {xAxis: nearestDate(dates, selected.end_date), yAxis: high},
+      ]);
+    }
+  }
   return { areas, visibleCenters: visible };
 };
 
@@ -668,7 +682,7 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
   const color = periodStructureColor(context.theme === "light" ? "light" : "dark", context.data.timeframe);
   const selectedCenter = selectedCenterEvidence(context.data, context.selectedStructureId);
   const point = selectedPoint(context.data, context.selectedStructureId);
-  const roleColors = { entry: "#d97706", core: "#7c3aed", z_wave: "#0891b2", peripheral: "#64748b", departure: "#dc2626", retest: "#16a34a", connection: "#db2777" };
+  const roleColors = { entry: "#d97706", core: "#7c3aed", z_wave: "#0891b2", peripheral: "#64748b", departure: "#dc2626", retest: "#16a34a", connection: "#db2777", witness: "#e11d9b" };
   const roles = new Map<string, keyof typeof roleColors>();
   const roleCenters = selectedCenter ? [selectedCenter, ...context.data.center_revisions.filter((item) => selectedCenter.child_center_ids.includes(item.id))] : [];
   const assign = (identifiers: string[], role: keyof typeof roleColors) => identifiers.forEach((identifier) => {
@@ -684,9 +698,15 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
     assign(center.peripheral_unit_ids || [], "peripheral");
     assign(center.departure_unit_ids || [], "departure");
     assign(center.retest_unit_ids || [], "retest");
-    assign(center.z_unit_ids || [], "z_wave");
     assign(center.core_unit_ids || [], "core");
+    assign(center.z_unit_ids || [], "z_wave");
+    center.decomposition_proof?.segments.forEach((part) => assign(part.source_pen_ids, "core"));
     context.data.components.filter((component) => center.connection_component_ids?.includes(component.id)).forEach((component) => assign(component.source_unit_ids, "connection"));
+  });
+  const selectedRelations = selectedCenter ? (context.data.relations || []).filter(r => r.expansion_status === "confirmed" && [r.from_id, r.to_id].includes(selectedCenter.id)) : [];
+  selectedRelations.forEach(relation => {
+    const evidence = relation.evidence as {overlap_witness_unit_ids?: string[]};
+    assign(evidence?.overlap_witness_unit_ids || [], "witness");
   });
   if (point) context.data.components.filter((component) => point.source_component_ids.includes(component.id)).forEach((component) => {
     if (component.role === "departure" || component.role === "retest") assign(component.source_unit_ids, component.role);
@@ -698,7 +718,9 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
     const selected = context.selectedStructureId === pen.id;
     const role = roles.get(pen.id);
     const lineColor = role ? roleColors[role] : color;
-    return { id: pen.id, name: `笔 ${(Number(pen.ordinal) || 0) + 1}${role ? ` · ${role}` : ""}`, type: "line", data: [[boundary.startDate, boundary.startPrice], [boundary.endDate, boundary.endPrice]], showSymbol: true, symbolSize: selected || role ? 8 : 5, lineStyle: { width: selected || role ? 3.4 : 1.8, type: "solid", color: lineColor, opacity: selected || role ? 1 : selectedCenter ? 0.3 : 0.88 }, itemStyle: { color: lineColor }, z: role ? 11 : 5 };
+    const coreIndex = selectedCenter?.core_unit_ids.indexOf(pen.id) ?? -1;
+    const coreLabel = coreIndex >= 0 ? ` · 核心 ${["A", "B", "C"][coreIndex]}` : "";
+    return { id: pen.id, name: `笔 ${(Number(pen.ordinal) || 0) + 1}${role ? ` · ${role}` : ""}${coreLabel}`, type: "line", data: [[boundary.startDate, boundary.startPrice], [boundary.endDate, boundary.endPrice]], showSymbol: true, symbolSize: selected || role ? 8 : 5, lineStyle: { width: selected || role ? 3.4 : 1.8, type: "solid", color: lineColor, opacity: selected || role ? 1 : selectedCenter ? 0.3 : 0.88 }, itemStyle: { color: lineColor }, z: role ? 11 : 5 };
   }).filter(Boolean) as Record<string, any>[];
 };
 

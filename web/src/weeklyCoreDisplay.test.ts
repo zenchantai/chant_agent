@@ -36,7 +36,7 @@ describe("周线原生中枢仅展示三笔核心", () => {
     expect(candle.markArea.data[0][0].xAxis).toBe(dates[1]);
     expect(candle.markArea.data[0][1].xAxis).toBe(dates[4]);
     expect([...new Set(hit.data.map((item: any) => item.value[0]))]).toEqual([dates[1], dates[4]]);
-    expect(candle.markArea.data[0][0].label.formatter).toBe("L1 三笔核心 #1");
+    expect(candle.markArea.data[0][0].label.formatter).toBe("L1 三笔核心 #1 · 旧版证据");
     expect(centerDisplayRange(artifacts.visibleCenters[0], "w")).toEqual({start_date: dates[1], end_date: dates[4]});
     expect(artifacts.visibleCenters[0].end_date).toBe(dates[6]);
     expect(JSON.stringify(data)).toBe(before);
@@ -80,7 +80,7 @@ describe("周线原生中枢仅展示三笔核心", () => {
     const area = artifacts.option?.series.find((series: any) => series.id === "kline").markArea.data[0];
     expect([area[0].xAxis, area[1].xAxis]).toEqual([dates[0], dates[6]]);
     expect(buildPenSeries({data, selectedStructureId: "native"}, dates).find(item => item.id === "extension")?.lineStyle.width).toBe(3.4);
-    expect(centerDisplayLabel(data, data.centers[0])).toBe("L1 中枢 #1");
+    expect(centerDisplayLabel(data, data.centers[0])).toBe("L1 中枢 #1 · 旧版证据");
   });
 
   it("周线 tooltip 明确三笔核心，只显示核心日期；月线 tooltip 仍显示完整日期", () => {

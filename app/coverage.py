@@ -88,7 +88,9 @@ def validate_coverage(rows: list[dict[str, Any]], timeframe: str = "5",
     ranges: list[dict[str, Any]] = []; current: list[str] = []; complete_set = set(complete_days)
     if timeframe in {"w", "m", "y"} and expected:
         expected_periods = sorted({_period(d, timeframe) for d in expected})
-        observed_periods = {_period(d, timeframe): d for d in observed}
+        # A period may contain retained interim observations; always use its latest date.
+        # Iterating a set made the analyzed tail depend on PYTHONHASHSEED.
+        observed_periods = {_period(d, timeframe): d for d in sorted(observed)}
         missing = sorted(set(expected_periods) - set(observed_periods))
         for period in expected_periods:
             day = observed_periods.get(period)

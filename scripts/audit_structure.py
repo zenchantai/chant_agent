@@ -56,7 +56,7 @@ def audit_calculation_profile(meta: dict, structure: dict, timeframe: str | None
                 problems.append(f"profile:non_pen_units:{group}:{identifier}")
             if (item.get("promotion_confirmed_at") or item.get("child_center_ids")
                     or item.get("child_movement_ids") or item.get("absorbed_into_family_id")
-                    or set(item.get("formation_modes", [])) - {"entry_then_earliest_three_unit_core"}):
+                    or set(item.get("formation_modes", [])) - {"entry_then_earliest_three_unit_core", "directional_core", "origin_overlap"}):
                 problems.append(f"profile:promotion_evidence:{group}:{identifier}")
     for group in ("pens", "components", "centers", "center_revisions", "display_centers"):
         for item in structure.get(group, []):

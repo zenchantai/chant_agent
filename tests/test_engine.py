@@ -42,10 +42,9 @@ def test_requirement_examples_choose_non_empty_entry_then_earliest_core():
     assert (center["fixed_zd"], center["fixed_zg"]) == (8, 10)
 
     second, _, _ = build_level_centers(pens_from_prices([1, 5, 3, 10, 7, 15, 13]), 1)
-    center = second[0]
-    assert center["entry_unit_ids"] == ["p0", "p1"]
-    assert center["core_unit_ids"] == ["p2", "p3", "p4"]
-    assert (center["fixed_zd"], center["fixed_zg"]) == (7, 10)
+    # Upward context cannot borrow the overlapping up/down/up triple.
+    assert all(c["formation_stage"] == "origin_overlap" for c in second)
+    assert not any(c["formation_stage"] == "directional" for c in second)
 
 
 def test_turning_center_excludes_entry_and_uses_13_16_core():
@@ -63,4 +62,6 @@ def test_single_point_touch_and_unconfirmed_unit_do_not_form_center():
     provisional = pens_from_prices([1, 10, 6, 15, 8])
     provisional[3]["status"] = "provisional"
     hierarchy = build_structure_hierarchy(provisional, [], [])
-    assert hierarchy["centers"] == []
+    assert len(hierarchy["centers"]) == 1
+    assert hierarchy["centers"][0]["formation_stage"] == "origin_overlap"
+    assert "p3" not in hierarchy["centers"][0]["owned_unit_ids"]

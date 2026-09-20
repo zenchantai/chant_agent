@@ -1,10 +1,10 @@
-version: chan-period-daily-led-reference-v27
+version: chan-period-directional-z-center-v28
 calculation_profiles:
   full: ["5", "30", "d"]
   pen_centers_only: ["w", "m"]
 center_envelope_mode: owned_z_units
-center_promotion_mode: verified_expansion_or_recursive_core
-envelope_touch_mode: candidate
+center_promotion_mode: contact_then_decomposition
+envelope_touch_mode: expansion_contact
 source:
   title: 读缠论108课札记
   file: ../读缠论108课札记.pdf
@@ -25,11 +25,11 @@ rules:
   - {id: PEN-SPECIAL-004, section: pens, assertion: "修正笔只重算活动尾部，已确认稳定前缀不被未来数据改写。"}
   - {id: PEN-SPECIAL-005, section: pens, assertion: "日线缺口不直接成笔；其他周期按现有跳空规则确认。"}
   - {id: COMPONENT-CENTER-FREE-V25, section: components, assertion: "进入、连接、离开和回试组件由连续、不重复、方向交替的低级单位组成，内部不存在当前工作区可提交的同级中枢。"}
-  - {id: CENTER-WORKSPACE-V25, section: centers, assertion: "中枢在走势边界后的工作区内构造，必须先有非空进入段，再选择时间最早的合法三单位核心；禁止全局滑窗。"}
+  - {id: CENTER-WORKSPACE-V25, section: centers, assertion: "方向由确认单位的高低点突破或独立边界证据建立；上涨取下上下、下跌取上下上。原点重叠保留待定修订，分页不重置原点。"}
   - {id: CENTER-STRICT-CORE-V25, section: centers, assertion: "核心三单位连续、已确认、方向交替并严格重叠；ZD=max(low1,low2,low3)，ZG=min(high1,high2,high3)，且ZD+epsilon<ZG。"}
-  - {id: CENTER-STATE-MACHINE-V25, section: centers, assertion: "核心形成后固定ZD/ZG；后续波动依时间唯一进入延伸、暂时离开返回、离开或回试分支。"}
+  - {id: CENTER-STATE-MACHINE-V25, section: centers, assertion: "方向性核心固定ZD/ZG；同向Z与核心闭区间接触可延伸。首次完整离开回试仍按严格边界确认三类点，不能用后续回试偷换第一次。"}
   - {id: CENTER-Z-WAVE-V26, section: centers, assertion: "DD/GG仅取核心第一、第三及已接纳同向延伸Z单位，进入、连接、最终离开和回试不参与；与上下文价格范围分开。"}
-  - {id: CENTER-NEWBORN-EXPANSION-V26, section: centers, assertion: "核心分离且Z包络分离为新生；Z包络重叠还须确认两子中枢、连续源区间、真实连接、Z重叠见证和事件可用时间，才追加高级修订；仅接触保持候选。"}
+  - {id: CENTER-NEWBORN-EXPANSION-V26, section: centers, assertion: "核心分离且Z闭区间接触可确认扩展事件；保存连续性、连接和真实Z见证。高级核心由三段次级走势交集定界，第三段可动态；缺少定界证据不画高级矩形，禁止包络直接升级。"}
   - {id: CENTER-FAMILY-REVISION-V25, section: hierarchy, assertion: "中枢升级沿用较早center_family_id并新增不可变高级修订；不通过传递重叠吸收后续结构。"}
   - {id: POINT-STRENGTH-VECTOR-V25, section: points, assertion: "力度先比较内部最高中枢级别和已确认子走势数，相同时再比较振幅与平均斜率；MACD仅作辅助证据。"}
   - {id: POINT-FIRST-V25, section: points, assertion: "一类点仅出现在至少两个同级中枢构成的趋势中，点位是最后离开段真实极值，后续反向低级走势完成时确认。"}

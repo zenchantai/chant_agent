@@ -31,34 +31,20 @@ def test_relation_uses_complete_fluctuation_system_not_core_only():
     assert classify_center_relation(left, expansion) == "expansion_up"
 
 
-def test_expansion_promotes_existing_family_instead_of_creating_parallel_parent():
-    result = build_structure_hierarchy(
-        pens_from_prices([1, 10, 6, 15, 8, 20, 12, 25, 21, 30, 26, 35]), [], [],
-    )
-    revisions = result["center_revisions"]
-    active = result["centers"]
-    assert len(active) == 1
-    assert active[0]["level"] == 2
-    family_revisions = [item for item in revisions if item["family_id"] == active[0]["family_id"]]
-    assert [item["revision_no"] for item in family_revisions] == list(range(1, len(family_revisions) + 1))
-    assert family_revisions[0]["active"] is False
-    assert family_revisions[-1]["active"] is True
-    absorbed = [item for item in revisions if item.get("absorbed_into_family_id")]
-    assert len({item["family_id"] for item in absorbed}) == 1
-    assert absorbed[0]["absorbed_into_family_id"] == active[0]["family_id"]
-    assert {item["relation_type"] for item in result["relations"]} >= {"expansion_up", "promoted_into"}
+def test_contact_confirms_relation_without_inventing_parent_geometry():
+    result = build_structure_hierarchy(pens_from_prices([1,10,6,15,8,20,12,25,18,30,26,35]))
+    assert [c["level"] for c in result["centers"]] == [1, 1]
+    relation = next(r for r in result["relations"] if r["relation_type"] == "expansion_up")
+    assert relation["status"] == relation["expansion_status"] == "confirmed"
+    assert relation["boundary_status"] == "unresolved"
+    assert relation["boundary_missing_evidence"] == ["three_subordinate_movement_boundaries"]
+    assert not any(c["level"] > 1 for c in result["center_revisions"])
 
 
-def test_open_movement_is_promoted_with_center_family():
-    result = build_structure_hierarchy(
-        pens_from_prices([1, 10, 6, 15, 8, 20, 12, 25, 21, 30, 26, 35]), [], [],
-    )
-    assert len(result["movements"]) == 1
-    movement = result["movements"][0]
-    assert movement["level"] == 2
-    assert movement["status"] == "provisional"
-    assert movement["classification"] == "consolidation"
-    assert movement["center_family_ids"] == [result["centers"][0]["family_id"]]
+def test_unresolved_expansion_does_not_promote_open_movement():
+    result = build_structure_hierarchy(pens_from_prices([1,10,6,15,8,20,12,25,18,30,26,35]))
+    assert all(m["level"] == 1 for m in result["movements"])
+    assert all(not m["recursive_eligible"] for m in result["movements"] if m["status"] != "confirmed")
 
 
 def test_multiple_promoted_centers_create_one_movement_revision():

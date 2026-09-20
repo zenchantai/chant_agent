@@ -16,7 +16,7 @@ def center_display_catalog(source: dict[str, Any]) -> list[dict[str, Any]]:
             return
         visited.add(center["id"])
         candidates[center["id"]] = center
-        if "expansion_envelope_overlap" not in center.get("formation_modes", []):
+        if not {"expansion_envelope_overlap", "expansion_decomposition"}.intersection(center.get("formation_modes", [])):
             return
         for identifier in center.get("child_center_ids", []):
             child = revisions.get(identifier)
@@ -57,6 +57,8 @@ def project_center_display(page: dict[str, Any], source: dict[str, Any], level: 
         center_ids.add(item["revision_id"])
         center_ids.update(item["parent_revision_ids"])
     center_ids.update(item["center_revision_id"] for item in structure.get("points", []))
+    for relation in structure.get("relations", []):
+        center_ids.update([relation["from_id"], relation["to_id"]])
     for point in structure.get("points", []):
         center = revisions.get(point["center_revision_id"])
         if center:
@@ -67,6 +69,8 @@ def project_center_display(page: dict[str, Any], source: dict[str, Any], level: 
     movement_ids = {item["id"] for item in structure.get("movement_revisions", [])}
     component_ids = {item["id"] for item in structure.get("components", [])}
     component_ids.update(identifier for item in structure.get("points", []) for identifier in item.get("source_component_ids", []))
+    for relation in structure.get("relations", []):
+        component_ids.update(relation.get("evidence", {}).get("connection_component_ids", []))
     movements = {item["id"]: item for item in source.get("movement_revisions", [])}
     visited_centers: set[str] = set()
     visited_movements: set[str] = set()

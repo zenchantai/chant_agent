@@ -42,3 +42,14 @@ export type PanelVisibility={left:boolean;right:boolean};
 export type SubplotVisibility=boolean[];
 export type SecurityCandidate={symbol:string;market_code:string;name:string;market:string;trade_status:string;selected:boolean};
 export type SecuritySearchResult={query:string;items:SecurityCandidate[];catalog_date?:string;refreshed_at?:string;count:number};
+
+export interface Center {
+  formation_type?: "pullback" | "rebound" | "undetermined";
+  formation_stage?: "directional" | "origin_overlap" | "boundary_candidate";
+  process_direction_at_formation?: "up" | "down" | "unknown";
+  direction_established_at?: string; available_at?: string;
+  direction_context?: {process_direction: string; reason: string; available_at: string; source_unit_ids: string[]} | null;
+  z_high_min?: number; z_low_max?: number; touch_unit_ids?: string[];
+  boundary_status?: "dynamic" | "fixed" | "unresolved";
+  decomposition_proof?: {boundary_status: string; available_at: string; segments: {movement_revision_id:string;start_date:string;end_date:string;low:number;high:number;status:string;source_pen_ids:string[]}[]};
+}

@@ -11,7 +11,7 @@ from app.period_structure import PeriodStructureService, analyze_period
 from app.rules import PERIOD_DEFINITION_VERSION
 from app.store import Store
 from app.structure_display import center_display_catalog, project_daily_l2
-from tests.chan_fixtures import pens_from_prices
+from tests.chan_fixtures import pens_from_prices, legacy_expansion_snapshot
 
 
 def daily_snapshot():
@@ -21,7 +21,7 @@ def daily_snapshot():
                  "definition_version": PERIOD_DEFINITION_VERSION, "calculator_fingerprint": "test",
                  "market_version": "daily-market", "structure_version": "daily-structure",
                  "source_cutoff": "2026-01-12", "persisted": True, "preview": False},
-        "structure": {"pens": pens, **build_structure_hierarchy(pens)},
+        "structure": legacy_expansion_snapshot(),
     }
 
 
