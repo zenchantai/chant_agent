@@ -1,0 +1,427 @@
+<title>czsc 对照分析</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+:root{
+  --paper:#EDEFF2; --surface:#F8F9FB; --surface-2:#E3E7ED;
+  --ink:#14181F; --ink-soft:#434E5E; --muted:#6B7686;
+  --rule:#C6CCD6; --rule-soft:#DCE0E7;
+  --accent:#1B4D8F; --accent-bg:#E0E8F4;
+  --warn:#A2331F;  --warn-bg:#F3E1DD;
+  --ok:#2A6354;    --ok-bg:#DCEAE5;
+  --shadow:0 1px 2px rgba(20,24,31,.06),0 8px 24px -16px rgba(20,24,31,.28);
+  --f-display:"Noto Serif SC","Songti SC",Georgia,serif;
+  --f-body:"IBM Plex Sans","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono",Menlo,Consolas,monospace;
+  --col:76ch; --aside:10rem; --gap:2.25rem;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#0F141A; --surface:#171D25; --surface-2:#1F2731;
+  --ink:#E4E8EE; --ink-soft:#B4BECB; --muted:#8894A4;
+  --rule:#2D3641; --rule-soft:#232B35;
+  --accent:#74ACEA; --accent-bg:#16283C;
+  --warn:#E2775F;  --warn-bg:#2F1E1A;
+  --ok:#6FBFA6;    --ok-bg:#162A25;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 28px -18px rgba(0,0,0,.9);
+}}
+:root[data-theme="dark"]{
+  --paper:#0F141A; --surface:#171D25; --surface-2:#1F2731;
+  --ink:#E4E8EE; --ink-soft:#B4BECB; --muted:#8894A4;
+  --rule:#2D3641; --rule-soft:#232B35;
+  --accent:#74ACEA; --accent-bg:#16283C;
+  --warn:#E2775F;  --warn-bg:#2F1E1A;
+  --ok:#6FBFA6;    --ok-bg:#162A25;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 28px -18px rgba(0,0,0,.9);
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--f-body);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.wrap{max-width:calc(var(--aside) + var(--gap) + var(--col));margin:0 auto;padding:0 1.5rem 6rem}
+
+.masthead{padding:4.5rem 0 2rem;border-bottom:2px solid var(--ink)}
+.kicker{font-family:var(--f-mono);font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin:0 0 1.1rem}
+.masthead h1{font-family:var(--f-display);font-weight:700;font-size:clamp(2rem,5.2vw,2.95rem);line-height:1.24;letter-spacing:-.01em;text-wrap:balance;margin:0 0 1rem}
+.standfirst{font-size:1.06rem;color:var(--ink-soft);max-width:64ch;margin:0}
+
+.srcbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(10rem,1fr));border-bottom:1px solid var(--rule);margin-bottom:3rem}
+.srcbar div{padding:.95rem 1.1rem .95rem 0;border-right:1px solid var(--rule-soft)}
+.srcbar div:last-child{border-right:0}
+.srcbar dt{font-family:var(--f-mono);font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 .3rem}
+.srcbar dd{margin:0;font-size:.84rem;line-height:1.5}
+
+section.rec{display:grid;grid-template-columns:var(--aside) 1fr;gap:0 var(--gap);padding:3rem 0 .5rem;border-top:1px solid var(--rule)}
+section.rec>.side{grid-column:1}
+section.rec>*:not(.side){grid-column:2}
+.side{position:sticky;top:1.5rem;align-self:start}
+.side .num{font-family:var(--f-mono);font-size:.8rem;font-weight:500;color:var(--accent);letter-spacing:.06em}
+.side .tag{margin-top:.55rem;font-family:var(--f-mono);font-size:.67rem;line-height:1.6;color:var(--muted);word-break:break-word}
+
+h2{font-family:var(--f-display);font-weight:700;font-size:1.58rem;line-height:1.36;text-wrap:balance;margin:0 0 1.1rem}
+h3{font-weight:600;font-size:1.02rem;margin:2.1rem 0 .6rem}
+h3 .n{font-family:var(--f-mono);font-size:.8rem;color:var(--ok);margin-right:.5rem}
+p{margin:0 0 1.05rem}
+p.lead{font-size:1.04rem;color:var(--ink-soft)}
+code{font-family:var(--f-mono);font-size:.85em;background:var(--surface-2);padding:.1em .38em;border-radius:2px}
+.src{font-family:var(--f-mono);font-size:.72rem;color:var(--muted)}
+ul.plain{margin:0 0 1.1rem;padding-left:1.15rem}
+ul.plain li{margin-bottom:.45rem}
+ul.plain li::marker{color:var(--muted)}
+
+pre{margin:0 0 1.3rem;padding:1rem 1.15rem;background:var(--surface-2);overflow-x:auto;font-family:var(--f-mono);font-size:.8rem;line-height:1.7;border-left:3px solid var(--rule)}
+pre b{color:var(--warn);font-weight:500}
+
+.verdict{display:grid;grid-template-columns:auto 1fr;gap:.9rem;align-items:start;padding:1rem 1.2rem;margin:0 0 1.3rem;font-size:.97rem}
+.verdict .sig{font-family:var(--f-mono);font-size:.7rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase;padding-top:.25rem;white-space:nowrap}
+.verdict p:last-child{margin-bottom:0}
+.v-ok{background:var(--ok-bg);border-left:3px solid var(--ok)} .v-ok .sig{color:var(--ok)}
+.v-warn{background:var(--warn-bg);border-left:3px solid var(--warn)} .v-warn .sig{color:var(--warn)}
+.v-note{background:var(--accent-bg);border-left:3px solid var(--accent)} .v-note .sig{color:var(--accent)}
+
+.tablewrap{overflow-x:auto;margin:0 0 1.5rem}
+table{border-collapse:collapse;width:100%;min-width:34rem;font-size:.88rem}
+caption{caption-side:top;text-align:left;font-family:var(--f-mono);font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding-bottom:.6rem}
+th,td{text-align:left;padding:.6rem .9rem .6rem 0;border-bottom:1px solid var(--rule-soft);vertical-align:top}
+thead th{border-bottom:1px solid var(--rule);font-weight:600;font-size:.72rem;letter-spacing:.05em;color:var(--muted);text-transform:uppercase;font-family:var(--f-mono)}
+thead th.cz{color:var(--accent)} thead th.ca{color:var(--warn)}
+tbody tr:last-child td{border-bottom:0}
+td.dim{font-weight:500;white-space:nowrap}
+td.cz{color:var(--ink-soft)} td.ca{color:var(--ink-soft)}
+td b.hi{color:var(--accent);font-weight:600}
+td b.hr{color:var(--warn);font-weight:600}
+td.num{font-variant-numeric:tabular-nums}
+
+figure{margin:1.8rem 0 2rem;padding:1.4rem 1.4rem 1rem;background:var(--surface);border:1px solid var(--rule-soft);box-shadow:var(--shadow)}
+figure svg{display:block;width:100%;max-width:100%;height:auto;color:var(--ink-soft)}
+figcaption{margin-top:1rem;padding-top:.8rem;border-top:1px solid var(--rule-soft);font-size:.84rem;line-height:1.65;color:var(--muted)}
+figcaption b{color:var(--ink-soft);font-weight:600}
+
+.take{display:grid;gap:.1rem;margin:0 0 1.4rem}
+.take-item{display:grid;grid-template-columns:2.2rem 1fr;gap:1rem;padding:1rem 0;border-bottom:1px solid var(--rule-soft)}
+.take-item:first-child{border-top:1px solid var(--rule-soft)}
+.take-item .k{font-family:var(--f-mono);font-size:1.1rem;color:var(--ok);padding-top:.1rem}
+.take-item h4{margin:0 0 .4rem;font-size:.98rem;font-weight:600}
+.take-item p{margin:0 0 .5rem;font-size:.93rem;color:var(--ink-soft)}
+.take-item p:last-child{margin-bottom:0}
+
+.split{display:grid;grid-template-columns:1fr 1fr;gap:1.4rem;margin:0 0 1.5rem}
+.card{padding:1.1rem 1.2rem;border:1px solid var(--rule-soft);background:var(--surface)}
+.card h4{margin:0 0 .6rem;font-size:.95rem;font-weight:600}
+.card.a h4{color:var(--accent)} .card.b h4{color:var(--warn)}
+.card p{margin:0;font-size:.9rem;color:var(--ink-soft)}
+
+.close{margin-top:3.5rem;padding-top:2rem;border-top:2px solid var(--ink);font-size:.85rem;color:var(--muted)}
+.close p{margin-bottom:.5rem}
+
+@media (max-width:760px){
+  :root{--gap:0rem}
+  section.rec{grid-template-columns:1fr}
+  section.rec>.side{grid-column:1;position:static;display:flex;gap:1rem;align-items:baseline;margin-bottom:.9rem;padding-bottom:.6rem;border-bottom:1px solid var(--rule-soft)}
+  section.rec>*:not(.side){grid-column:1}
+  .side .tag{margin-top:0}
+  .verdict,.take-item{grid-template-columns:1fr}
+  .split{grid-template-columns:1fr}
+  .masthead{padding-top:3rem}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="kicker">chant_agent × czsc · 源码级对照</p>
+  <h1>czsc 对照分析</h1>
+  <p class="standfirst">把 czsc v1.0.1 的 Rust 核心逐文件读完，再对照 chant_agent。结论出乎意料：<strong>两个系统不是同一类东西</strong>——czsc 有 6.3k stars，但它的中枢识别只有 21 行，而且全库只被一个信号函数调用过。</p>
+</header>
+
+<dl class="srcbar">
+  <div><dt>被分析</dt><dd>czsc <code>v1.0.1-3-g701e480</code></dd></div>
+  <div><dt>核心</dt><dd>Rust · czsc-core 10402 行</dd></div>
+  <div><dt>对照</dt><dd>chant_agent v31</dd></div>
+  <div><dt>方法</dt><dd>源码实读，非文档转述</dd></div>
+</dl>
+
+<!-- 0 -->
+<section class="rec" id="s0">
+  <div class="side"><div class="num">00</div><div class="tag">最刺眼的<br>一个事实</div></div>
+  <h2>czsc 基本不用中枢</h2>
+  <p class="lead">这是读完源码后最反直觉的发现，也是整份报告的前提。</p>
+
+  <p><code>get_zs_seq</code>（中枢序列划分）在整个仓库里<strong>只有一处业务调用</strong>：<span class="src">czsc-signals/src/cxt.rs:1044</span>，用于 <code>cxt_double_zs_v230311</code>（双中枢 BS1 辅助）。</p>
+
+  <p>220+ 个信号函数中，绝大多数建立在笔、分型、均线、MACD 之上。中枢在这套系统里是<strong>可选配件</strong>，不是地基。</p>
+
+  <h3>它的第三类买卖点长这样</h3>
+  <pre><span class="src">czsc-signals/src/cxt.rs:904-1008 · cxt_third_bs_V230318</span>
+
+取最近 5 笔
+中枢 = 第 1、3 笔的交集
+  zs_zd = max(b1.low, b3.low)
+  zs_zg = min(b1.high, b3.high)
+
+若 b5 向下 且 b5.low > zs_zg 且 <b>ma5 > ma3 > ma1</b>
+  → 三买</pre>
+
+  <div class="verdict v-warn">
+    <div class="sig">注意</div>
+    <div>
+      <p><strong>均线是必要条件，不是辅助证据。</strong>拿掉 <code>ma5 &gt; ma3 &gt; ma1</code> 这个判断，信号就不成立了。</p>
+      <p>教材里的三买是"离开中枢后第一次回试不跌破 ZG"，没有均线什么事。czsc 这个判定<strong>在教材意义上不是三买</strong>，它是一个以中枢为形态过滤器的均线信号。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 1 架构对比 -->
+<section class="rec" id="s1">
+  <div class="side"><div class="num">01</div><div class="tag">架构对比</div></div>
+  <h2>两套系统的分歧从第一行就开始了</h2>
+
+  <div class="tablewrap">
+    <table>
+      <caption>逐维度对照</caption>
+      <thead><tr><th>维度</th><th class="cz">czsc</th><th class="ca">chant_agent</th></tr></thead>
+      <tbody>
+        <tr><td class="dim">中枢代码量</td><td class="cz num"><b class="hi">236 行</b>，无状态值对象</td><td class="ca num">2863 行，状态机 + 账本</td></tr>
+        <tr><td class="dim">中枢识别</td><td class="cz"><b class="hi">21 行</b>贪心单向扫描</td><td class="ca">候选账本 + 六道校验 + 时间戳仲裁</td></tr>
+        <tr><td class="dim">ZG / ZD</td><td class="cz">前 3 笔</td><td class="ca">核心三段 <b class="hr">（相同）</b></td></tr>
+        <tr><td class="dim">GG / DD</td><td class="cz"><b class="hi">所有笔</b>，含反向笔</td><td class="ca"><b class="hr">仅 Z 单位</b>，反向笔不入</td></tr>
+        <tr><td class="dim">正宽度要求</td><td class="cz"><code>zg &gt;= zd</code> 允许相等</td><td class="ca"><code>zd + ε &lt; zg</code> 严格</td></tr>
+        <tr><td class="dim">方向上下文</td><td class="cz"><b class="hi">无</b></td><td class="ca">先定过程方向再找核心</td></tr>
+        <tr><td class="dim">延伸 / 扩展 / 升级</td><td class="cz"><b class="hi">完全没有</b></td><td class="ca">完整体系</td></tr>
+        <tr><td class="dim">级别</td><td class="cz"><b class="hi">多周期并列</b>，不递归</td><td class="ca">L1 → L8 递归</td></tr>
+        <tr><td class="dim">笔可否撤销</td><td class="cz"><b class="hi">可以</b>，最后一笔可 pop 回退</td><td class="ca">不可，已确认前缀不可变</td></tr>
+        <tr><td class="dim">历史保留</td><td class="cz"><b class="hi">最近 50 笔</b>，老数据 drain</td><td class="ca">全历史 + 修订链</td></tr>
+        <tr><td class="dim">笔成立条件</td><td class="cz num"><b class="hi">2 条</b></td><td class="ca num">4 条 + 两类特例</td></tr>
+        <tr><td class="dim">笔的力度指标</td><td class="cz num"><b class="hi">10 个</b></td><td class="ca num">4 个</td></tr>
+        <tr><td class="dim">买卖点</td><td class="cz">信号化，均线作必要条件</td><td class="ca">严格结构推导</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>czsc 的中枢划分算法全文</h3>
+  <pre><span class="src">czsc-core/src/analyze/utils.rs:31-51</span>
+
+对每根笔 bi：
+  取出最后一个中枢 last_zs
+  若 (bi 向上 且 bi.high &lt; last_zs.zd)
+     或 (bi 向下 且 bi.low  &gt; last_zs.zg)
+      → <b>笔完全脱离</b>，封存旧中枢，用这根笔开新中枢
+  否则
+      → 并入当前中枢，重算 zg/zd/gg/dd</pre>
+
+  <p>没有方向判断，没有三笔门槛，<strong>单笔就能建一个 ZS 对象</strong>。有效性交给事后的 <code>is_valid()</code>——要求每一笔都与中枢区间有交集<span class="src">（objects/zs.rs:88）</span>，这其实就是教材的走势中枢中心定理一，只是被做成了不变量而非状态机。</p>
+
+  <figure>
+    <svg viewBox="0 0 760 320" role="img" aria-label="架构对比图：czsc 为多周期并列的扁平结构每个周期独立持有笔与可选中枢，chant_agent 为单周期内 L1 到 L8 的递归分层结构">
+      <defs>
+        <marker id="c1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#1B4D8F"/></marker>
+        <marker id="c2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#A2331F"/></marker>
+      </defs>
+
+      <text x="0" y="16" font-family="IBM Plex Mono, monospace" font-size="11" fill="#1B4D8F">czsc · 多周期并列，扁平</text>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="#1B4D8F">
+        <rect x="0" y="32" width="74" height="72" fill="none" stroke="#1B4D8F" stroke-width="1.3"/>
+        <text x="37" y="54" text-anchor="middle">1分钟</text>
+        <text x="37" y="72" text-anchor="middle" font-size="9.5" opacity=".8">FX→BI</text>
+        <text x="37" y="88" text-anchor="middle" font-size="9.5" opacity=".55">(ZS 可选)</text>
+
+        <rect x="88" y="32" width="74" height="72" fill="none" stroke="#1B4D8F" stroke-width="1.3"/>
+        <text x="125" y="54" text-anchor="middle">5分钟</text>
+        <text x="125" y="72" text-anchor="middle" font-size="9.5" opacity=".8">FX→BI</text>
+        <text x="125" y="88" text-anchor="middle" font-size="9.5" opacity=".55">(ZS 可选)</text>
+
+        <rect x="176" y="32" width="74" height="72" fill="none" stroke="#1B4D8F" stroke-width="1.3"/>
+        <text x="213" y="54" text-anchor="middle">30分钟</text>
+        <text x="213" y="72" text-anchor="middle" font-size="9.5" opacity=".8">FX→BI</text>
+        <text x="213" y="88" text-anchor="middle" font-size="9.5" opacity=".55">(ZS 可选)</text>
+
+        <rect x="264" y="32" width="74" height="72" fill="none" stroke="#1B4D8F" stroke-width="1.3"/>
+        <text x="301" y="54" text-anchor="middle">日线</text>
+        <text x="301" y="72" text-anchor="middle" font-size="9.5" opacity=".8">FX→BI</text>
+        <text x="301" y="88" text-anchor="middle" font-size="9.5" opacity=".55">(ZS 可选)</text>
+      </g>
+      <g stroke="#1B4D8F" stroke-width="1.2" marker-end="url(#c1)">
+        <line x1="37" y1="112" x2="37" y2="140"/><line x1="125" y1="112" x2="125" y2="140"/>
+        <line x1="213" y1="112" x2="213" y2="140"/><line x1="301" y1="112" x2="301" y2="140"/>
+      </g>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="12">
+        <rect x="0" y="144" width="338" height="36" fill="none" stroke="#1B4D8F" stroke-width="1.8"/>
+        <text x="169" y="167" text-anchor="middle" fill="#1B4D8F">CzscTrader · 多级别联立</text>
+      </g>
+      <text x="0" y="204" font-family="IBM Plex Mono, monospace" font-size="10" fill="#1B4D8F" opacity=".8">周期之间无推导关系，各算各的</text>
+      <text x="0" y="220" font-family="IBM Plex Mono, monospace" font-size="10" fill="#1B4D8F" opacity=".8">= 教材说的「K 线图级别」</text>
+
+      <line x1="376" y1="16" x2="376" y2="300" stroke="currentColor" stroke-width="1" opacity=".25"/>
+
+      <text x="410" y="16" font-family="IBM Plex Mono, monospace" font-size="11" fill="#A2331F">chant_agent · 单周期内递归分层</text>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="#A2331F">
+        <rect x="410" y="32" width="150" height="34" fill="none" stroke="#A2331F" stroke-width="1.3"/>
+        <text x="485" y="54" text-anchor="middle">确认笔</text>
+        <rect x="410" y="86" width="150" height="34" fill="none" stroke="#A2331F" stroke-width="1.3"/>
+        <text x="485" y="108" text-anchor="middle">L1 中枢 + 延伸</text>
+        <rect x="410" y="140" width="150" height="34" fill="none" stroke="#A2331F" stroke-width="1.3"/>
+        <text x="485" y="162" text-anchor="middle">L1 走势</text>
+        <rect x="410" y="194" width="150" height="34" fill="none" stroke="#A2331F" stroke-width="1.8"/>
+        <text x="485" y="216" text-anchor="middle">L2 中枢</text>
+        <rect x="410" y="248" width="150" height="34" fill="none" stroke="#A2331F" stroke-width="1.3" stroke-dasharray="4 4"/>
+        <text x="485" y="270" text-anchor="middle">L3 … L8</text>
+      </g>
+      <g stroke="#A2331F" stroke-width="1.3" marker-end="url(#c2)">
+        <line x1="485" y1="66" x2="485" y2="82"/><line x1="485" y1="120" x2="485" y2="136"/>
+        <line x1="485" y1="174" x2="485" y2="190"/><line x1="485" y1="228" x2="485" y2="244"/>
+      </g>
+      <path d="M 560 211 L 600 211 L 600 103 L 566 103" fill="none" stroke="#A2331F" stroke-width="1.1" stroke-dasharray="3 3" marker-end="url(#c2)"/>
+      <text x="606" y="160" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#A2331F" opacity=".8">九单位</text>
+      <text x="606" y="174" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#A2331F" opacity=".8">段证明</text>
+      <text x="410" y="300" font-family="IBM Plex Mono, monospace" font-size="10" fill="#A2331F" opacity=".8">= 教材说的「F(X0)=X1 递归级别」</text>
+    </svg>
+    <figcaption><b>这不是实现细节差异，是级别观的分歧。</b>教材第 7 页明确区分了两套级别体系，czsc 走 K 线图级别（每周期独立，不推导），chant_agent 走递归级别（单周期内逐级推上去）。两者都合法，但决定了后面所有设计——czsc 不需要延伸扩展升级，因为它压根不递归。</figcaption>
+  </figure>
+</section>
+
+<!-- 2 五个借鉴 -->
+<section class="rec" id="s2">
+  <div class="side"><div class="num">02</div><div class="tag">可直接采用<br>五项</div></div>
+  <h2>值得直接拿来用的五个</h2>
+  <p class="lead">czsc 的中枢不如你的严谨，但它在<strong>笔的度量</strong>和<strong>工程演进</strong>上做的事，正好补你的短板。</p>
+
+  <div class="take">
+    <div class="take-item">
+      <div class="k">1</div>
+      <div>
+        <h4>SNR 信噪比 —— 补上「核心笔异常检测」缺的那个指标</h4>
+        <p><span class="src">czsc-core/src/objects/bi.rs:371</span></p>
+        <p><strong>SNR = |最后收盘 − 首根开盘| ÷ Σ|每根 K 线收盘 − 开盘|</strong></p>
+        <p>即<strong>净位移 ÷ 总路程</strong>。值域 [0,1]，无量纲、跨品种跨周期可比。越接近 1 说明这根笔走得越直、越顺畅；越接近 0 说明内部来回震荡。</p>
+        <p>上一份报告里我建议做核心笔异常检测但没给指标，<strong>这就是现成答案</strong>：三段核心提交前算 SNR，过低的标 <code>suspect</code>，而不是直接把 ZD/ZG 锁死。</p>
+      </div>
+    </div>
+
+    <div class="take-item">
+      <div class="k">2</div>
+      <div>
+        <h4>线性回归斜率 + R²，替换现在的简单斜率</h4>
+        <p><span class="src">bi.rs:399 get_slope · bi.rs:510 get_rsq · bi.rs:437 get_acceleration</span></p>
+        <p>czsc 的 <code>get_slope</code> 是<strong>最小二乘回归斜率</strong>，不是 <code>振幅 ÷ 根数</code>。另有 R²（拟合优度）和二次项系数（加速度，正负表示开口方向）。</p>
+        <p>你的 <code>_component_strength</code> 目前用 <code>amplitude / span</code>，<strong>受两端极值噪声影响大</strong>——恰恰是笔构中枢最脆弱的地方。换成回归斜率并用 R² 加权，力度比较会稳健得多。</p>
+      </div>
+    </div>
+
+    <div class="take-item">
+      <div class="k">3</div>
+      <div>
+        <h4>信号按日期版本化，老版本永不删除</h4>
+        <p><code>cxt_third_bs_V230318</code>、<code>cxt_second_bs_V230320</code> —— 函数名里带日期。修改行为时<strong>新增版本</strong>，不动旧的。</p>
+        <p>对比你的机制：改任一规则文件或九个计算源码之一 → 指纹变 → <strong>所有历史快照全量失效、必须重算</strong>。正确性上更强，但演进成本极高，"顺手改个小地方"的代价是重算全部。</p>
+        <p>可以考虑让规则支持<strong>多版本并存</strong>：新规则新版本号，旧快照继续用旧版本解释，而不是一律作废。</p>
+      </div>
+    </div>
+
+    <div class="take-item">
+      <div class="k">4</div>
+      <div>
+        <h4>中枢复杂度的量化指标</h4>
+        <p><span class="src">czsc-core/src/analyze/utils.rs:54 is_symmetry_zs</span></p>
+        <p>用中枢内各笔<strong>力度的变异系数</strong>（标准差 ÷ 均值）判断中枢是否"对称"。低于阈值即为对称中枢。</p>
+        <p>这直接呼应教材那句："<strong>中枢的复杂程度，是考察市场最终动向的一个很重要的依据。一个超复杂的中枢过后，就算一方赢了，其后的走势也是经常反复不断的。</strong>"<span class="src">（教材 02 第 10 页）</span></p>
+        <p>你的中枢目前没有任何质量或复杂度指标。这是低成本高价值的补充，而且有教材背书。</p>
+      </div>
+    </div>
+
+    <div class="take-item">
+      <div class="k">5</div>
+      <div>
+        <h4>计算窗口与存档分离</h4>
+        <p><span class="src">czsc-core/src/analyze/mod.rs:182 update_bar · 第 226-238 行</span></p>
+        <p>czsc 是单根 K 线驱动的增量更新，<code>max_bi_num</code> 默认 <strong>50</strong>，超出就 drain 掉最老的笔，<code>bars_raw</code> 也跟着裁。</p>
+        <p><strong>不是建议你也砍历史</strong>——你的审计需求是真实的。但 czsc 证明了实盘决策只需要最近几十笔。可以把<strong>计算窗口</strong>和<strong>存档</strong>拆成两条链路：计算只吃尾部窗口，存档另走一路。你的前缀重放是平方复杂度，这一刀下去收益最直接。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="verdict v-ok">
+    <div class="sig">共同点</div>
+    <div><p>这五项<strong>都不触碰你的中枢逻辑</strong>，全部是加法。第 1、2 项改 <code>app/engine.py</code> 的笔对象，第 4 项改中枢构造后的度量，第 3、5 项是架构层。互不冲突，可以分别推进。</p></div>
+  </div>
+</section>
+
+<!-- 3 不建议 -->
+<section class="rec" id="s3">
+  <div class="side"><div class="num">03</div><div class="tag">不建议采用<br>三项</div></div>
+  <h2>不要借鉴的三个</h2>
+
+  <div class="tablewrap">
+    <table>
+      <caption>反向清单</caption>
+      <thead><tr><th>项</th><th>原因</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="dim">中枢识别算法</td>
+          <td class="cz">无方向上下文、允许零宽度中枢（<code>zg == zd</code> 也算有效）、GG/DD 混入反向笔。<strong>比教材还松</strong>。你现在的实现在这三点上都更接近原文，不要退</td>
+        </tr>
+        <tr>
+          <td class="dim">买卖点依赖均线</td>
+          <td class="cz"><code>ma5 &gt; ma3 &gt; ma1</code> 是技术指标不是缠论结构。它的三买拿掉均线就不成立，这在教材意义上不是三买</td>
+        </tr>
+        <tr>
+          <td class="dim">笔可撤销回退</td>
+          <td class="cz"><span class="src">analyze/mod.rs:310</span> 最后一笔被破坏时直接 <code>pop</code> 丢弃重算。你的不可变前缀更适合有审计要求的场景，这是你的优势不是包袱</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 4 需要重新思考 -->
+<section class="rec" id="s4">
+  <div class="side"><div class="num">04</div><div class="tag">需要你<br>重新思考</div></div>
+  <h2>一个不太舒服但必须问的问题</h2>
+  <p class="lead">czsc 有 6.3k stars、1.7k forks，是这个领域最主流的实现。<strong>而它几乎不用中枢。</strong></p>
+
+  <div class="split">
+    <div class="card a">
+      <h4>解读 A · 对你不利</h4>
+      <p>中枢的严格实现对实盘收益的贡献可能有限。czsc 团队用 220+ 个笔、量价、均线信号加一套回测框架，直接绕开了中枢这个泥潭，并且活得很好。</p>
+      <p style="margin-top:.6rem">你在中枢上的投入是它的十倍以上——2863 行对 236 行。</p>
+    </div>
+    <div class="card b">
+      <h4>解读 B · 对你有利</h4>
+      <p>czsc 走的是"可回测信号"路线，牺牲了理论完整性。它的三买判定拿掉均线就不成立，严格说不是缠论三买。</p>
+      <p style="margin-top:.6rem">如果你要的是<strong>结构正确</strong>，它在理论层没有参考价值，只有工程手法可借鉴。</p>
+    </div>
+  </div>
+
+  <div class="verdict v-note">
+    <div class="sig">我的判断</div>
+    <div>
+      <p>这取决于这套系统的最终用途，<strong>不该由我替你决定</strong>：</p>
+      <p>· <strong>自己看盘、辅助决策</strong> → 你的路线对，继续把结构做扎实。<br>
+         · <strong>做可回测、可优化的策略</strong> → czsc 的信号-事件-回测框架是你现在完全缺失的一层，补它比补完中枢理论更快见效。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 5 落地 -->
+<section class="rec" id="s5">
+  <div class="side"><div class="num">05</div><div class="tag">下一步</div></div>
+  <h2>如果只做一件事</h2>
+
+  <p><strong>把 SNR 加进笔对象，然后统计现有中枢里有多少个的核心笔 SNR 异常低。</strong></p>
+
+  <p>这是一次性诊断，成本很低，但能直接回答上一份报告里悬而未决的那个问题——<strong>笔构中枢的噪声风险，在你自己的数据上到底有多大。</strong></p>
+
+  <p>教材说笔构中枢"稳定性极差"，czsc 用笔构中枢但基本不用中枢，你用笔构中枢并且把中枢当地基。三方立场不同，但没人给过这个问题一个<strong>数据上的答案</strong>。跑一遍就知道了。</p>
+
+  <div class="verdict v-ok">
+    <div class="sig">顺序</div>
+    <div><p>1. 笔对象加 SNR / 回归斜率 / R²　→　2. 跑日线数据出分布　→　3. 看核心笔 SNR 的下尾有多重　→　4. 据此决定要不要做异常检测，以及阈值定在哪</p></div>
+  </div>
+</section>
+
+<div class="close">
+  <p>分析对象：czsc <code>v1.0.1-3-g701e480</code>，Rust workspace 9 个 crate，czsc-core 10402 行、czsc-signals 22 个源文件。</p>
+  <p>方法：源码实读，非文档或 README 转述。所有断言标注了文件与行号。</p>
+  <p>未执行：czsc 的构建与运行、两套系统在同一数据上的结果比对。</p>
+</div>
+
+</div>
