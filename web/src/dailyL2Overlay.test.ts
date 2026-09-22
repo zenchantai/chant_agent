@@ -21,7 +21,7 @@ const fixture = (patch: Partial<ChartData> = {}): ChartData => ({
   symbol: "000001", timeframe: "m", adjustflag: "2", calculation_profile: "pen_centers_only",
   bars: ["2026-01-30", "2026-02-27", "2026-03-31"].map(trade_date => ({ trade_date, open: 10, close: 10.5, high: 12, low: 8, volume: 100, amount: 1000 })),
   pens: [{ id: "p", kind: "pen", ordinal: 0, level: 0, status: "confirmed", start_date: "2026-01-30", end_date: "2026-02-27", start_price: 8, end_price: 12 }],
-  centers: [native()], center_revisions: [native()], components: [], movements: [], movement_revisions: [], points: [], point_revisions: [], relations: [], issues: [],
+  centers: [native()], center_revisions: [native()], components: [], movements: [], movement_revisions: [], points: [], point_revisions: [], promotion_candidates: [], promotion_candidate_revisions: [], relations: [], issues: [],
   levels: [1], center_levels: [1], movement_levels: [], unassigned_by_level: {}, drawings: [], drawings_version: "", indicators: {macd: []},
   available: true, has_more: true, active_structure_level: 1, max_available_center_level: 1,
   definition_version: "v27", calculator_fingerprint: "engine", structure_version: "monthly", run_id: 5,

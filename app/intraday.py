@@ -501,6 +501,9 @@ class IntradayService:
                 "structure": {"pens": [], "components": [], "centers": [],
                               "center_revisions": [], "movements": [], "movement_revisions": [],
                               "points": [], "point_revisions": [], "relations": [], "issues": [],
+                              "segment_proofs": [], "segment_proof_revisions": [],
+                              "center_candidates": [], "center_candidate_revisions": [],
+                              "promotion_candidates": [], "promotion_candidate_revisions": [],
                               "levels": [], "unassigned_by_level": {}, "pen_diagnostics": []},
                 "indicators": {
                     "macd": [item for item in calculate_macd(rows) if item["trade_date"] in stamps],

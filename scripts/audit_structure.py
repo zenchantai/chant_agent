@@ -39,7 +39,10 @@ def audit_calculation_profile(meta: dict, structure: dict, timeframe: str | None
             problems.append(f"profile:unexpected:{timeframe}:{profile}")
     if timeframe not in REFERENCE_TIMEFRAMES and profile != "pen_centers_only":
         return problems
-    for group in ("movements", "movement_revisions", "points", "point_revisions", "relations"):
+    for group in (
+        "movements", "movement_revisions", "points", "point_revisions", "relations",
+        "promotion_candidates", "promotion_candidate_revisions",
+    ):
         if structure.get(group):
             problems.append(f"profile:forbidden_group:{group}")
     if int(meta.get("max_level", 0)) > 1 or int(structure.get("max_level", 0)) > 1:
@@ -168,6 +171,15 @@ def json_rows(connection: sqlite3.Connection, table: str, run_id: int, column: s
     ).fetchall()]
 
 
+def optional_json_rows(
+    connection: sqlite3.Connection, table: str, run_id: int, column: str,
+) -> list[dict]:
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
+    ).fetchone()
+    return json_rows(connection, table, run_id, column) if exists else []
+
+
 def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> dict:
     result = {"symbol": symbol, "timeframe": timeframe, "status": "ok", "problems": []}
     run = connection.execute("""SELECT r.* FROM chan_active_runs a
@@ -191,6 +203,9 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
     center_revisions = json_rows(connection, "chan_center_revisions", run["id"], "evidence_json")
     movement_revisions = json_rows(connection, "chan_movement_revisions", run["id"], "evidence_json")
     point_revisions = json_rows(connection, "chan_point_revisions", run["id"], "evidence_json")
+    promotion_candidate_revisions = optional_json_rows(
+        connection, "chan_promotion_candidates", run["id"], "evidence_json",
+    )
     structure = {
         "pens": json_rows(connection, "chan_pens", run["id"], "payload_json"),
         "components": json_rows(connection, "chan_components", run["id"], "evidence_json"),
@@ -200,6 +215,10 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
         "movement_revisions": movement_revisions,
         "points": [item for item in point_revisions if item.get("active", True)],
         "point_revisions": point_revisions,
+        "promotion_candidates": [
+            item for item in promotion_candidate_revisions if item.get("active")
+        ],
+        "promotion_candidate_revisions": promotion_candidate_revisions,
         "relations": json_rows(connection, "chan_relations", run["id"], "evidence_json"),
         "issues": json_rows(connection, "chan_issues", run["id"], "evidence_json"),
     }
@@ -229,6 +248,7 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
         "movements": len(structure["movements"]),
         "movement_revisions": len(movement_revisions),
         "points": len(structure["points"]),
+        "promotion_candidates": len(structure["promotion_candidates"]),
         "max_level": max((int(item["level"]) for item in structure["centers"]), default=0),
     })
     if result["max_level"] != int(run["max_level"]):

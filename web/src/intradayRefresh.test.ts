@@ -160,7 +160,7 @@ describe("分时刷新调度", () => {
 describe("静默行情合并", () => {
   const data = (symbol: string, close: number): ChartData => ({
     symbol, timeframe: "1", adjustflag: "2", bars: [{ trade_date: "2026-09-16 10:00:00", open: 10, high: 12, low: 9, close, volume: 10, amount: 0 }],
-    pens: [], centers: [], center_revisions: [], movements: [], movement_revisions: [], components: [], points: [], point_revisions: [], relations: [], issues: [], levels: [], unassigned_by_level: {}, center_levels: [], movement_levels: [],
+    pens: [], centers: [], center_revisions: [], movements: [], movement_revisions: [], components: [], points: [], point_revisions: [], promotion_candidates: [], promotion_candidate_revisions: [], relations: [], issues: [], levels: [], unassigned_by_level: {}, center_levels: [], movement_levels: [],
     drawings: [], drawings_version: "", indicators: { macd: [] }, has_more: false, available: true,
     definition_version: "test", calculator_fingerprint: "test", structure_version: "", active_structure_level: 1, max_available_center_level: 0, intraday_refresh: state(),
   });

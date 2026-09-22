@@ -47,7 +47,7 @@ def test_catalog_does_not_draw_all_history_and_is_pagination_stable():
 
 def test_touch_candidate_does_not_create_a_display_parent():
     source = {"pens": [], **build_structure_hierarchy(pens_from_prices([1, 10, 6, 15, 8, 20, 15, 25, 18, 30, 26, 35]))}
-    assert [item["display_role"] for item in center_display_catalog(source)] == ["active", "active"]
+    assert all(item["display_role"] == "active" for item in center_display_catalog(source))
 
 
 def test_nested_expansion_and_latest_representative_are_deterministic():

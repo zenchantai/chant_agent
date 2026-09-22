@@ -36,7 +36,7 @@ it("never renders undetermined or truncated movements as confirmed solid lines",
 });
 const base = (overrides: Record<string, unknown> = {}) => ({
   symbol: "1A0001", timeframe: "d", bars: [bar("2026-01-01"), bar("2026-01-02", 11), bar("2026-01-03", 10.5)],
-  pens: [], centers: [], center_revisions: [], movement_revisions: [], components: [], movements: [], relations: [], indicators: { macd: [], ma: [], boll: [] },
+  pens: [], centers: [], center_revisions: [], movement_revisions: [], components: [], movements: [], promotion_candidates: [], promotion_candidate_revisions: [], relations: [], indicators: { macd: [], ma: [], boll: [] },
   active_structure_level: 1, max_available_center_level: 1, has_more: false, available: true,
   definition_version: "v12", structure_version: "v12", ...overrides,
 }) as any;
@@ -83,6 +83,19 @@ describe("chart builders", () => {
     const areas = artifacts.option?.series.find((s:any)=>s.id==="kline").markArea.data;
     expect(areas.map((a:any)=>a[0].name)).toContain("Z 波动范围");
     expect(areas.map((a:any)=>a[0].name)).toContain("上下文范围");
+  });
+
+  it("动态父中枢使用虚线框并按三个规范走势高亮底层笔", () => {
+    const pens = ["p1", "p2", "p3"].map((id, ordinal) => ({ id, ordinal, kind: "pen", level: 0, status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", start_price: 9, end_price: 11 }));
+    const selected = center({
+      level: 2, boundary_status: "dynamic", fixed_zd: null, fixed_zg: null,
+      decomposition_proof: { boundary_status: "dynamic", available_at: "2026-01-03", segments: pens.map((pen, index) => ({ movement_revision_id: `m${index + 1}`, start_date: pen.start_date, end_date: pen.end_date, low: 8, high: 12, status: index < 2 ? "confirmed" : "provisional", source_pen_ids: [pen.id] })) },
+    });
+    const data = base({ pens, centers: [selected], center_revisions: [selected] });
+    const series = buildPenSeries({ data, selectedStructureId: selected.id }, data.bars.map((item: any) => item.trade_date));
+    expect(series.map((item) => item.lineStyle.color)).toEqual(["#0e7490", "#b45309", "#7e22ce"]);
+    const area = buildCenterAreas({ data }, data.bars.map((item: any) => item.trade_date)).areas[0];
+    expect(area[0].itemStyle.borderType).toBe("dashed");
   });
 
   it("区分核心、Z延伸、进入和连接笔的选择高亮，不绘制历史中枢", () => {
@@ -167,6 +180,15 @@ describe("chart builders", () => {
     expect(result?.bars).toHaveLength(1);
     expect(result?.pens).toEqual([]);
     expect(result?.indicators).toEqual({ macd: [], ma: [], boll: [] });
+  });
+
+  it("normalizes promotion candidates separately and removes them from reference profiles", () => {
+    const candidate = { id: "candidate:r1", kind: "promotion_candidate", family_id: "candidate", revision_no: 1, active: true, candidate_source: "extension_decomposition", child_level: 1, parent_level: 2, status: "unresolved", source_entity_ids: ["center:r1"], required_unit_ids: Array.from({ length: 9 }, (_, index) => `p${index}`), search_unit_ids: Array.from({ length: 9 }, (_, index) => `p${index}`), start_date: "2026-01-01", end_date: "2026-01-03", observed_at: "2026-01-03", evidence_available_at: "2026-01-03", proof_ids: [], missing_evidence: [{ code: "three_segment_proofs_missing" }], rejected_proofs: [] };
+    const full = normalizeChartData(base({ promotion_candidates: [candidate], promotion_candidate_revisions: [candidate] }));
+    expect(full?.promotion_candidates[0].missing_evidence[0].code).toBe("three_segment_proofs_missing");
+    const reference = normalizeChartData(base({ timeframe: "w", calculation_profile: "pen_centers_only", promotion_candidates: [candidate], promotion_candidate_revisions: [candidate] }));
+    expect(reference?.promotion_candidates).toEqual([]);
+    expect(reference?.promotion_candidate_revisions).toEqual([]);
   });
 
   it("uses nested API levels for center and movement filters", () => {

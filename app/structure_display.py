@@ -16,7 +16,9 @@ def center_display_catalog(source: dict[str, Any]) -> list[dict[str, Any]]:
             return
         visited.add(center["id"])
         candidates[center["id"]] = center
-        if not {"expansion_envelope_overlap", "expansion_decomposition"}.intersection(center.get("formation_modes", [])):
+        if not {
+            "expansion_envelope_overlap", "expansion_decomposition", "extension_decomposition",
+        }.intersection(center.get("formation_modes", [])):
             return
         for identifier in center.get("child_center_ids", []):
             child = revisions.get(identifier)
@@ -46,6 +48,7 @@ def project_center_display(page: dict[str, Any], source: dict[str, Any], level: 
     structure = result["structure"]
     revisions = {item["id"]: item for item in source.get("center_revisions", [])}
     revisions.update({item["id"]: item for item in source.get("centers", [])})
+    segments = {item["id"]: item for item in source.get("segment_proof_revisions", source.get("segment_proofs", []))}
     catalog = center_display_catalog(source)
     structure["display_center_levels"] = sorted({revisions[item["revision_id"]]["level"] for item in catalog})
     bars = result["market"]["bars"]
@@ -67,6 +70,7 @@ def project_center_display(page: dict[str, Any], source: dict[str, Any], level: 
                 if (representative["family_id"], representative["level"]) == (center["family_id"], center["level"]):
                     center_ids.update(reference["parent_revision_ids"])
     movement_ids = {item["id"] for item in structure.get("movement_revisions", [])}
+    segment_ids = {item["id"] for item in structure.get("segment_proof_revisions", structure.get("segment_proofs", []))}
     component_ids = {item["id"] for item in structure.get("components", [])}
     component_ids.update(identifier for item in structure.get("points", []) for identifier in item.get("source_component_ids", []))
     for relation in structure.get("relations", []):
@@ -87,6 +91,7 @@ def project_center_display(page: dict[str, Any], source: dict[str, Any], level: 
             if center.get("unit_kind") == "movement":
                 movement_ids.update(center.get("context_unit_ids", []))
                 movement_ids.update(center.get("owned_unit_ids", []))
+            segment_ids.update(center.get("child_segment_ids", []))
             component_ids.update(center.get("connection_component_ids", []))
             component_ids.update(filter(None, [center.get("entry_component_id"), center.get("departure_component_id"), center.get("retest_component_id")]))
         for identifier in sorted(movement_ids - visited_movements):
@@ -97,9 +102,11 @@ def project_center_display(page: dict[str, Any], source: dict[str, Any], level: 
                 movement_ids.update(movement.get("child_movement_ids", []))
     structure["center_revisions"] = [deepcopy(item) for item in revisions.values() if item["id"] in center_ids]
     structure["movement_revisions"] = [deepcopy(item) for item in movements.values() if item["id"] in movement_ids]
+    structure["segment_proof_revisions"] = [deepcopy(item) for item in segments.values() if item["id"] in segment_ids]
+    structure["segment_proofs"] = [item for item in structure["segment_proof_revisions"] if item.get("active", True)]
     structure["components"] = [deepcopy(item) for item in source.get("components", []) if item["id"] in component_ids]
     pen_ids = {item["id"] for item in structure.get("pens", [])}
-    for item in [*structure["center_revisions"], *structure["movement_revisions"], *structure["components"]]:
+    for item in [*structure["center_revisions"], *structure["movement_revisions"], *structure["segment_proof_revisions"], *structure["components"]]:
         pen_ids.update(item.get("source_pen_ids", []))
         if item.get("unit_kind") == "pen":
             pen_ids.update(item.get("context_unit_ids", []))

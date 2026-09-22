@@ -19,7 +19,7 @@ const fixture = (timeframe = "w"): ChartData => ({
   pens: ["entry", "core1", "core2", "core3", "extension", "departure"].map((id, index) => ({
     id, ordinal: index, kind: "pen", level: 0, status: "confirmed", start_date: dates[index], end_date: dates[index + 1], start_price: index % 2 ? 8 : 12, end_price: index % 2 ? 12 : 8,
   })),
-  centers: [native()], center_revisions: [native()], components: [], movements: [], movement_revisions: [], points: [], point_revisions: [], relations: [], issues: [],
+  centers: [native()], center_revisions: [native()], components: [], movements: [], movement_revisions: [], points: [], point_revisions: [], promotion_candidates: [], promotion_candidate_revisions: [], relations: [], issues: [],
   levels: [1], center_levels: [1], movement_levels: [], unassigned_by_level: {}, drawings: [], drawings_version: "", indicators: {macd: []},
   available: true, has_more: true, active_structure_level: 1, max_available_center_level: 1,
   definition_version: "v27", calculator_fingerprint: "engine", structure_version: "weekly", run_id: 5,

@@ -95,7 +95,10 @@ def test_audit_accepts_reference_native_structure_and_daily_single_bar_projectio
     assert audit_api_payload(reference_payload(timeframe), 1) == []
 
 
-@pytest.mark.parametrize("group", ["movements", "movement_revisions", "points", "point_revisions", "relations"])
+@pytest.mark.parametrize("group", [
+    "movements", "movement_revisions", "points", "point_revisions", "relations",
+    "promotion_candidates", "promotion_candidate_revisions",
+])
 def test_reference_api_audit_rejects_every_full_only_group(group):
     payload = reference_payload()
     payload["structure"][group] = [{"id": "forbidden", "level": 1}]

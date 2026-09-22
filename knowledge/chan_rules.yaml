@@ -1,9 +1,17 @@
-version: chan-period-directional-z-center-v28
+version: chan-period-candidate-ownership-boundary-v31
 calculation_profiles:
   full: ["5", "30", "d"]
   pen_centers_only: ["w", "m"]
 center_envelope_mode: owned_z_units
-center_promotion_mode: contact_then_decomposition
+movement_partition_mode: canonical_boundary_stream
+promotion_segment_mode: pen_native_segment_proof
+center_promotion_mode: unified_segment_proof
+nine_unit_mode: owned_units_from_core
+center_candidate_mode: canonical_eligible_candidate
+center_ownership_mode: same_level_single_owner
+center_context_mode: references_do_not_own
+center_lifecycle_mode: timestamped_event_arbitration
+center_prefix_mode: immutable_committed_prefix
 envelope_touch_mode: expansion_contact
 source:
   title: 读缠论108课札记
@@ -30,7 +38,15 @@ rules:
   - {id: CENTER-STATE-MACHINE-V25, section: centers, assertion: "方向性核心固定ZD/ZG；同向Z与核心闭区间接触可延伸。首次完整离开回试仍按严格边界确认三类点，不能用后续回试偷换第一次。"}
   - {id: CENTER-Z-WAVE-V26, section: centers, assertion: "DD/GG仅取核心第一、第三及已接纳同向延伸Z单位，进入、连接、最终离开和回试不参与；与上下文价格范围分开。"}
   - {id: CENTER-NEWBORN-EXPANSION-V26, section: centers, assertion: "核心分离且Z闭区间接触可确认扩展事件；保存连续性、连接和真实Z见证。高级核心由三段次级走势交集定界，第三段可动态；缺少定界证据不画高级矩形，禁止包络直接升级。"}
-  - {id: CENTER-FAMILY-REVISION-V25, section: hierarchy, assertion: "中枢升级沿用较早center_family_id并新增不可变高级修订；不通过传递重叠吸收后续结构。"}
+  - {id: CENTER-PARENT-FAMILY-V30, section: hierarchy, assertion: "父中枢由父级别、连续流和三个SegmentProof家族建立独立family_id；低级子中枢保留，不因升级改级或停用。"}
+  - {id: PROMOTION-OWNED-NINE-V30, section: hierarchy, assertion: "从首个核心单位起，core、extension和peripheral合计首次达到九个连续拥有单位时触发高级构造检查；entry、departure和retest不计数，九单位不等于自动升级。"}
+  - {id: SEGMENT-PEN-NATIVE-V30, section: movements, assertion: "L1到L2允许从确认笔直接构造至少三笔的SegmentProof；全局MovementRevision可适配为段证明但不是准入条件，三个连续段共同重叠后先生成动态父中枢。"}
+  - {id: CENTER-CANDIDATE-ELIGIBILITY-V31, section: centers, assertion: "几何合法候选还必须通过确认、连续性、方向上下文、边界、时间和同级所有权校验，才能进入可提交候选。"}
+  - {id: CENTER-CANDIDATE-SELECTION-V31, section: centers, assertion: "候选按证据可用时间、核心结束位置、核心起点位置、源单位数和稳定ID确定性选择；已提交候选不得被后续滑动窗口替换。"}
+  - {id: CENTER-OWNERSHIP-LEDGER-V31, section: centers, assertion: "同一级别同一连续流的直接单位只能有一个正式拥有者；L1拥有笔，L2拥有段证明，L3以上拥有已确认低级走势。"}
+  - {id: CENTER-CONTEXT-NONOWNERSHIP-V31, section: centers, assertion: "entry、departure、retest、connection和boundary_evidence只能作为上下文引用，不进入owned_unit_ids；上下文引用可以重叠。"}
+  - {id: CENTER-LIFECYCLE-ARBITRATION-V31, section: centers, assertion: "旧中枢回试、外部边界和独立后继核心按证据时间仲裁；独立后继核心可在不复用拥有单位时关闭旧中枢。"}
+  - {id: CENTER-PREFIX-STABILITY-V31, section: centers, assertion: "追加数据只能扩展未确认后缀；已提交候选、同级拥有权和确认前缀结果保持稳定。"}
   - {id: POINT-STRENGTH-VECTOR-V25, section: points, assertion: "力度先比较内部最高中枢级别和已确认子走势数，相同时再比较振幅与平均斜率；MACD仅作辅助证据。"}
   - {id: POINT-FIRST-V25, section: points, assertion: "一类点仅出现在至少两个同级中枢构成的趋势中，点位是最后离开段真实极值，后续反向低级走势完成时确认。"}
   - {id: POINT-SECOND-V25, section: points, assertion: "二类点依赖已确认一类点，第一次完整回撤不得破坏一类点极值，且不默认切分走势。"}

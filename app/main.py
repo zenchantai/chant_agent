@@ -16,7 +16,10 @@ from .agent import run_agent
 from .coverage import validate_5m_coverage, validate_coverage
 from .indicators import calculate_bollinger, calculate_macd, calculate_moving_averages
 from .intraday import LIVE_STRUCTURE_PERIODS, IntradayService, merge_period_rows
-from .period_structure import PeriodStructureService, REFERENCE_TIMEFRAMES, STRUCTURE_TIMEFRAMES, calculation_profile
+from .period_structure import (
+    PeriodStructureService, REFERENCE_TIMEFRAMES, STRUCTURE_TIMEFRAMES,
+    calculation_profile, structure_mode_metadata,
+)
 from .providers import TIMEFRAMES, fetch_api, fetch_baostock, normalize_security_symbol, read_csv
 from .rules import PERIOD_DEFINITION_VERSION
 from .securities import SecurityCatalogService
@@ -145,16 +148,10 @@ def health():
         "timeframes": list(TIMEFRAMES),
         "structure_timeframes": list(STRUCTURE_TIMEFRAMES),
         "structure_mode": "period_profiled",
+        "hierarchy_version": "center-hierarchy-v31-candidate-ownership",
         "calculation_profiles": {period: calculation_profile(period) for period in STRUCTURE_TIMEFRAMES},
         "reference_timeframes": list(REFERENCE_TIMEFRAMES),
-        "decomposition_mode": "non_same_level",
-        "base_unit_mode": "current_period_confirmed_pen",
-        "center_selection_mode": "entry_then_earliest_three_unit_core",
-        "center_envelope_mode": "owned_z_units",
-        "center_promotion_mode": "verified_expansion_or_recursive_core",
-        "envelope_touch_mode": "candidate",
-        "movement_boundary_mode": "structural_buy_sell_point",
-        "divergence_mode": "structural_strength_vector",
+        **structure_mode_metadata("full"),
         "max_computed_level": store.highest_active_chan_level(PERIOD_DEFINITION_VERSION),
         "active_run_status": "ready",
     }

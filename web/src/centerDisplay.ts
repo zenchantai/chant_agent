@@ -33,7 +33,7 @@ export const displayCenterCollection = (data: ChartData): Center[] => {
 
 export const centerParents = (data: ChartData, center: Center): Center[] => {
   const revisions = centerRevisionMap(data);
-  return data.center_revisions.filter((parent) => parent.formation_modes.some((mode) => ["expansion_envelope_overlap", "expansion_decomposition"].includes(mode)) && parent.child_center_ids.some((identifier) => {
+  return data.center_revisions.filter((parent) => parent.formation_modes.some((mode) => ["expansion_envelope_overlap", "expansion_decomposition", "extension_decomposition"].includes(mode)) && parent.child_center_ids.some((identifier) => {
     const child = revisions.get(identifier);
     return child?.family_id === center.family_id && child.level === center.level;
   }));
@@ -44,7 +44,7 @@ export const centerDisplayLabel = (data: ChartData, center: Center): string => {
   const suffix = !center.active && parents.length ? ` · ${[...new Set(parents.map((parent) => `L${parent.level}`))].join("/")} 的组成中枢` : "";
   const candidate = ["candidate", "provisional", "pending"].includes(center.status) ? " · 候选" : "";
   const type = center.formation_type === "pullback" ? "回调中枢" : center.formation_type === "rebound" ? "回升中枢" : center.formation_stage === "origin_overlap" ? "原点中枢 · 方向待定" : center.formation_stage === "boundary_candidate" ? "边界候选" : "中枢";
-  const evidence = !center.formation_stage ? " · 旧版证据" : center.boundary_status === "dynamic" ? " · 动态区间" : "";
+  const evidence = !center.formation_stage ? " · 旧版证据" : center.boundary_status === "dynamic" ? " · 动态区间" : center.boundary_status === "fixed" ? " · 固定区间" : "";
   return `L${center.level} ${isWeeklyCoreCenter(center, data.timeframe) ? (center.formation_stage ? `三笔核心 · ${type}` : "三笔核心") : type} #${center.ordinal + 1}${suffix}${candidate}${evidence}${center.temporary_evidence ? " · 临时证据" : ""}`;
 };
 

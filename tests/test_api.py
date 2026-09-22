@@ -26,9 +26,12 @@ def test_health_exposes_period_profiles_and_active_level(tmp_path, monkeypatch):
     assert payload["structure_mode"] == "period_profiled"
     assert payload["calculation_profiles"] == {"5": "full", "30": "full", "d": "full", "w": "pen_centers_only", "m": "pen_centers_only"}
     assert payload["decomposition_mode"] == "non_same_level"
-    assert payload["center_promotion_mode"] == "verified_expansion_or_recursive_core"
+    assert payload["center_promotion_mode"] == "unified_segment_proof"
+    assert payload["promotion_segment_mode"] == "pen_native_segment_proof"
+    assert payload["movement_partition_mode"] == "canonical_boundary_stream"
+    assert payload["nine_unit_mode"] == "owned_units_from_core"
     assert payload["center_envelope_mode"] == "owned_z_units"
-    assert payload["envelope_touch_mode"] == "candidate"
+    assert payload["envelope_touch_mode"] == "expansion_contact"
     assert payload["movement_boundary_mode"] == "structural_buy_sell_point"
     assert payload["divergence_mode"] == "structural_strength_vector"
     assert payload["max_computed_level"] >= 1

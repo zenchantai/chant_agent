@@ -136,6 +136,17 @@ class Store:
                 FOREIGN KEY(run_id,center_revision_id) REFERENCES chan_center_revisions(run_id,id) ON DELETE CASCADE)""")
             self.db.execute("""CREATE INDEX IF NOT EXISTS idx_chan_core_owner
                 ON chan_center_units(run_id,unit_kind,unit_id) WHERE role='core'""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_center_candidates (
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                id TEXT NOT NULL, family_id TEXT NOT NULL, revision_no INTEGER NOT NULL,
+                previous_revision_id TEXT, active INTEGER NOT NULL, level INTEGER NOT NULL,
+                stream_id TEXT NOT NULL, source_kind TEXT NOT NULL, status TEXT NOT NULL,
+                direction TEXT, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+                zd REAL, zg REAL, observed_at TEXT NOT NULL, evidence_available_at TEXT NOT NULL,
+                rejection_code TEXT, evidence_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no))""")
+            self.db.execute("""CREATE INDEX IF NOT EXISTS idx_chan_center_candidate_active
+                ON chan_center_candidates(run_id,level,stream_id,active)""")
             self.db.execute("""CREATE TABLE IF NOT EXISTS chan_movement_families (
                 run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
                 id TEXT NOT NULL, current_revision_id TEXT NOT NULL, base_level INTEGER NOT NULL,
@@ -185,6 +196,26 @@ class Store:
                 id TEXT NOT NULL, level INTEGER NOT NULL DEFAULT 0, issue_type TEXT NOT NULL,
                 start_date TEXT NOT NULL DEFAULT '', end_date TEXT NOT NULL DEFAULT '',
                 evidence_json TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(run_id,id))""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_promotion_candidates (
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                id TEXT NOT NULL, family_id TEXT NOT NULL, revision_no INTEGER NOT NULL,
+                active INTEGER NOT NULL, status TEXT NOT NULL, candidate_source TEXT NOT NULL,
+                child_level INTEGER NOT NULL, parent_level INTEGER NOT NULL,
+                start_date TEXT NOT NULL, end_date TEXT NOT NULL, observed_at TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no))""")
+            self.db.execute("""CREATE INDEX IF NOT EXISTS idx_chan_promotion_candidate_active
+                ON chan_promotion_candidates(run_id,family_id,active)""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_segment_proofs (
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                id TEXT NOT NULL, family_id TEXT NOT NULL, revision_no INTEGER NOT NULL,
+                previous_revision_id TEXT, active INTEGER NOT NULL, level INTEGER NOT NULL,
+                source_kind TEXT NOT NULL, status TEXT NOT NULL, direction TEXT NOT NULL,
+                start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+                evidence_available_at TEXT NOT NULL, evidence_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no))""")
+            self.db.execute("""CREATE INDEX IF NOT EXISTS idx_chan_segment_proof_active
+                ON chan_segment_proofs(run_id,family_id,active)""")
             self.db.commit()
 
     def _initialize_daily_confirmations(self) -> None:
@@ -900,6 +931,20 @@ class Store:
                         (run_id,center_revision_id,unit_kind,unit_id,role,ordinal) VALUES(?,?,?,?,?,?)""",
                         (run_id, item["id"], "center_revision" if role == "child_center" else "movement" if role == "child_movement" else item["unit_kind"], unit_id, role, ordinal))
 
+    def _insert_center_candidates(self, run_id: int, values: list[dict[str, Any]]) -> None:
+        for item in values:
+            self.db.execute("""INSERT INTO chan_center_candidates
+                (run_id,id,family_id,revision_no,previous_revision_id,active,level,stream_id,source_kind,
+                 status,direction,start_date,end_date,zd,zg,observed_at,evidence_available_at,rejection_code,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                run_id, item["id"], item["family_id"], int(item.get("revision_no", 1)), item.get("previous_revision_id"),
+                int(bool(item.get("active"))), int(item["level"]), str(item.get("stream_id", "")),
+                item.get("source_kind", "pen"), item["status"], item.get("direction"), item.get("start_date", ""),
+                item.get("end_date", ""), item.get("zd"), item.get("zg"), item.get("observed_at", ""),
+                item.get("evidence_available_at", item.get("observed_at", "")), item.get("rejection_code"),
+                self._payload_json(item),
+            ))
+
     def _insert_movements(self, run_id: int, values: list[dict[str, Any]]) -> None:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for item in values:
@@ -954,6 +999,32 @@ class Store:
                 item.get("invalidated_reason"), self._payload_json(item),
             ))
 
+    def _insert_promotion_candidates(self, run_id: int, values: list[dict[str, Any]]) -> None:
+        for item in values:
+            self.db.execute("""INSERT INTO chan_promotion_candidates
+                (run_id,id,family_id,revision_no,active,status,candidate_source,child_level,parent_level,
+                 start_date,end_date,observed_at,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                run_id, item["id"], item["family_id"], int(item["revision_no"]),
+                int(bool(item.get("active"))), item["status"], item["candidate_source"],
+                int(item["child_level"]), int(item["parent_level"]), item["start_date"],
+                item["end_date"], item["observed_at"], self._payload_json(item),
+            ))
+
+    def _insert_segment_proofs(self, run_id: int, values: list[dict[str, Any]]) -> None:
+        for item in values:
+            self.db.execute("""INSERT INTO chan_segment_proofs
+                (run_id,id,family_id,revision_no,previous_revision_id,active,level,source_kind,status,
+                 direction,start_date,end_date,evidence_available_at,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                run_id, item["id"], item["family_id"], int(item.get("revision_no", 1)),
+                item.get("previous_revision_id"), int(bool(item.get("active", True))),
+                int(item["level"]), item.get("source_kind", "local_pen_group"), item["status"],
+                item["direction"], item["start_date"], item["end_date"],
+                item.get("evidence_available_at", item.get("available_at", item["end_date"])),
+                self._payload_json(item),
+            ))
+
     def replace_chan_structure(
         self, symbol: str, timeframe: str, adjustflag: str,
         result: dict[str, Any], market_version: str, *, activate: bool = True,
@@ -982,8 +1053,13 @@ class Store:
                 self._insert_base_rows(run_id, "chan_pens", structure.get("pens", []))
                 self._insert_components(run_id, structure.get("components", []))
                 self._insert_centers(run_id, structure.get("center_revisions", []))
+                self._insert_center_candidates(run_id, structure.get("center_candidate_revisions", []))
                 self._insert_movements(run_id, structure.get("movement_revisions", []))
                 self._insert_points(run_id, structure.get("point_revisions", []))
+                self._insert_segment_proofs(run_id, structure.get("segment_proof_revisions", []))
+                self._insert_promotion_candidates(
+                    run_id, structure.get("promotion_candidate_revisions", []),
+                )
                 for item in structure.get("relations", []):
                     self.db.execute("""INSERT INTO chan_relations
                         (run_id,id,level,relation_type,from_id,to_id,start_date,end_date,evidence_json)
@@ -1065,8 +1141,13 @@ class Store:
         meta = json.loads(run["meta_json"])
         meta.update({"run_id": run_id, "market_version": run["market_version"]})
         center_revisions = self._load_json_rows("chan_center_revisions", run_id, "evidence_json")
+        center_candidate_revisions = self._load_json_rows("chan_center_candidates", run_id, "evidence_json")
         movement_revisions = self._load_json_rows("chan_movement_revisions", run_id, "evidence_json")
         point_revisions = self._load_json_rows("chan_point_revisions", run_id, "evidence_json")
+        segment_proof_revisions = self._load_json_rows("chan_segment_proofs", run_id, "evidence_json")
+        promotion_candidate_revisions = self._load_json_rows(
+            "chan_promotion_candidates", run_id, "evidence_json",
+        )
         structure = {
             "processed_bars": self._load_json_rows("chan_processed_bars", run_id, "payload_json"),
             "fractals": self._load_json_rows("chan_fractals", run_id, "payload_json"),
@@ -1074,10 +1155,18 @@ class Store:
             "components": self._load_json_rows("chan_components", run_id, "evidence_json"),
             "centers": [item for item in center_revisions if item.get("active")],
             "center_revisions": center_revisions,
+            "center_candidates": [item for item in center_candidate_revisions if item.get("active")],
+            "center_candidate_revisions": center_candidate_revisions,
             "movements": [item for item in movement_revisions if item.get("active", True)],
             "movement_revisions": movement_revisions,
             "points": [item for item in point_revisions if item.get("active", True)],
             "point_revisions": point_revisions,
+            "segment_proofs": [item for item in segment_proof_revisions if item.get("active", True) and item.get("selection_status") == "selected"],
+            "segment_proof_revisions": segment_proof_revisions,
+            "promotion_candidates": [
+                item for item in promotion_candidate_revisions if item.get("active")
+            ],
+            "promotion_candidate_revisions": promotion_candidate_revisions,
             "relations": self._load_json_rows("chan_relations", run_id, "evidence_json"),
             "issues": self._load_json_rows("chan_issues", run_id, "evidence_json"),
         }

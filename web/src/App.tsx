@@ -49,7 +49,7 @@ import {
   MoreVertical,
   GripVertical,
 } from "lucide-react";
-import type { Bar, Center, ChartApiResponse, ChartData, Coverage, Movement, StructureEntity, SecurityCandidate, SecuritySearchResult, Stock, Drawing, DrawingStyle, WatchlistGroup, WatchlistMembership, WatchlistResponse, SubplotVisibility } from "./types";
+import type { Bar, Center, ChartApiResponse, ChartData, Coverage, Movement, PromotionCandidate, StructureEntity, SecurityCandidate, SecuritySearchResult, Stock, Drawing, DrawingStyle, WatchlistGroup, WatchlistMembership, WatchlistResponse, SubplotVisibility } from "./types";
 import { bindChartGestures, chartZoomFromDataZoomEvent, ChartGesture, gestureOwner, initialChartZoom, rebaseChartZoom } from "./chartInteractions";
 import type { ChartGestureCallbacks } from "./chartInteractions";
 import { levelStructureAppearance, levelStructureColor, periodStructureColor } from "./structureColors";
@@ -324,6 +324,11 @@ export const formatMovementTooltip = (movement: Movement, chartTimeframe?: strin
     `结束原因：${movementEndLabel(movement.termination_reason)}`,
   ].join("<br/>");
 };
+
+const promotionSourceLabel = (candidate: PromotionCandidate) =>
+  candidate.candidate_source === "extension_decomposition" ? "延伸九单位" : "扩展接触";
+const promotionStatusLabel = (status: PromotionCandidate["status"] | Center["boundary_status"]) =>
+  status === "fixed" ? "固定" : status === "dynamic" ? "动态" : "边界未解";
 
 export function DailyL2Evidence({ center, data }: {center: DailyL2Projection; data: ChartData}) {
   const source = data.overlays?.daily_l2.source;
@@ -1217,6 +1222,8 @@ export function App() {
                 overlays: mergeDailyL2Overlays(fresh, old),
                 display_centers: unique([...(fresh.display_centers || []), ...(old.display_centers || [])], (x) => x.revision_id),
                 movement_revisions: unique([...fresh.movement_revisions, ...old.movement_revisions], (x) => x.id),
+                promotion_candidates: unique([...(fresh.promotion_candidates || []), ...(old.promotion_candidates || [])], (x) => x.id),
+                promotion_candidate_revisions: unique([...(fresh.promotion_candidate_revisions || []), ...(old.promotion_candidate_revisions || [])], (x) => x.id),
                 points: scopeNodeOrdinals(unique([...(fresh.points || []), ...(old.points || [])], (x) => x.id)),
                 drawings: fresh.drawings || old.drawings,
                 indicators: {
@@ -2074,6 +2081,51 @@ export function App() {
               </dd>
             </dl>
           </section>
+          {data && !isReferenceProfile(data) && (!!data.promotion_candidates.length || data.centers.some((center) => center.boundary_status === "dynamic" || center.boundary_status === "fixed")) && (
+            <section className="promotion-panel">
+              <div className="panel-head"><b>中枢升级证据</b><Minimize2 size={15} /></div>
+              <div className="promotion-summary">
+                <span>延伸候选 <b>{data.promotion_candidates.filter((item) => item.candidate_source === "extension_decomposition").length}</b></span>
+                <span>扩展未解 <b>{data.promotion_candidates.filter((item) => item.candidate_source === "expansion_decomposition" && item.status === "unresolved").length}</b></span>
+                <span>动态父中枢 <b>{data.centers.filter((item) => item.boundary_status === "dynamic").length}</b></span>
+                <span>固定父中枢 <b>{data.centers.filter((item) => item.boundary_status === "fixed").length}</b></span>
+              </div>
+              <div className="promotion-list">
+                {data.promotion_candidates.map((candidate) => {
+                  const parent = candidate.selected_parent_family_id
+                    ? data.center_revisions.filter((item) => item.family_id === candidate.selected_parent_family_id).sort((a, b) => b.revision_no - a.revision_no)[0]
+                    : undefined;
+                  return <button key={candidate.id} disabled={!parent} onClick={() => parent && setSelected(parent)}>
+                    <span><b>{promotionSourceLabel(candidate)} · L{candidate.child_level}→L{candidate.parent_level}</b><small>{candidate.start_date.slice(0, 10)} 至 {candidate.end_date.slice(0, 10)} · {promotionStatusLabel(candidate.status)}</small></span>
+                    <code>{candidate.missing_evidence.map((item) => item.code).join(" / ") || (candidate.selected_segment_proof_ids || candidate.proof_ids).join(" / ")}</code>
+                  </button>;
+                })}
+                {data.centers.filter((center) => center.boundary_status === "dynamic" || center.boundary_status === "fixed").map((center) => <button key={center.id} onClick={() => setSelected(center)}>
+                  <span><b>L{center.level} 父中枢 · {promotionStatusLabel(center.boundary_status)}</b><small>{center.start_date.slice(0, 10)} 至 {center.end_date.slice(0, 10)}</small></span>
+                  <code>{center.formation_modes.join(" / ")}</code>
+                </button>)}
+              </div>
+            </section>
+          )}
+          {data && (data.center_candidates || []).length > 0 && (
+            <section className="promotion-panel center-candidate-panel">
+              <div className="panel-head"><b>中枢候选与所有权</b><Minimize2 size={15} /></div>
+              <div className="promotion-summary">
+                <span>候选 <b>{(data.center_candidates || []).length}</b></span>
+                <span>已选 <b>{(data.center_candidates || []).filter((item) => item.status === "selected").length}</b></span>
+                <span>淘汰 <b>{(data.center_candidates || []).filter((item) => item.status === "rejected").length}</b></span>
+              </div>
+              <div className="promotion-list">
+                {(data.center_candidates || []).slice(0, 24).map((candidate) => <button key={candidate.id} disabled={!candidate.selected_center_family_id} onClick={() => {
+                  const center = data.center_revisions.find((item) => item.family_id === candidate.selected_center_family_id);
+                  if (center) setSelected(center);
+                }}>
+                  <span><b>{candidate.status === "selected" ? "已选" : "淘汰"} · {candidate.source_unit_ids.slice(0, 3).join(" / ")}</b><small>{candidate.start_date.slice(0, 10)} 至 {candidate.end_date.slice(0, 10)} · {candidate.direction === "up" ? "向上" : "向下"}</small></span>
+                  <code>{candidate.rejection_code || `[${candidate.zd}, ${candidate.zg}]`}</code>
+                </button>)}
+              </div>
+            </section>
+          )}
           <section>
             <div className="panel-head">
               <b>证据检查器</b>

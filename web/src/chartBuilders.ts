@@ -1,4 +1,4 @@
-import type { Bar, Center, ChartApiResponse, ChartData, Component, Drawing, DrawingStyle, Movement, Pen, StructuralPoint, StructureEntity } from "./types";
+import type { Bar, Center, CenterCandidate, ChartApiResponse, ChartData, Component, Drawing, DrawingStyle, Movement, Pen, PromotionCandidate, SegmentProof, StructuralPoint, StructureEntity } from "./types";
 import { alignIntradaySeries, chartDates, intradayPointDates } from "./intradayTimeline";
 import { levelStructureColor, periodStructureColor } from "./structureColors";
 import { formatCompactNumber, formatIndicatorValue, formatPrice, formatVolume } from "./marketFormatters";
@@ -200,7 +200,7 @@ const normalizeNode = (item: unknown, ordinal: number): StructureEntity | null =
       else delete result[key];
     }
   });
-  ["source_pen_ids", "source_unit_ids", "entry_unit_ids", "core_unit_ids", "extension_unit_ids", "peripheral_unit_ids", "departure_unit_ids", "retest_unit_ids", "owned_unit_ids", "context_unit_ids", "child_movement_ids", "child_center_ids", "center_family_ids", "center_revision_ids", "source_component_ids", "formation_modes"].forEach((key) => {
+  ["source_pen_ids", "source_unit_ids", "entry_unit_ids", "core_unit_ids", "extension_unit_ids", "peripheral_unit_ids", "departure_unit_ids", "retest_unit_ids", "owned_unit_ids", "context_unit_ids", "child_movement_ids", "child_center_ids", "child_segment_ids", "center_family_ids", "center_revision_ids", "source_component_ids", "formation_modes"].forEach((key) => {
     if (key in result) result[key] = Array.isArray(result[key]) ? result[key].filter((value: unknown) => value !== undefined && value !== null).map(String) : [];
   });
   ["path_points", "endpoint_points"].forEach((key) => {
@@ -221,6 +221,37 @@ type ActivityNode = StructureEntity & { active?: boolean; display_status?: strin
 const isActiveNode = (item: StructureEntity | null): item is StructureEntity => Boolean(item)
   && (item as ActivityNode).active !== false
   && (item as ActivityNode).display_status !== "absorbed";
+
+const normalizePromotionCandidate = (item: unknown): PromotionCandidate | null => {
+  if (!isObject(item) || item.kind !== "promotion_candidate") return null;
+  const startDate = typeof item.start_date === "string" ? item.start_date.trim() : "";
+  const endDate = typeof item.end_date === "string" ? item.end_date.trim() : "";
+  if (!item.id || !item.family_id || !validRange(startDate, endDate)) return null;
+  const arrays = ["source_entity_ids", "required_unit_ids", "search_unit_ids", "proof_ids"];
+  const result: Record<string, any> = { ...item, id: String(item.id), family_id: String(item.family_id), start_date: startDate, end_date: endDate };
+  arrays.forEach((key) => { result[key] = Array.isArray(result[key]) ? result[key].map(String) : []; });
+  result.missing_evidence = (Array.isArray(result.missing_evidence) ? result.missing_evidence : [])
+    .filter((value: unknown) => isObject(value) && typeof value.code === "string")
+    .map((value: Record<string, unknown>) => ({ ...value, code: String(value.code) }));
+  result.rejected_proofs = Array.isArray(result.rejected_proofs) ? result.rejected_proofs.filter(isObject) : [];
+  result.child_level = Number(result.child_level);
+  result.parent_level = Number(result.parent_level);
+  result.revision_no = Number(result.revision_no);
+  return [result.child_level, result.parent_level, result.revision_no].every(Number.isInteger)
+    ? result as PromotionCandidate : null;
+};
+
+const normalizeSegmentProof = (item: unknown): SegmentProof | null => {
+  if (!isObject(item) || !item.id || !item.family_id || !validRange(String(item.start_date || ""), String(item.end_date || ""))) return null;
+  const result: Record<string, any> = { ...item, id: String(item.id), family_id: String(item.family_id) };
+  ["level", "revision_no", "start_price", "end_price", "low", "high"].forEach((key) => { result[key] = Number(result[key]); });
+  ["source_unit_ids", "source_pen_ids", "level_evidence_ids"].forEach((key) => { result[key] = Array.isArray(result[key]) ? result[key].map(String) : []; });
+  result.source_kind = result.source_kind === "movement" ? "movement" : "local_pen_group";
+  result.status = result.status === "confirmed" ? "confirmed" : "provisional";
+  result.direction = result.direction === "down" ? "down" : "up";
+  result.recursive_eligible = Boolean(result.recursive_eligible);
+  return Number.isInteger(result.level) && Number.isInteger(result.revision_no) ? result as SegmentProof : null;
+};
 
 /** Normalize every API response before it can reach ECharts or the side panels. */
 export const normalizeChartData = (input: ChartData | ChartApiResponse | null): ChartData | null => {
@@ -248,6 +279,8 @@ export const normalizeChartData = (input: ChartData | ChartApiResponse | null): 
     // Old cached responses must not restore unsupported reference-chart layers.
     raw.movements = []; raw.movement_revisions = []; raw.components = [];
     raw.points = []; raw.point_revisions = []; raw.relations = [];
+    raw.promotion_candidates = []; raw.promotion_candidate_revisions = [];
+    raw.segment_proofs = []; raw.segment_proof_revisions = [];
     raw.centers = (Array.isArray(raw.centers) ? raw.centers : []).filter((item: Center) => item?.level === 1);
     raw.center_revisions = (Array.isArray(raw.center_revisions) ? raw.center_revisions : []).filter((item: Center) => item?.level === 1);
     raw.display_center_levels = raw.centers.length || raw.center_revisions.length ? [1] : []; raw.movement_levels = [];
@@ -262,6 +295,12 @@ export const normalizeChartData = (input: ChartData | ChartApiResponse | null): 
   const centerRevisions = (Array.isArray(raw.center_revisions) ? raw.center_revisions : []).map(normalizeNode).filter((item): item is Center => item?.kind === "center");
   const movementRevisions = (Array.isArray(raw.movement_revisions) ? raw.movement_revisions : []).map(normalizeNode).filter((item): item is Movement => item?.kind === "movement");
   const pointRevisions = (Array.isArray(raw.point_revisions) ? raw.point_revisions : []).map(normalizeNode).filter((item): item is StructuralPoint => item?.kind === "structural_point");
+  const promotionCandidates = (Array.isArray(raw.promotion_candidates) ? raw.promotion_candidates : []).map(normalizePromotionCandidate).filter((item): item is PromotionCandidate => Boolean(item));
+  const promotionCandidateRevisions = (Array.isArray(raw.promotion_candidate_revisions) ? raw.promotion_candidate_revisions : []).map(normalizePromotionCandidate).filter((item): item is PromotionCandidate => Boolean(item));
+  const segmentProofs = (Array.isArray(raw.segment_proofs) ? raw.segment_proofs : []).map(normalizeSegmentProof).filter((item): item is SegmentProof => Boolean(item));
+  const segmentProofRevisions = (Array.isArray(raw.segment_proof_revisions) ? raw.segment_proof_revisions : []).map(normalizeSegmentProof).filter((item): item is SegmentProof => Boolean(item));
+  const centerCandidates = (Array.isArray(raw.center_candidates) ? raw.center_candidates : []).filter(isObject) as CenterCandidate[];
+  const centerCandidateRevisions = (Array.isArray(raw.center_candidate_revisions) ? raw.center_candidate_revisions : []).filter(isObject) as CenterCandidate[];
   const relationRows = (Array.isArray(raw.relations) ? raw.relations : []).filter(isObject).map((item) => ({ ...item }));
   const indicators = raw.indicators && isObject(raw.indicators) ? raw.indicators : {};
   const macd = uniqueBy((Array.isArray(indicators.macd) ? indicators.macd : []).map(normalizeIndicator).filter(Boolean) as Record<string, any>[], (item) => item.trade_date);
@@ -281,6 +320,12 @@ export const normalizeChartData = (input: ChartData | ChartApiResponse | null): 
     center_revisions: centerRevisions,
     movement_revisions: movementRevisions,
     point_revisions: pointRevisions,
+    promotion_candidates: promotionCandidates,
+    promotion_candidate_revisions: promotionCandidateRevisions,
+    segment_proofs: segmentProofs,
+    segment_proof_revisions: segmentProofRevisions,
+    center_candidates: centerCandidates,
+    center_candidate_revisions: centerCandidateRevisions,
     relations: relationRows,
     indicators: { macd, ma, boll },
     center_levels: centerLevels,
@@ -455,7 +500,7 @@ export const buildCenterAreas = (context: ChartBuildContext, dates: string[], is
     const color = centerColor(context.theme || "dark", data.timeframe, center);
     const fill = withAlpha(color, center.selected_evidence ? "33" : center.display_role === "constituent" ? "0A" : context.theme === "light" ? "12" : "18");
     return [
-      { name: centerDisplayLabel(data, center), xAxis: nearestDate(dates, range.start_date), yAxis: centerZd(center), centerId: center.id, itemStyle: { color: fill, borderColor: color, borderWidth: center.selected_evidence ? 3 : center.display_role === "constituent" ? 1.4 : 2.2, borderType: isProvisionalStatus(center.status) ? "dashed" : "solid" }, label: { show: true, formatter: centerDisplayLabel(data, center), color, fontSize: 10, position: "insideTopLeft" } },
+      { name: centerDisplayLabel(data, center), xAxis: nearestDate(dates, range.start_date), yAxis: centerZd(center), centerId: center.id, itemStyle: { color: fill, borderColor: color, borderWidth: center.selected_evidence ? 3 : center.display_role === "constituent" ? 1.4 : 2.2, borderType: center.boundary_status === "dynamic" || isProvisionalStatus(center.status) ? "dashed" : "solid" }, label: { show: true, formatter: centerDisplayLabel(data, center), color, fontSize: 10, position: "insideTopLeft" } },
       { xAxis: nearestDate(dates, range.end_date), yAxis: centerZg(center) },
     ];
   });
@@ -682,12 +727,14 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
   const color = periodStructureColor(context.theme === "light" ? "light" : "dark", context.data.timeframe);
   const selectedCenter = selectedCenterEvidence(context.data, context.selectedStructureId);
   const point = selectedPoint(context.data, context.selectedStructureId);
-  const roleColors = { entry: "#d97706", core: "#7c3aed", z_wave: "#0891b2", peripheral: "#64748b", departure: "#dc2626", retest: "#16a34a", connection: "#db2777", witness: "#e11d9b" };
+  const roleColors = { entry: "#d97706", core: "#7c3aed", z_wave: "#0891b2", peripheral: "#64748b", departure: "#dc2626", retest: "#16a34a", connection: "#db2777", witness: "#e11d9b", parent_segment_1: "#0e7490", parent_segment_2: "#b45309", parent_segment_3: "#7e22ce" };
   const roles = new Map<string, keyof typeof roleColors>();
   const roleCenters = selectedCenter ? [selectedCenter, ...context.data.center_revisions.filter((item) => selectedCenter.child_center_ids.includes(item.id))] : [];
+  const segmentMap = new Map((context.data.segment_proofs || []).map((segment) => [segment.id, segment]));
   const assign = (identifiers: string[], role: keyof typeof roleColors) => identifiers.forEach((identifier) => {
     const movement = context.data.movement_revisions.find((item) => item.id === identifier);
-    (movement?.source_pen_ids || [identifier]).forEach((penId) => roles.set(penId, role));
+    const segment = segmentMap.get(identifier);
+    (movement?.source_pen_ids || segment?.source_pen_ids || [identifier]).forEach((penId) => roles.set(penId, role));
   });
   roleCenters.forEach((center) => {
     if (isWeeklyCoreCenter(center, context.data.timeframe)) {
@@ -700,7 +747,7 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
     assign(center.retest_unit_ids || [], "retest");
     assign(center.core_unit_ids || [], "core");
     assign(center.z_unit_ids || [], "z_wave");
-    center.decomposition_proof?.segments.forEach((part) => assign(part.source_pen_ids, "core"));
+    center.decomposition_proof?.segments.forEach((part, index) => assign(part.source_pen_ids, `parent_segment_${index + 1}` as keyof typeof roleColors));
     context.data.components.filter((component) => center.connection_component_ids?.includes(component.id)).forEach((component) => assign(component.source_unit_ids, "connection"));
   });
   const selectedRelations = selectedCenter ? (context.data.relations || []).filter(r => r.expansion_status === "confirmed" && [r.from_id, r.to_id].includes(selectedCenter.id)) : [];

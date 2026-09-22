@@ -46,6 +46,8 @@ export function mergeIntradayData(current: ChartData | null, fresh: ChartData): 
     display_centers: fresh.display_centers, display_center_levels: fresh.display_center_levels,
     overlays: fresh.overlays, calculation_profile: fresh.calculation_profile,
     movements: fresh.movements ?? current.movements, movement_revisions: fresh.movement_revisions ?? current.movement_revisions,
+    promotion_candidates: fresh.promotion_candidates ?? current.promotion_candidates,
+    promotion_candidate_revisions: fresh.promotion_candidate_revisions ?? current.promotion_candidate_revisions,
     components: fresh.components ?? current.components, points: fresh.points ?? current.points,
     point_revisions: fresh.point_revisions ?? current.point_revisions,
     relations: fresh.relations ?? current.relations, issues: fresh.issues ?? current.issues,

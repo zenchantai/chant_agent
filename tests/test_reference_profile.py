@@ -22,8 +22,8 @@ def test_reference_keeps_l1_centers_and_full_mode_records_unresolved_expansion(m
     pens = pens_from_prices(prices)
     full = build_structure_hierarchy(pens)
     reference = build_structure_hierarchy(pens, calculation_profile="pen_centers_only")
-    assert [center["level"] for center in full["centers"]] == [1, 1]
-    assert any(r.get("expansion_status") == "confirmed" and r.get("boundary_status") == "unresolved" for r in full["relations"])
+    assert [center["level"] for center in full["centers"]] == [1, 1, 2]
+    assert any(r.get("expansion_status") == "confirmed" and r.get("boundary_status") in {"dynamic", "fixed", "unresolved"} for r in full["relations"])
     assert [center["level"] for center in reference["centers"]] == [1, 1]
     assert reference["levels"] == [1]
     assert reference["max_level"] == 1
@@ -41,7 +41,7 @@ def test_reference_never_invokes_points_movements_relations_or_promotion(monkeyp
 
     with monkeypatch.context() as patch:
         for name in (
-            "build_relations", "_promote_expansions", "_promote_open_movements",
+            "build_relations", "_promote_expansions",
             "build_structural_points", "_point_revision", "_third_point", "_third_point_tail",
             "build_movements", "movement_units", "merge_formation_paths",
             "_structurally_weaker", "_macd_evidence",

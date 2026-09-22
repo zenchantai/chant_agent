@@ -23,6 +23,28 @@ def calculation_profile(timeframe: str) -> str:
     return "pen_centers_only" if timeframe in REFERENCE_TIMEFRAMES else "full"
 
 
+def structure_mode_metadata(profile: str) -> dict[str, str]:
+    full = profile == "full"
+    return {
+        "decomposition_mode": "non_same_level",
+        "base_unit_mode": "current_period_confirmed_pen",
+        "center_selection_mode": "canonical_eligible_candidate",
+        "center_candidate_mode": "canonical_eligible_candidate",
+        "center_ownership_mode": "same_level_single_owner",
+        "center_context_mode": "references_do_not_own",
+        "center_lifecycle_mode": "timestamped_event_arbitration",
+        "center_prefix_mode": "immutable_committed_prefix",
+        "center_envelope_mode": "owned_z_units",
+        "movement_partition_mode": "canonical_boundary_stream" if full else "disabled",
+        "promotion_segment_mode": "pen_native_segment_proof" if full else "disabled",
+        "center_promotion_mode": "unified_segment_proof" if full else "disabled",
+        "nine_unit_mode": "owned_units_from_core" if full else "disabled",
+        "envelope_touch_mode": "expansion_contact" if full else "disabled",
+        "movement_boundary_mode": "structural_buy_sell_point" if full else "disabled",
+        "divergence_mode": "structural_strength_vector" if full else "disabled",
+    }
+
+
 CALCULATOR_SOURCE_FILES = (
     "app/coverage.py",
     "app/engine.py",
@@ -129,14 +151,7 @@ def analyze_period_ranges(
             "definition_version": PERIOD_DEFINITION_VERSION,
             "calculator_fingerprint": fingerprint,
             "calculation_profile": profile,
-            "decomposition_mode": "non_same_level",
-            "base_unit_mode": "current_period_confirmed_pen",
-            "center_selection_mode": "direction_context_then_core",
-            "center_envelope_mode": "owned_z_units",
-            "center_promotion_mode": "contact_then_decomposition" if profile == "full" else "disabled",
-            "envelope_touch_mode": "expansion_contact" if profile == "full" else "disabled",
-            "movement_boundary_mode": "structural_buy_sell_point" if profile == "full" else "disabled",
-            "divergence_mode": "structural_strength_vector" if profile == "full" else "disabled",
+            **structure_mode_metadata(profile),
             "max_level": hierarchy["max_level"],
         },
         "structure": structure,
@@ -208,6 +223,8 @@ class PeriodStructureService:
                 "processed_bars": [], "fractals": [], "pens": [], "components": [],
                 "centers": [], "center_revisions": [], "movements": [],
                 "movement_revisions": [], "points": [], "point_revisions": [],
+                "segment_proofs": [], "segment_proof_revisions": [],
+                "center_candidates": [], "center_candidate_revisions": [],
                 "relations": [], "issues": [], "levels": [], "unassigned_by_level": {},
             },
         }
@@ -303,10 +320,41 @@ class PeriodStructureService:
         components = [item for item in source.get("components", []) if item["id"] in component_ids]
         center_map = {item["id"]: item for item in source.get("center_revisions", [])}
         movement_map = {item["id"]: item for item in source.get("movement_revisions", [])}
+        segment_map = {item["id"]: item for item in source.get("segment_proof_revisions", [])}
         component_map = {item["id"]: item for item in source.get("components", [])}
         center_refs = {item["id"] for item in centers} | {item["center_revision_id"] for item in points}
         movement_refs = {item["id"] for item in movements}
         relations = [item for item in source.get("relations", []) if (level is None or int(item.get("level", 1)) == level) and (diagnostics or item.get("status") != "invalidated")]
+        promotion_candidates = [
+            {**item, "rejected_proofs": []} for item in source.get("promotion_candidates", [])
+            if level is None or int(item.get("child_level", 1)) == level
+            if not bars or self._overlaps(item, start, end)
+        ]
+        promotion_candidate_revisions = [
+            item for item in source.get("promotion_candidate_revisions", [])
+            if (level is None or int(item.get("child_level", 1)) == level)
+            and (not bars or self._overlaps(item, start, end))
+        ]
+        segment_proofs = [
+            item for item in source.get("segment_proofs", [])
+            if (level is None or int(item.get("level", 1)) == level)
+            and (not bars or self._overlaps(item, start, end))
+        ]
+        segment_proof_revisions = [
+            item for item in source.get("segment_proof_revisions", [])
+            if (level is None or int(item.get("level", 1)) == level)
+            and (not bars or self._overlaps(item, start, end))
+        ]
+        center_candidates = [
+            item for item in source.get("center_candidates", [])
+            if (level is None or int(item.get("level", 1)) == level)
+            and (not bars or self._overlaps(item, start, end))
+        ]
+        center_candidate_revisions = [
+            item for item in source.get("center_candidate_revisions", [])
+            if (level is None or int(item.get("level", 1)) == level)
+            and (not bars or self._overlaps(item, start, end))
+        ]
         for relation in relations:
             center_refs.update([relation["from_id"], relation["to_id"]])
         visited_centers: set[str] = set()
@@ -321,6 +369,11 @@ class PeriodStructureService:
                 if item.get("previous_revision_id"):
                     center_refs.add(item["previous_revision_id"])
                 movement_refs.update(item.get("child_movement_ids", []))
+                segment_refs = set(item.get("child_segment_ids", []))
+                for segment_id in segment_refs:
+                    segment = segment_map.get(segment_id)
+                    if segment:
+                        component_ids.update(segment.get("source_pen_ids", []))
                 if item.get("unit_kind") == "movement":
                     movement_refs.update(item.get("context_unit_ids", []))
                 component_ids.update(item.get("connection_component_ids", []))
@@ -343,10 +396,18 @@ class PeriodStructureService:
             "components": components,
             "centers": centers,
             "center_revisions": reference_centers,
+            "center_candidates": center_candidates,
+            "center_candidate_revisions": center_candidate_revisions if diagnostics else center_candidates,
             "movements": movements,
             "movement_revisions": reference_movements,
             "points": points,
             "point_revisions": source.get("point_revisions", []) if diagnostics else [],
+            "promotion_candidates": promotion_candidates,
+            "promotion_candidate_revisions": (
+                promotion_candidate_revisions if diagnostics else []
+            ),
+            "segment_proofs": segment_proofs,
+            "segment_proof_revisions": segment_proof_revisions if diagnostics else [],
             "relations": relations,
             "issues": source.get("issues", []) if diagnostics else [],
             "levels": source.get("levels", []),

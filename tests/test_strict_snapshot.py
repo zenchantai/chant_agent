@@ -47,10 +47,13 @@ def test_normalized_tables_and_foreign_keys_round_trip(tmp_path):
     loaded = store.load_chan_structure(run_id)
     assert loaded["meta"]["structure_version"] == snapshot["meta"]["structure_version"]
     assert loaded["structure"]["centers"] == snapshot["structure"]["centers"]
+    assert loaded["structure"]["promotion_candidates"] == snapshot["structure"]["promotion_candidates"]
+    assert loaded["structure"]["promotion_candidate_revisions"] == snapshot["structure"]["promotion_candidate_revisions"]
     assert store.db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert store.db.execute("PRAGMA foreign_key_check").fetchall() == []
     tables = {row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "chan_center_revisions" in tables
+    assert "chan_promotion_candidates" in tables
     assert "period_structure_runs" not in tables
     store.db.close()
     with sqlite3.connect(tmp_path / "normalized.db") as connection:
