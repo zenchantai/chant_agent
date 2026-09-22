@@ -155,7 +155,7 @@ def test_network_and_calendar_helpers_run_outside_capture_lock(source, monkeypat
     monkeypatch.setattr(service, "calendar", calendar)
     monkeypatch.setattr(structures, "ensure", ensure)
     main.chart_data(SYMBOL, timeframe="m", refresh=True)
-    assert calls == ["m", "d"]
+    assert calls == ["d", "m"]
     calls.clear()
     main.chart_data(SYMBOL, timeframe="m")
     assert calls == []

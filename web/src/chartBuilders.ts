@@ -758,7 +758,10 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
   if (point) context.data.components.filter((component) => point.source_component_ids.includes(component.id)).forEach((component) => {
     if (component.role === "departure" || component.role === "retest") assign(component.source_unit_ids, component.role);
   });
-  return (context.data.pens || []).slice().sort((a, b) => a.start_date.localeCompare(b.start_date)).filter((pen) => pen.status === "confirmed").map((pen) => {
+  const preview = context.data.structure_preview === true;
+  return (context.data.pens || []).slice().sort((a, b) => a.start_date.localeCompare(b.start_date)).filter((pen) =>
+    pen.status === "confirmed" || (preview && isProvisionalStatus(pen.status))
+  ).map((pen) => {
     const boundary = clippedBoundary(pen, dates);
     if (!boundary) return null;
     if (!Number.isFinite(boundary.startPrice) || !Number.isFinite(boundary.endPrice)) { issues.push({ code: "pen_invalid_boundary", id: pen.id }); return null; }
@@ -767,7 +770,8 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
     const lineColor = role ? roleColors[role] : color;
     const coreIndex = selectedCenter?.core_unit_ids.indexOf(pen.id) ?? -1;
     const coreLabel = coreIndex >= 0 ? ` · 核心 ${["A", "B", "C"][coreIndex]}` : "";
-    return { id: pen.id, name: `笔 ${(Number(pen.ordinal) || 0) + 1}${role ? ` · ${role}` : ""}${coreLabel}`, type: "line", data: [[boundary.startDate, boundary.startPrice], [boundary.endDate, boundary.endPrice]], showSymbol: true, symbolSize: selected || role ? 8 : 5, lineStyle: { width: selected || role ? 3.4 : 1.8, type: "solid", color: lineColor, opacity: selected || role ? 1 : selectedCenter ? 0.3 : 0.88 }, itemStyle: { color: lineColor }, z: role ? 11 : 5 };
+    const provisional = isProvisionalStatus(pen.status);
+    return { id: pen.id, name: `笔 ${(Number(pen.ordinal) || 0) + 1}${provisional ? " · 形成中" : ""}${role ? ` · ${role}` : ""}${coreLabel}`, type: "line", data: [[boundary.startDate, boundary.startPrice], [boundary.endDate, boundary.endPrice]], showSymbol: true, symbolSize: selected || role ? 8 : 5, lineStyle: { width: selected || role ? 3.4 : 1.8, type: provisional ? "dashed" : "solid", color: lineColor, opacity: selected || role ? 1 : selectedCenter ? 0.3 : 0.88 }, itemStyle: { color: lineColor }, z: provisional ? 6 : role ? 11 : 5 };
   }).filter(Boolean) as Record<string, any>[];
 };
 
@@ -1035,7 +1039,7 @@ export const buildChartArtifacts = (context: ChartBuildContext): ChartBuildArtif
   const dailyL2 = buildDailyL2Series(context, dates);
   const hitSeries = buildStructureHitSeries(
     { ...context, bars }, dates, centers.visibleCenters, movement.visibleMovements,
-    context.visible?.pens === false ? [] : (data.pens || []).filter((pen) => pen.status === "confirmed"),
+    context.visible?.pens === false ? [] : (data.pens || []).filter((pen) => pen.status === "confirmed" || (data.structure_preview === true && isProvisionalStatus(pen.status))),
     component.visibleComponents,
   );
   const marketSeries = [

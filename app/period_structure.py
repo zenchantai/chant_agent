@@ -98,9 +98,51 @@ def _decorate_pen(pen: dict[str, Any], range_index: int, ordinal: int) -> dict[s
     return item
 
 
+def _preview_tail_pen(
+    rows: list[dict[str, Any]], pens: list[dict[str, Any]], forming_bar: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Build a clearly provisional tail for the in-flight period only.
+
+    A forming bar cannot satisfy the right-side confirmation rule for a real
+    fractal yet.  The preview therefore exposes a dashed candidate from the
+    latest confirmed pen endpoint to the current bar's opposing extreme.  It
+    is deliberately marked provisional and is never passed to persistence.
+    """
+    if not forming_bar or not pens or not rows:
+        return None
+    latest = rows[-1]
+    stamp = str(forming_bar.get("trade_date") or latest.get("trade_date") or "")
+    if not stamp or stamp <= pens[-1].get("end_date", ""):
+        return None
+    previous = pens[-1]
+    direction = "down" if previous.get("direction") == "up" else "up"
+    extreme_key = "low" if direction == "down" else "high"
+    target = float(latest.get(extreme_key, latest.get("close", previous["end_price"])))
+    if not target or not target == target:  # NaN guard without changing source values.
+        target = float(latest.get("close", previous["end_price"]))
+    return {
+        "id": f"preview-pen-{previous['id']}-{stamp}",
+        "kind": "pen",
+        "ordinal": int(previous.get("ordinal", 0)) + 1,
+        "range_index": int(previous.get("range_index", 0)),
+        "continuous_range_id": int(previous.get("continuous_range_id", previous.get("range_index", 0))),
+        "sequence_id": int(previous.get("sequence_id", 0)),
+        "structure_sequence_id": previous.get("structure_sequence_id", ""),
+        "start_date": previous["end_date"],
+        "end_date": stamp,
+        "start_price": float(previous["end_price"]),
+        "end_price": target,
+        "direction": direction,
+        "status": "provisional",
+        "confirmed_at": None,
+        "kind_detail": "forming_bar_tail",
+    }
+
+
 def analyze_period_ranges(
     rows: list[dict[str, Any]], symbol: str, timeframe: str,
     ranges: list[dict[str, Any]], calculator_fingerprint: str | None = None,
+    *, include_provisional: bool = False,
 ) -> dict[str, Any]:
     fingerprint = calculator_fingerprint or calculate_calculator_fingerprint()
     all_bars: list[dict[str, Any]] = []
@@ -135,7 +177,8 @@ def analyze_period_ranges(
     profile = calculation_profile(timeframe)
     macd = calculate_macd(all_bars, ranges) if profile == "full" else []
     hierarchy = build_structure_hierarchy(
-        pens, macd, [bar["trade_date"] for bar in all_bars], calculation_profile=profile,
+        pens, macd, [bar["trade_date"] for bar in all_bars],
+        calculation_profile=profile, include_provisional=include_provisional,
     )
     structure = {
         "processed_bars": processed_bars,
@@ -156,7 +199,7 @@ def analyze_period_ranges(
         },
         "structure": structure,
     }
-    assert_valid_structure(result)
+    assert_valid_structure(result, include_provisional=include_provisional)
     result["meta"]["structure_version"] = structure_version(result)
     return result
 
@@ -440,12 +483,30 @@ class PeriodStructureService:
 
     def preview_period(
         self, symbol: str, timeframe: str, adjustflag: str, rows: list[dict[str, Any]],
+        forming_bar: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         start = rows[0]["trade_date"][:10] if rows else "2015-01-01"
         end = rows[-1]["trade_date"][:10] if rows else start
         coverage = validate_coverage(rows, timeframe, self.store.trading_dates(start, end))
         result = analyze_period_ranges(
             rows, symbol, timeframe, self._analysis_ranges(coverage, rows), self.calculator_fingerprint,
+            include_provisional=False,
         )
+        if forming_bar:
+            tail = _preview_tail_pen(rows, result["structure"].get("pens", []), forming_bar)
+            if tail:
+                result["structure"]["pens"].append(tail)
+                # Rebuild only the in-memory hierarchy with the temporary pen.
+                # The persisted run is never touched by this branch.
+                ranges = self._analysis_ranges(coverage, rows)
+                result["structure"].update(build_structure_hierarchy(
+                    result["structure"]["pens"],
+                    calculate_macd(rows, ranges) if calculation_profile(timeframe) == "full" else [],
+                    [row["trade_date"] for row in rows],
+                    calculation_profile=calculation_profile(timeframe), include_provisional=True,
+                ))
+                result["meta"]["max_level"] = result["structure"].get("max_level", 0)
+                result["meta"]["structure_version"] = structure_version(result)
         result["meta"].update({"preview": True, "persisted": False, "coverage": coverage})
+        assert_valid_structure(result, include_provisional=True)
         return result

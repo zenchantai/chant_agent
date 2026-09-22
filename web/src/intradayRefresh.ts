@@ -1,10 +1,16 @@
-import type { ChartData, IntradayRefresh } from "./types";
+import type { ChartData, IntradayRefresh, PeriodRefresh } from "./types";
 
-export function refreshDelay(state: IntradayRefresh): number {
-  if (state.next_bar_finalize_at) {
-    const untilFinalize = Date.parse(state.next_bar_finalize_at) - Date.parse(state.server_time);
+type RefreshState = IntradayRefresh | PeriodRefresh;
+
+export function refreshDelay(state: RefreshState): number {
+  const finalizeAt = "phase" in state
+    ? (state.next_period_finalize_at ?? state.next_bar_finalize_at)
+    : state.next_period_finalize_at;
+  if (finalizeAt) {
+    const untilFinalize = Date.parse(finalizeAt) - Date.parse(state.server_time);
     if (untilFinalize > 0 && untilFinalize <= 15_000) return untilFinalize;
   }
+  if (!("phase" in state)) return 15_000;
   if (state.phase === "unknown") return 60_000;
   const untilTransition = state.next_transition_at
     ? Math.max(0, Date.parse(state.next_transition_at) - Date.parse(state.server_time)) : 60_000;
@@ -57,7 +63,8 @@ export function mergeIntradayData(current: ChartData | null, fresh: ChartData): 
     definition_version: fresh.definition_version, calculator_fingerprint: fresh.calculator_fingerprint,
     market_version: fresh.market_version, coverage: fresh.coverage,
     quote: fresh.quote ?? current.quote, previous_close: fresh.previous_close,
-    intraday_refresh: fresh.intraday_refresh, available: fresh.available || current.available,
+    intraday_refresh: fresh.intraday_refresh, period_refresh: fresh.period_refresh ?? current.period_refresh,
+    available: fresh.available || current.available,
     forming_bar: fresh.forming_bar,
     structure_preview: fresh.structure_preview, structure_persisted: fresh.structure_persisted,
     has_more: false, next_before: undefined };

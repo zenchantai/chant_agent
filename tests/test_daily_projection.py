@@ -170,7 +170,7 @@ def test_api_refresh_failure_preserves_formal_source_and_preview_does_not_replac
     response = client.get("/api/chart-data/000001?timeframe=m&refresh=true")
     assert response.status_code == 200
     payload = response.json()
-    assert called == ["m", "d"]
+    assert called == ["d", "m"]
     assert payload["meta"]["preview"] is True
     assert payload["meta"]["calculation_profile"] == "pen_centers_only"
     assert payload["overlays"]["daily_l2"]["status"] == "stale"

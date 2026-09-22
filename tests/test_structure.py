@@ -114,6 +114,34 @@ def test_preview_never_writes_or_activates_run(tmp_path):
     assert store.active_chan_run("000001", "5")["id"] == formal["meta"]["run_id"]
 
 
+def test_preview_tracks_forming_tail_and_keeps_database_formal(tmp_path):
+    store = Store(str(tmp_path / "forming-preview.db"))
+    rows = session_rows(12)
+    seed(store, "000001", rows)
+    service = PeriodStructureService(store, "forming-preview")
+    formal = service.ensure("000001", "5", force=True)
+    run_count = store.db.execute("SELECT COUNT(*) FROM chan_structure_runs").fetchone()[0]
+    forming = {**rows[-1], "trade_date": "2026-01-21 10:00:00", "close": rows[-1]["close"] + 1,
+               "high": rows[-1]["high"] + 1, "low": rows[-1]["low"] + 1}
+    marker = {"trade_date": forming["trade_date"], "is_forming": True, "status": "provisional"}
+
+    first = service.preview_period("000001", "5", "2", [*rows, forming], marker)
+    tail = first["structure"]["pens"][-1]
+    assert tail["status"] == "provisional"
+    assert tail["end_date"] == forming["trade_date"]
+    assert any(center["status"] == "provisional" for center in first["structure"]["centers"])
+    assert any(movement["status"] == "provisional" for movement in first["structure"]["movements"])
+    assert store.db.execute("SELECT COUNT(*) FROM chan_structure_runs").fetchone()[0] == run_count
+    assert service.load("000001", "5")["meta"]["run_id"] == formal["meta"]["run_id"]
+
+    forming["close"] += 2
+    forming["high"] += 2
+    forming["low"] -= 2
+    second = service.preview_period("000001", "5", "2", [*rows, forming], marker)
+    assert second["structure"]["pens"][-1]["end_price"] != tail["end_price"]
+    assert second["meta"]["structure_version"] != first["meta"]["structure_version"]
+
+
 def test_source_paths_exist_in_repository():
     root = Path(__file__).resolve().parents[1]
     assert all((root / path).is_file() for path in CALCULATOR_SOURCE_FILES)

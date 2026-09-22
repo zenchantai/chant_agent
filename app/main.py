@@ -463,19 +463,20 @@ def chart_data(
             symbol, adjustflag, before, page_limit, periods, boll_period, boll_multiplier,
         )
 
-    attempt = intraday_service.refresh_period(
-        symbol, timeframe, adjustflag, include_quote=True,
-    ) if refresh else None
     daily_error = intraday_service.daily_source_error(symbol, adjustflag)
+    daily_attempt = None
     if refresh and timeframe in REFERENCE_TIMEFRAMES:
         try:
-            daily_attempt = intraday_service.refresh_period(symbol, "d", adjustflag)
+            daily_attempt = intraday_service.refresh_period(symbol, "d", adjustflag, include_quote=True)
             if daily_attempt.get("result") != "success":
                 daily_error = daily_attempt.get("error") or "日线刷新失败，显示已确认数据"
             else:
                 daily_error = intraday_service.daily_source_error(symbol, adjustflag)
         except Exception as exc:
             daily_error = f"日线刷新失败：{type(exc).__name__}"
+    attempt = intraday_service.refresh_period(
+        symbol, timeframe, adjustflag, include_quote=True,
+    ) if refresh else None
     # Calendar helpers acquire their own lock before the Store lock. Read live
     # presentation state first, never call them inside the captured DB snapshot.
     live_rows = intraday_service.live_rows(symbol, timeframe, adjustflag)
@@ -505,7 +506,9 @@ def chart_data(
             all_rows = merge_period_rows(stored_rows, live_rows, timeframe)
             quote_daily_rows = store.confirmed_daily_bars(symbol, adjustflag)
             if forming and timeframe in LIVE_STRUCTURE_PERIODS:
-                preview = period_structure_service.preview_period(symbol, timeframe, adjustflag, all_rows)
+                preview = period_structure_service.preview_period(
+                    symbol, timeframe, adjustflag, all_rows, forming_bar=forming,
+                )
         if timeframe in REFERENCE_TIMEFRAMES:
             try:
                 daily_snapshot = period_structure_service.ensure(symbol, "d", adjustflag)
@@ -531,6 +534,7 @@ def chart_data(
                                  metadata=refresh_meta, snapshot=quote_snapshot),
             "forming_bar": forming,
             "intraday_refresh": refresh_meta,
+            "period_refresh": refresh_meta.get("period_refresh") if refresh_meta else None,
         })
         result["pagination"] = {
             "has_more": len(eligible) > len(page),

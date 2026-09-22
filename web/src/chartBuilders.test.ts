@@ -85,6 +85,22 @@ describe("chart builders", () => {
     expect(areas.map((a:any)=>a[0].name)).toContain("上下文范围");
   });
 
+  it("仅实时预览绘制形成中的虚线笔，正式结构不绘制 provisional", () => {
+    const formingPen = {
+      id: "forming-pen", ordinal: 1, kind: "pen", level: 0, status: "provisional",
+      start_date: "2026-01-02", end_date: "2026-01-03", start_price: 11, end_price: 12,
+    };
+    const data = base({
+      pens: [formingPen], structure_preview: true,
+      bars: [bar("2026-01-01"), bar("2026-01-02", 11), bar("2026-01-03", 12)],
+    });
+    const previewSeries = buildPenSeries({data}, data.bars.map((item: any) => item.trade_date));
+    expect(previewSeries).toHaveLength(1);
+    expect(previewSeries[0].lineStyle.type).toBe("dashed");
+    const formalSeries = buildPenSeries({data: {...data, structure_preview: false}}, data.bars.map((item: any) => item.trade_date));
+    expect(formalSeries).toEqual([]);
+  });
+
   it("动态父中枢使用虚线框并按三个规范走势高亮底层笔", () => {
     const pens = ["p1", "p2", "p3"].map((id, ordinal) => ({ id, ordinal, kind: "pen", level: 0, status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", start_price: 9, end_price: 11 }));
     const selected = center({

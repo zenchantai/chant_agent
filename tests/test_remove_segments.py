@@ -4,7 +4,7 @@ from app.store import Store
 def test_fresh_v25_store_never_creates_legacy_structure_or_analysis_tables(tmp_path):
     store = Store(str(tmp_path / "v25.db"))
     tables = {row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert not any(name.startswith("period_") for name in tables)
+    assert not ({name for name in tables if name.startswith("period_")} - {"period_confirmations"})
     assert not {
         "active_period_structure_runs", "structure_overrides", "structure_override_events",
         "analyses", "journals", "sync_runs", "market_data_conflicts", "market_coverage",

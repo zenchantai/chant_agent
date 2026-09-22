@@ -115,6 +115,20 @@ class SyncService:
                 if attempt["result"] == "failed":
                     raise RuntimeError(attempt["error"])
                 return attempt
+            if timeframe in {"w", "m"}:
+                # Higher periods are formal aggregates of confirmed daily data;
+                # never write provider rows whose source date shifts within a
+                # logical week/month.
+                daily = await self.sync_one(symbol, "d", mode, scheduled_for, adjustflag)
+                if daily.get("result") == "failed":
+                    return daily
+                attempt = await asyncio.to_thread(
+                    self.intraday.refresh_period, symbol, timeframe, adjustflag, True,
+                )
+                if attempt.get("result") == "failed":
+                    raise RuntimeError(attempt.get("error") or "高周期聚合失败")
+                range_start, range_end = self.store.market_range(symbol, timeframe, adjustflag)
+                return {**attempt, "range_start": range_start, "range_end": range_end}
             cached_start, cached_end = self.store.market_range(symbol, timeframe, adjustflag)
             if mode == "full" or not cached_end:
                 start = HISTORY_START

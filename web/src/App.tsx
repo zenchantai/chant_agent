@@ -653,7 +653,7 @@ function Chart({
       if (point) return point;
       if (center) return center;
       return nearestNode([
-        ...(visible.pens ? (builderData.pens || []).filter((node) => node.status === "confirmed").map((node) => ({ node, tolerance: 20 })) : []),
+        ...(visible.pens ? (builderData.pens || []).filter((node) => node.status === "confirmed" || (builderData.structure_preview === true && node.status === "provisional")).map((node) => ({ node, tolerance: 20 })) : []),
         ...artifacts.visibleMovements.map((node) => ({ node, tolerance: 18 })),
         ...artifacts.visibleComponents.map((node) => ({ node, tolerance: 12 })),
       ]);
@@ -1267,7 +1267,7 @@ export function App() {
     loadingOlder.current = false;
   }, [symbol, timeframe]);
   const [intradayError, setIntradayError] = useState("");
-  const realtimePeriod = timeframe === "1";
+  const realtimePeriod = ["1", "5", "30", "d", "w", "m"].includes(timeframe);
   const intradayReady = !loading && data?.symbol === symbol && data?.timeframe === timeframe && realtimePeriod;
   const intradayState = useRef(data?.intraday_refresh);
   intradayState.current = data?.intraday_refresh;
@@ -1287,7 +1287,7 @@ export function App() {
         if (!fresh?.intraday_refresh || fresh.symbol !== symbol || fresh.timeframe !== timeframe) throw new Error("实时行情响应无效");
         if (!signal.aborted) {
           setData((current) => current?.symbol === symbol && current.timeframe === timeframe ? mergeIntradayData(current, fresh) : current);
-          setIntradayError(fresh.intraday_refresh.error || fresh.intraday_refresh.calendar_error || "");
+          setIntradayError(fresh.period_refresh?.error || fresh.intraday_refresh.error || fresh.intraday_refresh.calendar_error || "");
         }
         return fresh.intraday_refresh;
       },
@@ -1975,6 +1975,7 @@ export function App() {
             </div>
             {data?.intraday_refresh && <div className="intraday-refresh-status" role="status">
               {data.intraday_refresh.market_status} · 数据：{data.intraday_refresh.latest_data_at || "暂无数据"}
+              {data.period_refresh?.state === "provisional" && " · 形成中"}
               {timeframe !== "1" && ["5", "30", "d", "w", "m"].includes(timeframe) && ` · ${data.structure_preview ? "实时预览" : "正式结构"}`}
               {data.forming_bar?.is_forming && " · 最后一根未完成"}
               {!data.intraday_refresh.is_today && data.intraday_refresh.data_date && "（非今日行情）"}

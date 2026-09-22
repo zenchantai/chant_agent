@@ -128,10 +128,11 @@ def _source_pen_ids(units: Iterable[dict[str, Any]]) -> list[str]:
     return _unique(values)
 
 
-def atomic_pen_units(pens: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def atomic_pen_units(pens: list[dict[str, Any]], *, include_provisional: bool = False) -> list[dict[str, Any]]:
     units: list[dict[str, Any]] = []
     for ordinal, pen in enumerate(pens):
-        if pen.get("status", "confirmed") != "confirmed":
+        status = pen.get("status", "confirmed")
+        if status != "confirmed" and not include_provisional:
             continue
         units.append({
             "id": str(pen["id"]),
@@ -145,12 +146,12 @@ def atomic_pen_units(pens: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "end_price": float(pen["end_price"]),
             "low": min(float(pen["start_price"]), float(pen["end_price"])),
             "high": max(float(pen["start_price"]), float(pen["end_price"])),
-            "status": "confirmed",
+            "status": status,
             "continuous_range_id": int(pen.get("continuous_range_id", pen.get("range_index", 0))),
             "sequence_id": int(pen.get("sequence_id", 0)),
             "structure_sequence_id": str(pen.get("structure_sequence_id", "")),
             "source_pen_ids": [str(pen["id"])],
-            "confirmed_at": pen.get("confirmed_at", pen["end_date"]),
+            "confirmed_at": pen.get("confirmed_at") or (pen["end_date"] if status == "confirmed" else None),
         })
     return units
 
@@ -194,11 +195,11 @@ def movement_units(movements: list[dict[str, Any]], level: int) -> list[dict[str
     return units
 
 
-def _split_streams(units: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+def _split_streams(units: list[dict[str, Any]], *, include_provisional: bool = False) -> list[list[dict[str, Any]]]:
     streams: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     for unit in sorted(units, key=lambda item: (item["start_date"], item["end_date"], item["id"])):
-        if unit.get("status") != "confirmed":
+        if unit.get("status") != "confirmed" and not include_provisional:
             if current:
                 streams.append(current)
                 current = []
@@ -297,7 +298,7 @@ def _make_center(
         "previous_revision_id": None,
         "active": True,
         "level": level,
-        "status": "formed",
+        "status": "provisional" if any(unit.get("status") != "confirmed" for unit in [*entry, *core]) else "formed",
         "start_date": core[0]["start_date"],
         "end_date": core[-1]["end_date"],
         "core_start_date": core[0]["start_date"],
@@ -312,7 +313,7 @@ def _make_center(
         "closure_reason": None,
         "successor_center_id": None,
         "predecessor_center_id": None,
-        "boundary_status": "fixed",
+        "boundary_status": "dynamic" if any(unit.get("status") != "confirmed" for unit in [*entry, *core]) else "fixed",
         "formation_type": ("pullback" if seed.direction_context["process_direction"] == "up" else "rebound") if seed.direction_context else "undetermined",
         "formation_stage": "directional" if seed.direction_context else "origin_overlap",
         "direction_established_at": (seed.direction_context or {}).get("available_at"),
@@ -353,7 +354,7 @@ def _make_center(
         "departure_direction": None,
         "owner_movement_id": None,
         "formation_modes": ["directional_core" if seed.direction_context else "origin_overlap"],
-        "recursive_eligible": bool(seed.direction_context),
+        "recursive_eligible": bool(seed.direction_context) and not any(unit.get("status") != "confirmed" for unit in [*entry, *core]),
         "continuous_range_id": _stream_key(core[0])[0],
         "sequence_id": _stream_key(core[0])[1],
         "structure_sequence_id": _stream_key(core[0])[2],
@@ -382,7 +383,7 @@ def _capture_center_revision(center: dict[str, Any], available_at: str) -> None:
     center["previous_revision_id"] = history[-1]["id"] if history else None
     center["revision_no"] = revision_no
     center["id"] = f"{center['family_id']}:r{revision_no}"
-    available_at = max([available_at, center["formed_at"], *[u["confirmed_at"] for u in context]])
+    available_at = max([available_at, center["formed_at"], *[u.get("confirmed_at") or u["end_date"] for u in context]])
     center["revision_at"] = available_at
     center["available_at"] = available_at
     history.append(deepcopy({key: value for key, value in center.items() if not key.startswith("_")}))
@@ -550,9 +551,10 @@ def build_level_centers(
     units: list[dict[str, Any]], level: int, *, origin_kind: str = "model_origin",
     direction_context: dict[str, Any] | None = None,
     allow_successor_core: bool = True,
+    include_provisional: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     centers, components, issues = [], [], []
-    for stream_index, stream in enumerate(_split_streams(units)):
+    for stream_index, stream in enumerate(_split_streams(units, include_provisional=include_provisional)):
         stream_origin = origin_kind if stream_index == 0 else "truncated_left"
         for ordinal, unit in enumerate(stream):
             unit["ordinal"] = ordinal
@@ -722,6 +724,24 @@ def build_level_centers(
                 break
             workspace = next_workspace
     centers.sort(key=lambda item: (item["start_date"], item["end_date"], item["id"]))
+    if include_provisional:
+        unit_by_id = {unit["id"]: unit for unit in units}
+        for center in centers:
+            references = [
+                *center.get("entry_unit_ids", []), *center.get("core_unit_ids", []),
+                *center.get("extension_unit_ids", []), *center.get("peripheral_unit_ids", []),
+                *center.get("departure_unit_ids", []), *center.get("retest_unit_ids", []),
+            ]
+            if not any(unit_by_id.get(identifier, {}).get("status") != "confirmed" for identifier in references):
+                continue
+            center["status"] = "provisional"
+            center["boundary_status"] = "dynamic"
+            center["recursive_eligible"] = False
+            for revision in center.get("_history", []):
+                if revision.get("id") == center.get("id"):
+                    revision["status"] = "provisional"
+                    revision["boundary_status"] = "dynamic"
+                    revision["recursive_eligible"] = False
     for ordinal, center in enumerate(centers):
         center["ordinal"] = ordinal
     return centers, components, issues
@@ -1300,13 +1320,13 @@ def _movement_selection_issue(
 
 def build_movements(
     units: list[dict[str, Any]], centers: list[dict[str, Any]], relations: list[dict[str, Any]],
-    points: list[dict[str, Any]], level: int,
+    points: list[dict[str, Any]], level: int, *, include_provisional: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
     """Select one deterministic, non-overlapping movement partition per stream."""
     movements: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
     assigned: set[str] = set()
-    for stream in _split_streams(units):
+    for stream in _split_streams(units, include_provisional=include_provisional):
         unit_index = {unit["id"]: index for index, unit in enumerate(stream)}
         stream_centers = [
             center for center in centers
@@ -1995,7 +2015,7 @@ def build_promotion_candidates(
         for revision_no, search_ids in enumerate(observation_spans, 1):
             observed_at = max(
                 evidence["evidence_available_at"],
-                unit_by_id[search_ids[-1]].get("confirmed_at", unit_by_id[search_ids[-1]]["end_date"]),
+                unit_by_id[search_ids[-1]].get("confirmed_at") or unit_by_id[search_ids[-1]]["end_date"],
             )
             proofs = build_parent_center_proofs(
                 child_level=child_level,
@@ -2256,7 +2276,7 @@ def _point_event_history(units, centers, level, market_dates, macd):
     for count in range(3, len(units) + 1):
         prefix = units[:count]
         prefix_ids = {u["id"] for u in prefix}
-        cutoff = max(u["confirmed_at"] for u in prefix)
+        cutoff = max(u.get("confirmed_at") or u["end_date"] for u in prefix)
         snapshots = []
         for center in centers:
             history = [h for h in center.get("_history", [center]) if h.get("revision_at", h["formed_at"]) <= cutoff
@@ -2284,7 +2304,7 @@ def _point_event_history(units, centers, level, market_dates, macd):
 def build_structure_hierarchy(
     pens: list[dict[str, Any]], macd: list[dict[str, Any]] | None = None,
     market_dates: list[str] | None = None,
-    *, calculation_profile: str = "full",
+    *, calculation_profile: str = "full", include_provisional: bool = False,
 ) -> dict[str, Any]:
     if calculation_profile not in {"full", "pen_centers_only"}:
         raise ValueError(f"不支持的结构计算策略: {calculation_profile}")
@@ -2302,11 +2322,12 @@ def build_structure_hierarchy(
     all_issues: list[dict[str, Any]] = []
     unassigned_by_level: dict[str, list[str]] = {}
     pending_promoted: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    units = atomic_pen_units(pens)
+    units = atomic_pen_units(pens, include_provisional=include_provisional)
     level = 1
     while units and level <= MAX_LEVEL:
         regular_centers, components, issues = build_level_centers(
             units, level, allow_successor_core=True,
+            include_provisional=include_provisional,
         )
         centers, display_only = _merge_level_center_sources(
             regular_centers, pending_promoted.pop(level, []),
@@ -2314,7 +2335,10 @@ def build_structure_hierarchy(
         if full:
             relations = build_relations(centers)
             points, point_components = _point_event_history(units, centers, level, market_dates, macd)
-            movements, unassigned, movement_issues = build_movements(units, centers, relations, points, level)
+            movements, unassigned, movement_issues = build_movements(
+                units, centers, relations, points, level,
+                include_provisional=include_provisional,
+            )
             candidate_revisions, promoted, promotion_relations = build_promotion_candidates(
                 centers, relations, level, units, components, movements, points,
             ) if level < MAX_LEVEL else ([], [], [])
@@ -2504,7 +2528,7 @@ def build_structure_hierarchy(
     }
 
 
-def validate_structure(payload: dict[str, Any]) -> list[str]:
+def validate_structure(payload: dict[str, Any], *, include_provisional: bool = False) -> list[str]:
     structure = payload.get("structure", payload)
     centers = structure.get("center_revisions", structure.get("centers", []))
     movements = structure.get("movement_revisions", structure.get("movements", []))
@@ -2533,7 +2557,7 @@ def validate_structure(payload: dict[str, Any]) -> list[str]:
     core_owner: dict[tuple[int, str], str] = {}
     revision_ids = {center["id"] for center in centers}
     center_by_id = {center["id"]: center for center in centers}
-    units = atomic_pen_units(pens)
+    units = atomic_pen_units(pens, include_provisional=include_provisional)
     for level in range(1, MAX_LEVEL):
         units.extend(movement_units(movements, level))
     unit_by_id = {unit["id"]: unit for unit in units}
@@ -2721,7 +2745,7 @@ def validate_structure(payload: dict[str, Any]) -> list[str]:
             expected = "down" if context.get("process_direction") == "up" else "up"
             if not context or center.get("z_direction") != expected:
                 errors.append(prefix + "direction_context_mismatch")
-        if center["formed_at"] != max([unit["confirmed_at"] for unit in [*entry, *core]] + [context.get("available_at", "")]):
+        if center["formed_at"] != max([unit.get("confirmed_at") or unit["end_date"] for unit in [*entry, *core]] + [context.get("available_at", "")]):
             errors.append(prefix + "formation_time")
 
     active_candidate_families: set[str] = set()
@@ -2744,7 +2768,7 @@ def validate_structure(payload: dict[str, Any]) -> list[str]:
             selected = [unit_by_id[identifier] for identifier in search]
             if not _span_contiguous(selected):
                 errors.append(prefix + "discontinuous_search_span")
-            if any(unit["confirmed_at"] > candidate.get("observed_at", "") for unit in selected):
+            if any((unit.get("confirmed_at") or unit["end_date"]) > candidate.get("observed_at", "") for unit in selected):
                 errors.append(prefix + "future_unit")
         missing = candidate.get("missing_evidence", [])
         if any(not isinstance(item, dict) or not item.get("code") for item in missing):
@@ -2852,8 +2876,8 @@ def validate_structure(payload: dict[str, Any]) -> list[str]:
     return errors
 
 
-def assert_valid_structure(payload: dict[str, Any]) -> None:
-    errors = validate_structure(payload)
+def assert_valid_structure(payload: dict[str, Any], *, include_provisional: bool = False) -> None:
+    errors = validate_structure(payload, include_provisional=include_provisional)
     if errors:
         raise ValueError("结构校验失败: " + "; ".join(errors[:30]))
 

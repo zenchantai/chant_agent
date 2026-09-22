@@ -65,3 +65,17 @@ def test_single_point_touch_and_unconfirmed_unit_do_not_form_center():
     assert len(hierarchy["centers"]) == 1
     assert hierarchy["centers"][0]["formation_stage"] == "origin_overlap"
     assert "p3" not in hierarchy["centers"][0]["owned_unit_ids"]
+
+
+def test_preview_hierarchy_can_render_a_provisional_tail_without_changing_formal_default():
+    pens = pens_from_prices([1, 10, 6, 15, 8])
+    pens[-1]["status"] = "provisional"
+    pens[-1]["confirmed_at"] = None
+
+    formal = build_structure_hierarchy(pens, [], [])
+    preview = build_structure_hierarchy(pens, [], [], include_provisional=True)
+
+    assert all(unit["status"] != "provisional" for unit in formal["centers"])
+    assert preview["centers"][0]["status"] == "provisional"
+    assert preview["centers"][0]["boundary_status"] == "dynamic"
+    assert preview["movements"][-1]["status"] == "provisional"

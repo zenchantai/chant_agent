@@ -11,6 +11,7 @@ from .store import Store
 from .indicators import calculate_bollinger, calculate_macd, calculate_moving_averages
 from .rules import PERIOD_DEFINITION_VERSION
 from .coverage import EXPECTED_TIMES
+from .periods import period_key
 
 TZ = ZoneInfo("Asia/Shanghai")
 MINUTE_PERIODS = {key: int(key) for key in INTRADAY_TIMEFRAMES}
@@ -23,24 +24,6 @@ def _period_boundary(stamp: datetime, timeframe: str) -> datetime:
     if timeframe == "1":
         return stamp + timedelta(minutes=1)
     return stamp.replace(second=0, microsecond=0)
-
-
-def period_key(value: str | date | datetime, timeframe: str) -> str:
-    day = value if isinstance(value, date) and not isinstance(value, datetime) else None
-    if isinstance(value, datetime):
-        day = value.date()
-    elif isinstance(value, str):
-        day = date.fromisoformat(value[:10])
-    if day is None:
-        raise ValueError("无法识别周期日期")
-    if timeframe == "w":
-        iso = day.isocalendar()
-        return f"{iso.year}-W{iso.week:02d}"
-    if timeframe == "m":
-        return day.strftime("%Y-%m")
-    if timeframe == "y":
-        return day.strftime("%Y")
-    return day.isoformat()
 
 
 def period_date_range(value: str | date | datetime, timeframe: str) -> tuple[str, str]:
@@ -58,10 +41,35 @@ def period_date_range(value: str | date | datetime, timeframe: str) -> tuple[str
 
 
 def merge_period_rows(stored: list[dict], live: list[dict], timeframe: str) -> list[dict]:
-    key = (lambda row: row["trade_date"]) if timeframe in INTRADAY_TIMEFRAMES else (lambda row: period_key(row["trade_date"], timeframe))
+    key = lambda row: period_key(row["trade_date"], timeframe)
     merged = {key(row): dict(row) for row in stored}
     merged.update({key(row): dict(row) for row in live})
     return sorted(merged.values(), key=lambda row: row["trade_date"])
+
+
+def aggregate_daily_rows(rows: list[dict], timeframe: str, key: str) -> dict | None:
+    """Build one provisional/formal higher-period bar from daily input rows."""
+    selected = [row for row in rows if period_key(row["trade_date"], timeframe) == key]
+    if not selected:
+        return None
+    selected = sorted(selected, key=lambda row: row["trade_date"])
+    amounts = [row.get("amount") for row in selected]
+    amount = sum(float(value or 0) for value in amounts) if any(value not in (None, 0, 0.0) for value in amounts) else 0.0
+    revisions = [str(row.get("source_revision") or row.get("snapshot_id") or "") for row in selected]
+    revisions = [revision for revision in revisions if revision]
+    return {
+        "trade_date": selected[-1]["trade_date"][:10],
+        "period_key": key,
+        "open": float(selected[0]["open"]),
+        "high": max(float(row["high"]) for row in selected),
+        "low": min(float(row["low"]) for row in selected),
+        "close": float(selected[-1]["close"]),
+        "volume": sum(float(row.get("volume", 0) or 0) for row in selected),
+        "amount": amount,
+        "adjustflag": selected[-1].get("adjustflag", "2"),
+        "source": "daily_aggregate",
+        "source_revision": "daily:" + ",".join(revisions),
+    }
 
 
 def session_state(now: datetime, calendar: dict[str, bool]) -> dict:
@@ -169,7 +177,11 @@ def validate_period_rows(rows: list[dict], timeframe: str, now: datetime) -> lis
                 or float(row["low"]) > min(float(row["open"]), float(row["close"]))
                 or float(row["high"]) < max(float(row["open"]), float(row["close"]))):
             raise ValueError("行情源返回无效周期数据")
-        result[row_key] = {**row, "source": "tencent"}
+        result[row_key] = {
+            **row,
+            "source": "tencent",
+            "period_key": period_key(raw_stamp, timeframe),
+        }
     if not result:
         raise ValueError("行情源尚未返回当日周期数据")
     return sorted(result.values(), key=lambda row: row["trade_date"])
@@ -208,12 +220,13 @@ class IntradayService:
                 self.store.db.execute("BEGIN IMMEDIATE")
                 self.store.db.execute("DELETE FROM market_bars WHERE symbol=? AND timeframe='1' AND adjustflag=? AND substr(trade_date,1,10)<>?", (symbol, adjustflag, day))
                 self.store.db.executemany("""INSERT INTO market_bars
-                    (symbol,timeframe,trade_date,open,high,low,close,volume,amount,adjustflag,source)
-                    VALUES (?,'1',?,?,?,?,?,?,?,?,'tencent')
+                    (symbol,timeframe,trade_date,period_key,open,high,low,close,volume,amount,adjustflag,source)
+                    VALUES (?,'1',?,?,?,?,?,?,?,?,?,'tencent')
                     ON CONFLICT(symbol,timeframe,trade_date,adjustflag) DO UPDATE SET
+                    period_key=excluded.period_key,
                     open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,
                     volume=excluded.volume,amount=excluded.amount,source=excluded.source""",
-                    [(symbol, row["trade_date"], row["open"], row["high"], row["low"], row["close"],
+                    [(symbol, row["trade_date"], period_key(row["trade_date"], "1"), row["open"], row["high"], row["low"], row["close"],
                       row["volume"], row.get("amount", 0), adjustflag) for row in rows])
                 self.store.db.commit()
             except Exception:
@@ -235,6 +248,19 @@ class IntradayService:
             return None
         return stamp.replace(hour=15, minute=0, second=15, microsecond=0)
 
+    def next_period_finalize_at(self, now: datetime, timeframe: str, calendar: dict[str, bool]) -> datetime | None:
+        now = now.astimezone(TZ)
+        if timeframe == "d":
+            day = now.date().isoformat()
+            return now.replace(hour=15, minute=0, second=15, microsecond=0) if calendar.get(day) else None
+        if timeframe not in {"w", "m"}:
+            return None
+        current = period_key(now, timeframe)
+        days = sorted(day for day, trading in calendar.items() if trading and period_key(day, timeframe) == current)
+        if not days:
+            return None
+        return datetime.fromisoformat(days[-1]).replace(hour=15, minute=0, second=15, microsecond=0, tzinfo=TZ)
+
     def replace_current_period(self, symbol: str, timeframe: str, adjustflag: str,
                                rows: list[dict], finalize_before: datetime,
                                calendar: dict[str, bool], *, fetched_at: datetime | None = None) -> tuple[int, str | None]:
@@ -247,11 +273,17 @@ class IntradayService:
                 confirmed.append(row)
         if not confirmed:
             return 0, None
-        return self.store.upsert_bars_with_changes(
+        result = self.store.upsert_bars_with_changes(
             symbol, timeframe, adjustflag, confirmed, source="tencent", allow_lower_priority=True,
             **({"fetched_at": fetched_at or finalize_before, "request_started_at": finalize_before}
                if timeframe == "d" else {}),
         )
+        if timeframe != "d" and hasattr(self.store, "confirm_period_bars"):
+            self.store.confirm_period_bars(
+                symbol, timeframe, adjustflag, confirmed,
+                fetched_at or finalize_before, finalize_before,
+            )
+        return result
 
     def calendar(self, fetch: bool) -> dict[str, bool]:
         now = self.clock()
@@ -316,7 +348,10 @@ class IntradayService:
             previous = self._attempts.get(key, {})
             live = self._live_rows.get(key, [])
             calendar = self.calendar(True)
-            live_finalize_at = self.period_finalize_at(live[-1], timeframe, calendar) if timeframe != "1" and live else None
+            if timeframe in {"d", "w", "m"} and live:
+                live_finalize_at = self.next_period_finalize_at(self.clock(), timeframe, calendar)
+            else:
+                live_finalize_at = self.period_finalize_at(live[-1], timeframe, calendar) if timeframe != "1" and live else None
             finalization_due = bool(live_finalize_at and self.clock() >= live_finalize_at)
             if time.monotonic() - previous.get("finished", float("-inf")) < 15 and not finalization_due:
                 return previous
@@ -349,15 +384,28 @@ class IntradayService:
                     self._record_daily_source_attempt(symbol, adjustflag, attempt)
                 return attempt
             try:
-                start, _ = period_date_range(now, timeframe)
-                if timeframe in INTRADAY_TIMEFRAMES or timeframe == "d":
-                    start = now.date().isoformat()
                 request_started_at = self.clock()
-                rows = validate_period_rows(
-                    fetch_tencent(symbol, timeframe, start, now.date().isoformat(), adjustflag),
-                    timeframe, self.clock(),
-                )
-                fetched_at = self.clock()
+                if timeframe in {"w", "m"}:
+                    # Higher periods are derived only from confirmed daily bars
+                    # plus the current daily preview. Never persist a raw Tencent
+                    # weekly/monthly row with a shifting source date.
+                    daily_rows = self.store.confirmed_daily_bars(symbol, adjustflag)
+                    daily_rows.extend(self.live_rows(symbol, "d", adjustflag))
+                    current_key = period_key(now, timeframe)
+                    aggregate = aggregate_daily_rows(daily_rows, timeframe, current_key)
+                    if aggregate is None:
+                        raise ValueError("暂无足够日线数据构造当前周期")
+                    rows = [aggregate]
+                    fetched_at = self.clock()
+                else:
+                    start, _ = period_date_range(now, timeframe)
+                    if timeframe in INTRADAY_TIMEFRAMES or timeframe == "d":
+                        start = now.date().isoformat()
+                    rows = validate_period_rows(
+                        fetch_tencent(symbol, timeframe, start, now.date().isoformat(), adjustflag),
+                        timeframe, self.clock(),
+                    )
+                    fetched_at = self.clock()
                 if quote and rows:
                     quote_stamp = datetime.strptime(quote["quote_time"], "%Y%m%d%H%M%S").replace(tzinfo=TZ)
                     daily_close = self.period_finalize_at(rows[-1], "d", calendar) if timeframe == "d" else None
@@ -389,6 +437,9 @@ class IntradayService:
                     self._live_rows[key] = rows if latest_is_forming else []
                 attempt.update(result="success" if accepted else "stale", last_success_at=self.clock().isoformat(),
                                error=None if accepted else "行情源数据早于已有缓存，已保留缓存")
+                attempt["request_started_at"] = request_started_at.isoformat()
+                attempt["fetched_at"] = fetched_at.isoformat()
+                attempt["source_revision"] = rows[-1].get("source_revision", "") if rows else ""
             except Exception as exc:
                 attempt["error"] = f"实时刷新失败：{type(exc).__name__}"
             attempt["finished"] = time.monotonic()
@@ -402,18 +453,43 @@ class IntradayService:
 
     def period_metadata(self, symbol: str, timeframe: str, adjustflag: str = "2") -> dict:
         now = self.clock()
-        state = session_state(now, self.calendar(False))
+        calendar = self.calendar(False)
+        state = session_state(now, calendar)
         live = self._live_rows.get((symbol, timeframe, adjustflag), [])
         _, stored_latest = self.store.market_range(symbol, timeframe, adjustflag)
         latest = live[-1]["trade_date"] if live else stored_latest
         attempt = self._attempts.get((symbol, timeframe, adjustflag), {})
         forming = self.forming_bar(symbol, timeframe, adjustflag)
-        return {**state, "server_time": now.isoformat(), "data_date": latest[:10] if latest else None,
+        refresh_state = "cached"
+        if attempt.get("result") == "failed":
+            refresh_state = "stale"
+        elif forming:
+            refresh_state = "provisional"
+        elif attempt.get("result") == "success" and latest:
+            refresh_state = "confirmed"
+        period = period_key(latest, timeframe) if latest else None
+        finalize_at = forming.get("finalize_at") if forming else self.next_period_finalize_at(now, timeframe, calendar)
+        metadata = {**state, "server_time": now.isoformat(), "data_date": latest[:10] if latest else None,
                 "latest_data_at": latest, "last_success_at": attempt.get("last_success_at"),
                 "result": attempt.get("result", "cached"), "error": attempt.get("error"),
                 "calendar_error": self._calendar_error,
-                "next_bar_finalize_at": forming.get("finalize_at") if forming else None,
+                "next_bar_finalize_at": finalize_at,
+                "next_period_finalize_at": finalize_at,
                 "is_today": bool(latest and latest[:10] == now.date().isoformat())}
+        metadata["period_refresh"] = {
+            "period_key": period,
+            "state": refresh_state,
+            "is_forming": bool(forming),
+            "server_time": metadata["server_time"],
+            "latest_data_at": latest,
+            "source_revision": attempt.get("source_revision"),
+            "request_started_at": attempt.get("request_started_at"),
+            "last_success_at": metadata["last_success_at"],
+            "next_period_finalize_at": finalize_at,
+            "is_today": metadata["is_today"],
+            "error": metadata["error"],
+        }
+        return metadata
 
     def live_rows(self, symbol: str, timeframe: str, adjustflag: str = "2") -> list[dict]:
         return [dict(row) for row in self._live_rows.get((symbol, timeframe, adjustflag), [])]
@@ -425,7 +501,10 @@ class IntradayService:
         if not rows:
             return None
         latest = rows[-1]
-        finalize_at = self.period_finalize_at(latest, timeframe, self.calendar(False))
+        calendar = self.calendar(False)
+        finalize_at = (self.next_period_finalize_at(self.clock(), timeframe, calendar)
+                       if timeframe in {"d", "w", "m"}
+                       else self.period_finalize_at(latest, timeframe, calendar))
         if finalize_at and self.clock() >= finalize_at:
             return None
         return {"trade_date": latest["trade_date"], "is_forming": True,
