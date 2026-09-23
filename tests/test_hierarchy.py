@@ -71,7 +71,7 @@ def test_extension_candidate_freezes_first_nine_owned_units_only():
     }
     center = {**second, "_history": [first, second]}
     candidates, promoted, _ = build_promotion_candidates(
-        [center], [], 1, units, [], [], [],
+        [center], [], 1, units, [],
     )
     assert promoted and all(item["boundary_status"] == "dynamic" for item in promoted)
     assert [item["required_unit_ids"] for item in candidates] == [[f"p{index}" for index in range(1, 10)]] * 2
@@ -119,7 +119,7 @@ def test_shanghai_daily_center_12_first_owned_nine_prefix_is_frozen_at_2020_12_1
         "_history": [first],
     }
     final["_history"].append({key: value for key, value in final.items() if key != "_history"})
-    revisions, _, _ = build_promotion_candidates([final], [], 1, units, [], [], [])
+    revisions, _, _ = build_promotion_candidates([final], [], 1, units, [])
     first_candidate = revisions[0]
     assert len(final["owned_unit_ids"]) == 19
     assert len(final["core_unit_ids"]) == 3
@@ -129,18 +129,17 @@ def test_shanghai_daily_center_12_first_owned_nine_prefix_is_frozen_at_2020_12_1
     assert first_candidate["required_unit_ids"][-1] == "R0-pen-104-2020-12-02-2020-12-11"
 
 
-def test_unresolved_expansion_does_not_promote_open_movement():
+def test_unresolved_expansion_does_not_create_movements_or_points():
     result = build_structure_hierarchy(pens_from_prices([1,10,6,15,8,20,12,25,18,30,26,35]))
-    assert all(m["level"] == 1 for m in result["movements"])
-    assert all(not m["recursive_eligible"] for m in result["movements"] if m["status"] != "confirmed")
+    assert "movements" not in result and "points" not in result
+    assert any(item["candidate_source"] == "expansion_decomposition" for item in result["promotion_candidates"])
 
 
-def test_full_hierarchy_satisfies_reference_and_ownership_invariants():
+def test_l2_hierarchy_satisfies_reference_and_level_invariants():
     pens = pens_from_prices([0, 10, 2, 9, 3, 12, 10, 15, 13, 18, 16])
     result = build_structure_hierarchy(pens, [], [])
     assert validate_structure({"structure": {"pens": pens, **result}}) == []
-    active_movements = [item for item in result["movement_revisions"] if item.get("active")]
-    owned = set()
-    for movement in active_movements:
-        assert not owned.intersection(movement["source_unit_ids"])
-        owned.update(movement["source_unit_ids"])
+    assert result["max_level"] <= 2
+    assert not {"movements", "movement_revisions", "points", "point_revisions"} & set(result)
+    assert all(center["decomposition_proof"]["source_kind"] == "local_pen_group"
+               for center in result["centers"] if center["level"] == 2)

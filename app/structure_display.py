@@ -11,20 +11,26 @@ def center_display_catalog(source: dict[str, Any]) -> list[dict[str, Any]]:
     candidates: dict[str, dict[str, Any]] = {}
     visited: set[str] = set()
 
+    relation_parents: dict[str, set[str]] = {}
+    for relation in source.get("relations", []):
+        if relation.get("relation_type") == "promoted_into":
+            relation_parents.setdefault(relation["from_id"], set()).add(relation["to_id"])
+
     def visit(center: dict[str, Any]) -> None:
         if center["id"] in visited or center.get("status") not in {"formed", "closed", "broken", "confirmed"}:
             return
         visited.add(center["id"])
         candidates[center["id"]] = center
-        if not {
-            "expansion_envelope_overlap", "expansion_decomposition", "extension_decomposition",
-        }.intersection(center.get("formation_modes", [])):
-            return
         for identifier in center.get("child_center_ids", []):
             child = revisions.get(identifier)
             if child and child["level"] < center["level"]:
                 parents.setdefault(identifier, set()).add(center["id"])
                 visit(child)
+        for identifier in relation_parents.get(center["id"], set()):
+            parent = revisions.get(identifier)
+            if parent and parent["level"] > center["level"]:
+                parents.setdefault(center["id"], set()).add(identifier)
+                visit(parent)
 
     active_ids = {item["id"] for item in source.get("centers", []) if item.get("active", True)}
     for identifier in sorted(active_ids):
@@ -43,42 +49,47 @@ def center_display_catalog(source: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(result, key=lambda item: (revisions[item["revision_id"]]["level"], revisions[item["revision_id"]]["start_date"], item["revision_id"]))
 
 
-def project_center_display(page: dict[str, Any], source: dict[str, Any], level: int = 0) -> dict[str, Any]:
+def project_center_display(
+    page: dict[str, Any], source: dict[str, Any], level: int = 0, diagnostics: bool = True,
+) -> dict[str, Any]:
     result = deepcopy(page)
     structure = result["structure"]
     revisions = {item["id"]: item for item in source.get("center_revisions", [])}
     revisions.update({item["id"]: item for item in source.get("centers", [])})
-    segments = {item["id"]: item for item in source.get("segment_proof_revisions", source.get("segment_proofs", []))}
+    segments = {
+        item["id"]: item
+        for item in source.get("segment_proof_revisions", source.get("segment_proofs", []))
+    }
+    candidate_source = source if diagnostics else structure
+    candidates = {
+        item["id"]: item
+        for item in candidate_source.get(
+            "promotion_candidate_revisions", candidate_source.get("promotion_candidates", []),
+        )
+    }
     catalog = center_display_catalog(source)
     structure["display_center_levels"] = sorted({revisions[item["revision_id"]]["level"] for item in catalog})
     bars = result["market"]["bars"]
     def visible(center: dict[str, Any]) -> bool:
         return bool(bars) and (level == 0 or center["level"] == level) and center["end_date"] >= bars[0]["trade_date"] and center["start_date"] <= bars[-1]["trade_date"]
     structure["display_centers"] = [item for item in catalog if visible(revisions[item["revision_id"]])]
-    center_ids = {item["id"] for item in structure.get("center_revisions", [])}
+    center_ids: set[str] = set()
     for item in structure["display_centers"]:
         center_ids.add(item["revision_id"])
         center_ids.update(item["parent_revision_ids"])
-    center_ids.update(item["center_revision_id"] for item in structure.get("points", []))
     for relation in structure.get("relations", []):
-        center_ids.update([relation["from_id"], relation["to_id"]])
-    for point in structure.get("points", []):
-        center = revisions.get(point["center_revision_id"])
-        if center:
-            for reference in catalog:
-                representative = revisions[reference["revision_id"]]
-                if (representative["family_id"], representative["level"]) == (center["family_id"], center["level"]):
-                    center_ids.update(reference["parent_revision_ids"])
-    movement_ids = {item["id"] for item in structure.get("movement_revisions", [])}
-    segment_ids = {item["id"] for item in structure.get("segment_proof_revisions", structure.get("segment_proofs", []))}
+        for identifier in (relation.get("from_id"), relation.get("to_id")):
+            if identifier in revisions:
+                center_ids.add(identifier)
+    for candidate in candidates.values():
+        center_ids.update(identifier for identifier in candidate.get("source_entity_ids", []) if identifier in revisions)
+        center_ids.update(identifier for identifier in candidate.get("child_center_ids", []) if identifier in revisions)
+    segment_ids: set[str] = set()
     component_ids = {item["id"] for item in structure.get("components", [])}
-    component_ids.update(identifier for item in structure.get("points", []) for identifier in item.get("source_component_ids", []))
     for relation in structure.get("relations", []):
         component_ids.update(relation.get("evidence", {}).get("connection_component_ids", []))
-    movements = {item["id"]: item for item in source.get("movement_revisions", [])}
     visited_centers: set[str] = set()
-    visited_movements: set[str] = set()
-    while center_ids - visited_centers or movement_ids - visited_movements:
+    while center_ids - visited_centers:
         for identifier in sorted(center_ids - visited_centers):
             visited_centers.add(identifier)
             center = revisions.get(identifier)
@@ -87,30 +98,40 @@ def project_center_display(page: dict[str, Any], source: dict[str, Any], level: 
             center_ids.update(center.get("child_center_ids", []))
             if center.get("previous_revision_id"):
                 center_ids.add(center["previous_revision_id"])
-            movement_ids.update(center.get("child_movement_ids", []))
-            if center.get("unit_kind") == "movement":
-                movement_ids.update(center.get("context_unit_ids", []))
-                movement_ids.update(center.get("owned_unit_ids", []))
             segment_ids.update(center.get("child_segment_ids", []))
+            proof = center.get("decomposition_proof") or {}
+            segment_ids.update(item.get("id") for item in proof.get("segments", []) if item.get("id"))
             component_ids.update(center.get("connection_component_ids", []))
             component_ids.update(filter(None, [center.get("entry_component_id"), center.get("departure_component_id"), center.get("retest_component_id")]))
-        for identifier in sorted(movement_ids - visited_movements):
-            visited_movements.add(identifier)
-            movement = movements.get(identifier)
-            if movement:
-                center_ids.update(movement.get("center_revision_ids", []))
-                movement_ids.update(movement.get("child_movement_ids", []))
+    for identifier in list(segment_ids):
+        segment = segments.get(identifier)
+        if segment:
+            component_ids.update(segment.get("source_component_ids", []))
     structure["center_revisions"] = [deepcopy(item) for item in revisions.values() if item["id"] in center_ids]
-    structure["movement_revisions"] = [deepcopy(item) for item in movements.values() if item["id"] in movement_ids]
     structure["segment_proof_revisions"] = [deepcopy(item) for item in segments.values() if item["id"] in segment_ids]
     structure["segment_proofs"] = [item for item in structure["segment_proof_revisions"] if item.get("active", True)]
     structure["components"] = [deepcopy(item) for item in source.get("components", []) if item["id"] in component_ids]
     pen_ids = {item["id"] for item in structure.get("pens", [])}
-    for item in [*structure["center_revisions"], *structure["movement_revisions"], *structure["segment_proof_revisions"], *structure["components"]]:
+    for item in [*structure["center_revisions"], *structure["segment_proof_revisions"], *structure["components"]]:
         pen_ids.update(item.get("source_pen_ids", []))
         if item.get("unit_kind") == "pen":
             pen_ids.update(item.get("context_unit_ids", []))
     structure["pens"] = [deepcopy(item) for item in source.get("pens", []) if item["id"] in pen_ids]
+    if diagnostics:
+        structure["promotion_candidates"] = [
+            deepcopy(item) for item in source.get("promotion_candidates", [])
+        ]
+        structure["promotion_candidate_revisions"] = [
+            deepcopy(item) for item in source.get("promotion_candidate_revisions", [])
+        ]
+        structure["center_candidates"] = [deepcopy(item) for item in source.get("center_candidates", [])]
+        structure["center_candidate_revisions"] = [
+            deepcopy(item) for item in source.get("center_candidate_revisions", [])
+        ]
+        structure["relations"] = [deepcopy(item) for item in source.get("relations", [])]
+        structure["issues"] = [deepcopy(item) for item in source.get("issues", [])]
+    for obsolete in ("movements", "movement_revisions", "movement_levels", "points", "point_revisions"):
+        structure.pop(obsolete, None)
     return result
 
 

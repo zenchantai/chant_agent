@@ -18,7 +18,6 @@ def test_real_daily_prefixes_preserve_formation_evidence_and_confirmed_boundarie
     macd = calculate_macd(bars)
     dates = [bar["trade_date"] for bar in bars]
     previous_centers = {}
-    confirmed_movements = {}
     for count in range(4, len(pens) + 1):
         result = build_structure_hierarchy(pens[:count], macd, dates)
         assert validate_structure({"pens": pens[:count], **result}) == [], (symbol, count)
@@ -28,12 +27,10 @@ def test_real_daily_prefixes_preserve_formation_evidence_and_confirmed_boundarie
             for field in ("level", "zd", "zg", "dd", "gg", "z_unit_ids", "formed_at", "promotion_confirmed_at", "evidence", "source_pen_ids"):
                 assert previous[field] == revisions[identifier][field], (symbol, count, identifier, field)
         previous_centers = revisions
-        movements = {movement["id"]: movement for movement in result["movements"] if movement["status"] == "confirmed"}
-        for identifier, previous in confirmed_movements.items():
-            assert identifier in movements, (symbol, count, identifier)
-            for field in ("start_date", "end_date", "start_price", "end_price", "confirmed_at", "source_unit_ids", "classification", "center_revision_ids"):
-                assert previous[field] == movements[identifier][field], (symbol, count, identifier, field)
-        confirmed_movements = movements
+        assert result["max_level"] <= 2
+        assert "movements" not in result and "points" not in result
+        assert all(center["decomposition_proof"]["source_kind"] == "local_pen_group"
+                   for center in result["centers"] if center["level"] == 2)
 
 
 @pytest.mark.parametrize("symbol", ["1A0688", "1A0001"])

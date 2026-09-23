@@ -12,15 +12,15 @@ from tests.chan_fixtures import pens_from_prices
 EXPANSION_PRICES = [1, 10, 6, 15, 8, 20, 12, 25, 18, 30, 26, 35]
 EXTENSION_PRICES = [1, 10, 6, 15, 8, 20, 9, 18, 7, 17, 11, 23, 19, 28, 24, 32]
 EMPTY_REFERENCE_GROUPS = (
-    "movements", "movement_revisions", "points", "point_revisions", "relations",
+    "promotion_candidates", "promotion_candidate_revisions", "segment_proofs", "segment_proof_revisions",
 )
 
 
 @pytest.mark.parametrize("mirror", [False, True])
-def test_reference_keeps_l1_centers_and_full_mode_records_unresolved_expansion(mirror):
+def test_reference_keeps_l1_centers_and_l2_mode_records_unresolved_expansion(mirror):
     prices = [40 - price for price in EXPANSION_PRICES] if mirror else EXPANSION_PRICES
     pens = pens_from_prices(prices)
-    full = build_structure_hierarchy(pens)
+    full = build_structure_hierarchy(pens, calculation_profile="pen_centers_l2")
     reference = build_structure_hierarchy(pens, calculation_profile="pen_centers_only")
     assert [center["level"] for center in full["centers"]] == [1, 1, 2]
     assert any(r.get("expansion_status") == "confirmed" and r.get("boundary_status") in {"dynamic", "fixed", "unresolved"} for r in full["relations"])
@@ -28,6 +28,8 @@ def test_reference_keeps_l1_centers_and_full_mode_records_unresolved_expansion(m
     assert reference["levels"] == [1]
     assert reference["max_level"] == 1
     assert all(reference[group] == [] for group in EMPTY_REFERENCE_GROUPS)
+    assert any(relation["relation_type"].startswith("expansion_") for relation in reference["relations"])
+    assert not {"movements", "movement_revisions", "points", "point_revisions"} & set(reference)
     assert all(center["level"] == 1 and center["promotion_confirmed_at"] is None
                and "expansion_envelope_overlap" not in center["formation_modes"]
                and not center.get("absorbed_into_family_id")
@@ -35,24 +37,19 @@ def test_reference_keeps_l1_centers_and_full_mode_records_unresolved_expansion(m
     assert validate_structure({"pens": pens, **reference}) == []
 
 
-def test_reference_never_invokes_points_movements_relations_or_promotion(monkeypatch):
+def test_reference_never_invokes_points_movements_or_promotion(monkeypatch):
     def forbidden(*args, **kwargs):
-        pytest.fail("reference mode called a full-mode calculation")
+        pytest.fail("reference mode called L2 promotion")
 
     with monkeypatch.context() as patch:
-        for name in (
-            "build_relations", "_promote_expansions",
-            "build_structural_points", "_point_revision", "_third_point", "_third_point_tail",
-            "build_movements", "movement_units", "merge_formation_paths",
-            "_structurally_weaker", "_macd_evidence",
-        ):
-            patch.setattr(chan_structure, name, forbidden)
+        patch.setattr(chan_structure, "build_promotion_candidates", forbidden)
         result = build_structure_hierarchy(
             pens_from_prices(EXPANSION_PRICES), calculation_profile="pen_centers_only",
         )
     assert len(result["centers"]) == 2
     assert result["centers"][0]["retest_unit_ids"] == ["p5"]
     assert any(component["role"] == "retest" for component in result["components"])
+    assert result["relations"]
 
 
 def test_reference_preserves_extension_return_and_retest_boundary():
@@ -77,7 +74,7 @@ def test_reference_retest_breaks_center_without_creating_a_point():
     assert center["status"] == "broken"
     assert center["retest_unit_ids"] == ["p5"]
     assert center["retest_component_id"] in {item["id"] for item in result["components"]}
-    assert result["points"] == result["point_revisions"] == []
+    assert "points" not in result and "point_revisions" not in result
 
 
 def test_reference_append_only_revisions_keep_fixed_core_and_evidence():
@@ -115,7 +112,7 @@ def test_reference_ignores_provisional_pen_without_mutating_input():
     result = build_structure_hierarchy(pens, calculation_profile="pen_centers_only")
     assert len(result["centers"]) == 1
     assert result["centers"][0]["formation_stage"] == "origin_overlap"
-    assert not result["centers"][0]["recursive_eligible"]
+    assert "recursive_eligible" not in result["centers"][0]
     assert result["max_level"] == 1
     assert pens == original
 
@@ -123,10 +120,10 @@ def test_reference_ignores_provisional_pen_without_mutating_input():
 # Directional semantics intentionally supersede the pre-v27 hashes.
 @pytest.mark.parametrize("prices", [EXPANSION_PRICES, EXTENSION_PRICES,
     [1,10,6,15,8,20,16,25,18,30], [1,10,6,15,8,20,15,25,18,30]])
-def test_full_profile_is_deterministic_and_keeps_input_unchanged(prices):
+def test_l2_profile_is_deterministic_and_keeps_input_unchanged(prices):
     pens = pens_from_prices(prices)
     before = deepcopy(pens)
-    result = build_structure_hierarchy(pens, calculation_profile="full")
+    result = build_structure_hierarchy(pens, calculation_profile="pen_centers_l2")
     assert result == build_structure_hierarchy(pens)
     assert validate_structure({"pens": pens, **result}) == []
     assert pens == before

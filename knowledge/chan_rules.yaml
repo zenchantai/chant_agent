@@ -1,9 +1,12 @@
-version: chan-period-candidate-ownership-boundary-v31
+version: chan-period-pen-center-l2-v1
 calculation_profiles:
-  full: ["5", "30", "d"]
+  pen_centers_l2: ["5", "30", "d"]
   pen_centers_only: ["w", "m"]
+max_level_by_profile:
+  pen_centers_l2: 2
+  pen_centers_only: 1
 center_envelope_mode: owned_z_units
-movement_partition_mode: canonical_boundary_stream
+movement_partition_mode: disabled
 promotion_segment_mode: pen_native_segment_proof
 center_promotion_mode: unified_segment_proof
 nine_unit_mode: owned_units_from_core
@@ -19,7 +22,7 @@ source:
 priority: [product_override, later_revision, original_definition]
 base_timeframe: each_period
 rules:
-  - {id: PERIOD-PROFILE-V27, section: period_profile, priority: product_override, assertion: "日线、5分钟、30分钟保留完整结构计算；周线、月线只计算确认笔、L1笔中枢及延伸，保留内部离开回试证据，但不生成中枢关系、扩张、升级、走势、背驰或买卖点。"}
+  - {id: PERIOD-PROFILE-V27, section: period_profile, priority: product_override, assertion: "日线、5分钟、30分钟使用pen_centers_l2，保留确认笔、L1笔中枢、延伸、扩展和一次L1到L2晋级；周线、月线使用pen_centers_only，只计算确认笔和L1笔中枢及延伸，不生成L2。所有周期都不生成走势、结构买卖点或L2以上递归。"}
   - {id: DAILY-L2-PROJECTION-V27, section: projection, priority: product_override, assertion: "周月图独立叠加日线正式展示目录中的L2，包含活动及升级后保留的组成中枢；保持日线来源、日期、价格、家族和修订身份，不参与周月原生结构计算。"}
   - {id: DAILY-CONFIRMED-SOURCE-V27, section: confirmation, priority: product_override, assertion: "日线正式结构和跨周期L2仅使用有完成基线或匹配内容确认的已收盘日K；形成中数据只用于独立预览，未确认缓存不能因墙钟或跨日自动转为正式。"}
   - {id: RAW-5M-001, section: market_data, assertion: "各周期行情独立按时间升序去重并校验OHLC；结构不得跨越不完整区间、数据断点或序列边界。"}
@@ -37,21 +40,14 @@ rules:
   - {id: CENTER-STRICT-CORE-V25, section: centers, assertion: "核心三单位连续、已确认、方向交替并严格重叠；ZD=max(low1,low2,low3)，ZG=min(high1,high2,high3)，且ZD+epsilon<ZG。"}
   - {id: CENTER-STATE-MACHINE-V25, section: centers, assertion: "方向性核心固定ZD/ZG；同向Z与核心闭区间接触可延伸。首次完整离开回试仍按严格边界确认三类点，不能用后续回试偷换第一次。"}
   - {id: CENTER-Z-WAVE-V26, section: centers, assertion: "DD/GG仅取核心第一、第三及已接纳同向延伸Z单位，进入、连接、最终离开和回试不参与；与上下文价格范围分开。"}
-  - {id: CENTER-NEWBORN-EXPANSION-V26, section: centers, assertion: "核心分离且Z闭区间接触可确认扩展事件；保存连续性、连接和真实Z见证。高级核心由三段次级走势交集定界，第三段可动态；缺少定界证据不画高级矩形，禁止包络直接升级。"}
-  - {id: CENTER-PARENT-FAMILY-V30, section: hierarchy, assertion: "父中枢由父级别、连续流和三个SegmentProof家族建立独立family_id；低级子中枢保留，不因升级改级或停用。"}
+  - {id: CENTER-NEWBORN-EXPANSION-V26, section: centers, assertion: "核心分离且Z闭区间接触可确认扩展事件；保存连续性、连接和真实Z见证。L1到L2由三个连续笔原生SegmentProof的真实区间交集定界，第三段可动态；缺少定界证据不提交L2，禁止包络直接升级。"}
+  - {id: CENTER-PARENT-FAMILY-V30, section: hierarchy, assertion: "父中枢由父级别、连续笔流和三个SegmentProof家族建立独立family_id；低级L1子中枢保留，不因晋级改级或停用。L2生成后停止，不继续构造L3。"}
   - {id: PROMOTION-OWNED-NINE-V30, section: hierarchy, assertion: "从首个核心单位起，core、extension和peripheral合计首次达到九个连续拥有单位时触发高级构造检查；entry、departure和retest不计数，九单位不等于自动升级。"}
-  - {id: SEGMENT-PEN-NATIVE-V30, section: movements, assertion: "L1到L2允许从确认笔直接构造至少三笔的SegmentProof；全局MovementRevision可适配为段证明但不是准入条件，三个连续段共同重叠后先生成动态父中枢。"}
+  - {id: SEGMENT-PEN-NATIVE-V30, section: hierarchy, assertion: "L1到L2只允许从确认笔直接构造至少三笔的SegmentProof；走势不是输入、证据或回退路径，三个连续段共同重叠后先生成动态父中枢。"}
   - {id: CENTER-CANDIDATE-ELIGIBILITY-V31, section: centers, assertion: "几何合法候选还必须通过确认、连续性、方向上下文、边界、时间和同级所有权校验，才能进入可提交候选。"}
   - {id: CENTER-CANDIDATE-SELECTION-V31, section: centers, assertion: "候选按证据可用时间、核心结束位置、核心起点位置、源单位数和稳定ID确定性选择；已提交候选不得被后续滑动窗口替换。"}
-  - {id: CENTER-OWNERSHIP-LEDGER-V31, section: centers, assertion: "同一级别同一连续流的直接单位只能有一个正式拥有者；L1拥有笔，L2拥有段证明，L3以上拥有已确认低级走势。"}
+  - {id: CENTER-OWNERSHIP-LEDGER-V31, section: centers, assertion: "同一级别同一连续流的直接单位只能有一个正式拥有者；L1拥有笔，L2拥有段证明；本版本不构造L3以上。"}
   - {id: CENTER-CONTEXT-NONOWNERSHIP-V31, section: centers, assertion: "entry、departure、retest、connection和boundary_evidence只能作为上下文引用，不进入owned_unit_ids；上下文引用可以重叠。"}
   - {id: CENTER-LIFECYCLE-ARBITRATION-V31, section: centers, assertion: "旧中枢回试、外部边界和独立后继核心按证据时间仲裁；独立后继核心可在不复用拥有单位时关闭旧中枢。"}
   - {id: CENTER-PREFIX-STABILITY-V31, section: centers, assertion: "追加数据只能扩展未确认后缀；已提交候选、同级拥有权和确认前缀结果保持稳定。"}
-  - {id: POINT-STRENGTH-VECTOR-V25, section: points, assertion: "力度先比较内部最高中枢级别和已确认子走势数，相同时再比较振幅与平均斜率；MACD仅作辅助证据。"}
-  - {id: POINT-FIRST-V25, section: points, assertion: "一类点仅出现在至少两个同级中枢构成的趋势中，点位是最后离开段真实极值，后续反向低级走势完成时确认。"}
-  - {id: POINT-SECOND-V25, section: points, assertion: "二类点依赖已确认一类点，第一次完整回撤不得破坏一类点极值，且不默认切分走势。"}
-  - {id: POINT-THIRD-V25, section: points, assertion: "三类点由完整离开组件和第一次完整回试组件构成，回试进入核心则候选失效。"}
-  - {id: MOVEMENT-POINT-BOUNDARY-V25, section: movements, assertion: "走势边界必须追溯到结构点真实端点；相邻走势只共享一个价格端点，不共享整笔或低级走势。"}
-  - {id: MOVEMENT-CLASSIFICATION-V25, section: movements, assertion: "一个同级中枢为盘整；两个以上完整系统依次严格向上或向下分离为上涨或下跌；扩张不得误判同级趋势。"}
-  - {id: RECURSION-V25, section: hierarchy, assertion: "L2以上只消费连续、已确认、分类明确且recursive_eligible=true的低级走势，递归上限L8。"}
-  - {id: CONFIRM-V25, section: confirmation, assertion: "点位时间与确认时间分开；无法唯一确认的结构保持candidate、provisional、undetermined或truncated，禁止未来函数。"}
+  - {id: CONFIRM-V25, section: confirmation, assertion: "结构时间与证据可用时间分开；无法唯一确认的结构保持candidate、provisional、undetermined或truncated，禁止未来函数。"}

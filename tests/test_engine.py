@@ -78,4 +78,4 @@ def test_preview_hierarchy_can_render_a_provisional_tail_without_changing_formal
     assert all(unit["status"] != "provisional" for unit in formal["centers"])
     assert preview["centers"][0]["status"] == "provisional"
     assert preview["centers"][0]["boundary_status"] == "dynamic"
-    assert preview["movements"][-1]["status"] == "provisional"
+    assert "movements" not in preview and "points" not in preview

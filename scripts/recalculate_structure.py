@@ -117,8 +117,8 @@ def execute(path: Path, requested: tuple[str, ...] | None) -> dict:
                     "max_level": snapshot["meta"]["max_level"],
                     "pens": len(snapshot["structure"]["pens"]),
                     "centers": len(snapshot["structure"]["centers"]),
-                    "movements": len(snapshot["structure"]["movements"]),
-                    "points": len(snapshot["structure"]["points"]),
+                    "promotion_candidates": len(snapshot["structure"].get("promotion_candidates", [])),
+                    "segment_proofs": len(snapshot["structure"].get("segment_proofs", [])),
                 })
             except Exception as exc:
                 item.update({

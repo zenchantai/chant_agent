@@ -16,7 +16,7 @@ def test_deleting_run_cascades_all_normalized_detail_rows(tmp_path):
     store = Store(str(tmp_path / "cascade.db"))
     tables = [
         "chan_processed_bars", "chan_fractals", "chan_pens", "chan_components",
-        "chan_center_revisions", "chan_movement_revisions", "chan_point_revisions",
+        "chan_center_revisions", "chan_promotion_candidates", "chan_segment_proofs",
         "chan_relations", "chan_issues",
     ]
     store.db.execute("PRAGMA foreign_keys=ON")

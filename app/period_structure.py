@@ -20,11 +20,13 @@ REFERENCE_TIMEFRAMES = ("w", "m")
 
 
 def calculation_profile(timeframe: str) -> str:
-    return "pen_centers_only" if timeframe in REFERENCE_TIMEFRAMES else "full"
+    return "pen_centers_only" if timeframe in REFERENCE_TIMEFRAMES else "pen_centers_l2"
 
 
 def structure_mode_metadata(profile: str) -> dict[str, str]:
-    full = profile == "full"
+    if profile not in {"pen_centers_l2", "pen_centers_only"}:
+        raise ValueError(f"不支持的结构计算策略: {profile}")
+    promotes_l2 = profile == "pen_centers_l2"
     return {
         "decomposition_mode": "non_same_level",
         "base_unit_mode": "current_period_confirmed_pen",
@@ -35,13 +37,13 @@ def structure_mode_metadata(profile: str) -> dict[str, str]:
         "center_lifecycle_mode": "timestamped_event_arbitration",
         "center_prefix_mode": "immutable_committed_prefix",
         "center_envelope_mode": "owned_z_units",
-        "movement_partition_mode": "canonical_boundary_stream" if full else "disabled",
-        "promotion_segment_mode": "pen_native_segment_proof" if full else "disabled",
-        "center_promotion_mode": "unified_segment_proof" if full else "disabled",
-        "nine_unit_mode": "owned_units_from_core" if full else "disabled",
-        "envelope_touch_mode": "expansion_contact" if full else "disabled",
-        "movement_boundary_mode": "structural_buy_sell_point" if full else "disabled",
-        "divergence_mode": "structural_strength_vector" if full else "disabled",
+        "movement_partition_mode": "disabled",
+        "promotion_segment_mode": "pen_native_segment_proof" if promotes_l2 else "disabled",
+        "center_promotion_mode": "unified_segment_proof" if promotes_l2 else "disabled",
+        "nine_unit_mode": "owned_units_from_core" if promotes_l2 else "disabled",
+        "envelope_touch_mode": "expansion_contact",
+        "movement_boundary_mode": "disabled",
+        "divergence_mode": "disabled",
     }
 
 
@@ -175,7 +177,7 @@ def analyze_period_ranges(
         processed_bars.extend({**asdict(item), "range_index": range_index} for item in processed)
         fractals.extend({**asdict(item), "range_index": range_index} for item in range_fractals)
     profile = calculation_profile(timeframe)
-    macd = calculate_macd(all_bars, ranges) if profile == "full" else []
+    macd = []
     hierarchy = build_structure_hierarchy(
         pens, macd, [bar["trade_date"] for bar in all_bars],
         calculation_profile=profile, include_provisional=include_provisional,
@@ -221,6 +223,10 @@ class PeriodStructureService:
     def __init__(self, store, calculator_fingerprint: str | None = None):
         self.store = store
         self.calculator_fingerprint = calculator_fingerprint or calculate_calculator_fingerprint()
+        # Loading one formal run reconstructs every persisted evidence row.  A
+        # chart refresh must not repeat that work while the active run is
+        # unchanged, so keep immutable successful runs by their run id.
+        self._snapshot_cache: dict[tuple[str, str, str], tuple[int, dict[str, Any]]] = {}
 
     @staticmethod
     def market_version(rows: list[dict[str, Any]]) -> str:
@@ -264,8 +270,7 @@ class PeriodStructureService:
             },
             "structure": {
                 "processed_bars": [], "fractals": [], "pens": [], "components": [],
-                "centers": [], "center_revisions": [], "movements": [],
-                "movement_revisions": [], "points": [], "point_revisions": [],
+                "centers": [], "center_revisions": [],
                 "segment_proofs": [], "segment_proof_revisions": [],
                 "center_candidates": [], "center_candidate_revisions": [],
                 "relations": [], "issues": [], "levels": [], "unassigned_by_level": {},
@@ -299,7 +304,13 @@ class PeriodStructureService:
             and active["market_version"] == market_version
             and json.loads(active["meta_json"]).get("coverage") == coverage
         ):
-            return self.store.load_chan_structure(int(active["id"]))
+            cache_key = (symbol, timeframe, adjustflag)
+            cached = self._snapshot_cache.get(cache_key)
+            if cached and cached[0] == int(active["id"]):
+                return cached[1]
+            snapshot = self.store.load_chan_structure(int(active["id"]))
+            self._snapshot_cache[cache_key] = (int(active["id"]), snapshot)
+            return snapshot
         result = analyze_period_ranges(
             rows, symbol, timeframe, self._analysis_ranges(coverage, rows), self.calculator_fingerprint,
         )
@@ -311,6 +322,7 @@ class PeriodStructureService:
         })
         run_id = self.store.replace_chan_structure(symbol, timeframe, adjustflag, result, market_version)
         result["meta"]["run_id"] = run_id
+        self._snapshot_cache[(symbol, timeframe, adjustflag)] = (run_id, result)
         return result
 
     def load(self, symbol: str, timeframe: str, adjustflag: str = "2") -> dict[str, Any]:
@@ -342,19 +354,8 @@ class PeriodStructureService:
             if (level is None or int(item.get("level", 1)) == level)
             and (not bars or self._overlaps(item, start, end))
         ]
-        movements = [
-            item for item in source.get("movements", [])
-            if (level is None or int(item.get("level", 1)) == level)
-            and (not bars or self._overlaps(item, start, end))
-        ]
-        point_ids = {item.get("end_point_id") for item in movements if item.get("end_point_id")}
-        points = [
-            item for item in source.get("points", [])
-            if (level is None or int(item.get("level", 1)) == level)
-            and ((not bars or start <= item["point_date"] <= end) or item.get("family_id") in point_ids)
-        ]
         component_ids = {
-            identifier for item in [*centers, *points]
+            identifier for item in centers
             for identifier in (
                 [item.get("entry_component_id"), item.get("departure_component_id"), item.get("retest_component_id")]
                 + list(item.get("source_component_ids", []))
@@ -362,12 +363,15 @@ class PeriodStructureService:
         }
         components = [item for item in source.get("components", []) if item["id"] in component_ids]
         center_map = {item["id"]: item for item in source.get("center_revisions", [])}
-        movement_map = {item["id"]: item for item in source.get("movement_revisions", [])}
         segment_map = {item["id"]: item for item in source.get("segment_proof_revisions", [])}
         component_map = {item["id"]: item for item in source.get("components", [])}
-        center_refs = {item["id"] for item in centers} | {item["center_revision_id"] for item in points}
-        movement_refs = {item["id"] for item in movements}
-        relations = [item for item in source.get("relations", []) if (level is None or int(item.get("level", 1)) == level) and (diagnostics or item.get("status") != "invalidated")]
+        center_refs = {item["id"] for item in centers}
+        relations = [
+            item for item in source.get("relations", [])
+            if (level is None or int(item.get("level", 1)) == level)
+            and (diagnostics or item.get("status") != "invalidated")
+            and (diagnostics or not bars or self._overlaps(item, start, end))
+        ]
         promotion_candidates = [
             {**item, "rejected_proofs": []} for item in source.get("promotion_candidates", [])
             if level is None or int(item.get("child_level", 1)) == level
@@ -401,8 +405,7 @@ class PeriodStructureService:
         for relation in relations:
             center_refs.update([relation["from_id"], relation["to_id"]])
         visited_centers: set[str] = set()
-        visited_movements: set[str] = set()
-        while center_refs - visited_centers or movement_refs - visited_movements:
+        while center_refs - visited_centers:
             for identifier in list(center_refs - visited_centers):
                 visited_centers.add(identifier)
                 item = center_map.get(identifier)
@@ -411,27 +414,16 @@ class PeriodStructureService:
                 center_refs.update(item.get("child_center_ids", []))
                 if item.get("previous_revision_id"):
                     center_refs.add(item["previous_revision_id"])
-                movement_refs.update(item.get("child_movement_ids", []))
                 segment_refs = set(item.get("child_segment_ids", []))
                 for segment_id in segment_refs:
                     segment = segment_map.get(segment_id)
                     if segment:
                         component_ids.update(segment.get("source_pen_ids", []))
-                if item.get("unit_kind") == "movement":
-                    movement_refs.update(item.get("context_unit_ids", []))
                 component_ids.update(item.get("connection_component_ids", []))
                 component_ids.update(filter(None, [item.get("entry_component_id"), item.get("departure_component_id"), item.get("retest_component_id")]))
-            for identifier in list(movement_refs - visited_movements):
-                visited_movements.add(identifier)
-                item = movement_map.get(identifier)
-                if not item:
-                    continue
-                center_refs.update(item.get("center_revision_ids", []))
-                movement_refs.update(item.get("child_movement_ids", []))
         reference_centers = [item for item in source.get("center_revisions", []) if diagnostics or item["id"] in center_refs]
-        reference_movements = [item for item in source.get("movement_revisions", []) if diagnostics or item["id"] in movement_refs]
         components = [item for identifier, item in component_map.items() if diagnostics or identifier in component_ids]
-        pen_refs = {identifier for item in [*reference_centers, *reference_movements, *components] for identifier in item.get("source_pen_ids", [])}
+        pen_refs = {identifier for item in [*reference_centers, *components] for identifier in item.get("source_pen_ids", [])}
         pen_refs.update(identifier for item in reference_centers if item.get("unit_kind") == "pen" for identifier in item.get("context_unit_ids", []))
         pens = [item for item in source.get("pens", []) if item["id"] in pen_refs or not bars or self._overlaps(item, start, end)]
         structure = {
@@ -441,10 +433,6 @@ class PeriodStructureService:
             "center_revisions": reference_centers,
             "center_candidates": center_candidates,
             "center_candidate_revisions": center_candidate_revisions if diagnostics else center_candidates,
-            "movements": movements,
-            "movement_revisions": reference_movements,
-            "points": points,
-            "point_revisions": source.get("point_revisions", []) if diagnostics else [],
             "promotion_candidates": promotion_candidates,
             "promotion_candidate_revisions": (
                 promotion_candidate_revisions if diagnostics else []
@@ -501,7 +489,7 @@ class PeriodStructureService:
                 ranges = self._analysis_ranges(coverage, rows)
                 result["structure"].update(build_structure_hierarchy(
                     result["structure"]["pens"],
-                    calculate_macd(rows, ranges) if calculation_profile(timeframe) == "full" else [],
+                    [],
                     [row["trade_date"] for row in rows],
                     calculation_profile=calculation_profile(timeframe), include_provisional=True,
                 ))

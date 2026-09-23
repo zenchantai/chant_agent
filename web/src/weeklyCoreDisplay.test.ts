@@ -14,13 +14,13 @@ const native = (): Center => ({
   extension_unit_ids: ["extension"], departure_unit_ids: ["departure"], child_center_ids: [], formation_modes: [],
 } as unknown as Center);
 const fixture = (timeframe = "w"): ChartData => ({
-  symbol: "1A0001", timeframe, adjustflag: "2", calculation_profile: ["w", "m"].includes(timeframe) ? "pen_centers_only" : "full",
+  symbol: "1A0001", timeframe, adjustflag: "2", calculation_profile: ["w", "m"].includes(timeframe) ? "pen_centers_only" : "pen_centers_l2",
   bars: dates.map(trade_date => ({trade_date, open: 10, close: 10.5, high: 12, low: 8, volume: 100, amount: 1000})),
   pens: ["entry", "core1", "core2", "core3", "extension", "departure"].map((id, index) => ({
     id, ordinal: index, kind: "pen", level: 0, status: "confirmed", start_date: dates[index], end_date: dates[index + 1], start_price: index % 2 ? 8 : 12, end_price: index % 2 ? 12 : 8,
   })),
-  centers: [native()], center_revisions: [native()], components: [], movements: [], movement_revisions: [], points: [], point_revisions: [], promotion_candidates: [], promotion_candidate_revisions: [], relations: [], issues: [],
-  levels: [1], center_levels: [1], movement_levels: [], unassigned_by_level: {}, drawings: [], drawings_version: "", indicators: {macd: []},
+  centers: [native()], center_revisions: [native()], components: [], promotion_candidates: [], promotion_candidate_revisions: [], relations: [], issues: [],
+  levels: [1], center_levels: [1], unassigned_by_level: {}, drawings: [], drawings_version: "", indicators: {macd: []},
   available: true, has_more: true, active_structure_level: 1, max_available_center_level: 1,
   definition_version: "v27", calculator_fingerprint: "engine", structure_version: "weekly", run_id: 5,
   display_centers: [{revision_id: "native", display_role: "active", parent_revision_ids: []}], display_center_levels: [1],

@@ -54,15 +54,15 @@ def test_formal_daily_coverage_excludes_unconfirmed_cache_and_exposes_gap(source
     assert result["meta"]["market_version"] == structures.market_version(store.confirmed_daily_bars(SYMBOL))
 
 
-def test_preview_coverage_is_separate_from_formal_source(source):
+def test_live_daily_bar_keeps_formal_structure_coverage_until_close(source):
     _, _, intraday, clock = source
     clock[0] = datetime(2026, 9, 21, 10, tzinfo=TZ)
     intraday._live_rows[(SYMBOL, "d", "2")] = [bar("2026-09-21", 12)]
     result = main.chart_data(SYMBOL, timeframe="d")
-    assert result["meta"]["preview"] is True and result["meta"]["persisted"] is False
+    assert result["meta"]["preview"] is False and result["meta"]["persisted"] is True
     assert result["meta"]["formal_coverage"]["missing_sessions"] == ["2026-09-17"]
-    assert result["meta"]["sampling_coverage"] == result["meta"]["coverage"]
-    assert result["meta"]["sampling_coverage"]["range_end"] == "2026-09-21"
+    assert result["meta"]["sampling_coverage"] == result["meta"]["formal_coverage"]
+    assert result["market"]["forming_bar"]["trade_date"] == "2026-09-21"
     assert result["meta"]["formal_coverage"]["range_end"] == "2026-09-18"
 
 

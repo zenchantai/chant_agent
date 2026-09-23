@@ -36,5 +36,5 @@ def select_context(units: list[dict[str, Any]], start: int = 0,
     bootstrap = breakout_context(units,start)
     if bootstrap:
         candidates.append(bootstrap)
-    priority = {'confirmed_movement_boundary':0,'confirmed_departure_retest':1,'confirmed_three_unit_breakout':2}
+    priority = {'confirmed_departure_retest': 0, 'confirmed_three_unit_breakout': 1}
     return min(candidates,key=lambda item:(item['available_at'],priority.get(item.get('reason'),3),item.get('anchor_date',''))) if candidates else None

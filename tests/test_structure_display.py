@@ -12,7 +12,7 @@ def sample():
 
 def page(source, start=None, end=None):
     return {"meta": {"run_id": 1}, "market": {"bars": [{"trade_date": start or source["pens"][0]["start_date"]}, {"trade_date": end or source["pens"][-1]["end_date"]}]},
-            "structure": {"centers": source["centers"], "points": source["points"], "center_revisions": [], "pens": [], "components": [], "movement_revisions": []}}
+            "structure": {"centers": source["centers"], "center_revisions": [], "pens": [], "components": []}}
 
 
 def test_display_children_without_reactivating_or_mutating_snapshot():
@@ -66,12 +66,24 @@ def test_nested_expansion_and_latest_representative_are_deterministic():
     assert center_display_catalog(source) == catalog
 
 
-def test_exact_point_revision_and_components_are_in_non_diagnostic_closure():
+def test_center_revision_and_components_are_in_non_diagnostic_closure():
     source = sample()
     older = next(center for center in source["center_revisions"] if center["level"] == 1 and center["revision_no"] == 1)
     component = source["components"][0]
-    source["points"] = [{"id": "point", "center_revision_id": older["id"], "source_component_ids": [component["id"]]}]
     result = project_center_display(page(source), source, 1)["structure"]
     assert older in result["center_revisions"]
     assert component in result["components"]
-    assert result["points"] == source["points"]
+    assert "points" not in result and "movements" not in result
+
+
+def test_l2_display_closure_preserves_promotion_proofs_and_source_pens():
+    pens = pens_from_prices([1, 10, 6, 15, 8, 20, 12, 25, 18, 30, 26, 35])
+    source = {"pens": pens, **build_structure_hierarchy(pens)}
+    result = project_center_display(page(source), source, 2)["structure"]
+    parent, = [item for item in result["centers"] if item["level"] == 2]
+    assert parent["decomposition_proof"]["source_kind"] == "local_pen_group"
+    assert result["promotion_candidates"]
+    assert {segment["id"] for segment in parent["decomposition_proof"]["segments"]} <= {
+        segment["id"] for segment in result["segment_proof_revisions"]
+    }
+    assert set(parent["source_pen_ids"]) <= {pen["id"] for pen in result["pens"]}

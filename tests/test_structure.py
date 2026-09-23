@@ -12,10 +12,10 @@ from app.store import Store
 from tests.chan_fixtures import seed, session_rows
 
 
-def test_rulebook_and_definition_version_are_v31():
+def test_rulebook_and_definition_version_are_pen_center_l2():
     rulebook = load_rulebook()
     assert rulebook["version"] == PERIOD_DEFINITION_VERSION
-    assert PERIOD_DEFINITION_VERSION == "chan-period-candidate-ownership-boundary-v31"
+    assert PERIOD_DEFINITION_VERSION == "chan-period-pen-center-l2-v1"
 
 
 def test_calculator_fingerprint_is_deterministic_and_fails_closed(tmp_path):
@@ -65,7 +65,8 @@ def test_period_snapshot_is_reproducible_and_uses_new_structure_groups(tmp_path)
     assert first["meta"]["structure_version"] == second["meta"]["structure_version"]
     assert first["structure"] == second["structure"]
     assert set(first) == {"meta", "structure"}
-    assert {"pens", "components", "centers", "center_revisions", "movements", "movement_revisions", "points", "point_revisions", "relations", "issues"} <= set(first["structure"])
+    assert {"pens", "components", "centers", "center_revisions", "promotion_candidates", "promotion_candidate_revisions", "segment_proofs", "segment_proof_revisions", "relations", "issues"} <= set(first["structure"])
+    assert not {"movements", "movement_revisions", "points", "point_revisions"} & set(first["structure"])
 
 
 def test_chart_page_is_nested_and_pagination_preserves_structure_identity(tmp_path):
@@ -130,7 +131,7 @@ def test_preview_tracks_forming_tail_and_keeps_database_formal(tmp_path):
     assert tail["status"] == "provisional"
     assert tail["end_date"] == forming["trade_date"]
     assert any(center["status"] == "provisional" for center in first["structure"]["centers"])
-    assert any(movement["status"] == "provisional" for movement in first["structure"]["movements"])
+    assert "movements" not in first["structure"] and "points" not in first["structure"]
     assert store.db.execute("SELECT COUNT(*) FROM chan_structure_runs").fetchone()[0] == run_count
     assert service.load("000001", "5")["meta"]["run_id"] == formal["meta"]["run_id"]
 

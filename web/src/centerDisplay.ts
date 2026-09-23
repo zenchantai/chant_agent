@@ -1,4 +1,4 @@
-import type { Center, ChartData, StructuralPoint } from "./types";
+import type { Center, ChartData } from "./types";
 import { dailyL2Version, isReferenceProfile } from "./dailyL2Overlay";
 
 export const isWeeklyCoreCenter = (center: Center, timeframe: string): boolean => timeframe === "w" && center.level === 1;
@@ -14,12 +14,8 @@ export const centerDisplayRange = (center: Center, timeframe: string): {start_da
 
 export const centerRevisionMap = (data: ChartData) => new Map([...data.center_revisions, ...data.centers].map((center) => [center.id, center]));
 
-export const selectedPoint = (data: ChartData, selectedId?: string | null): StructuralPoint | undefined =>
-  (data.points || []).find((point) => point.id === selectedId);
-
 export const selectedCenterEvidence = (data: ChartData, selectedId?: string | null): Center | undefined => {
-  const point = selectedPoint(data, selectedId);
-  return centerRevisionMap(data).get(point ? point.center_revision_id : selectedId || "");
+  return centerRevisionMap(data).get(selectedId || "");
 };
 
 export const displayCenterCollection = (data: ChartData): Center[] => {
@@ -33,7 +29,8 @@ export const displayCenterCollection = (data: ChartData): Center[] => {
 
 export const centerParents = (data: ChartData, center: Center): Center[] => {
   const revisions = centerRevisionMap(data);
-  return data.center_revisions.filter((parent) => parent.formation_modes.some((mode) => ["expansion_envelope_overlap", "expansion_decomposition", "extension_decomposition"].includes(mode)) && parent.child_center_ids.some((identifier) => {
+  const relationParents = new Set(data.relations.filter((relation: any) => relation.relation_type === "promoted_into" && relation.from_id === center.id).map((relation: any) => relation.to_id));
+  return data.center_revisions.filter((parent) => relationParents.has(parent.id) || parent.child_center_ids.some((identifier) => {
     const child = revisions.get(identifier);
     return child?.family_id === center.family_id && child.level === center.level;
   }));

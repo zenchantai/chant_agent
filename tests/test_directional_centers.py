@@ -112,9 +112,9 @@ def test_same_time_direction_priority_and_internal_breakout_do_not_retype_center
     from app.chan_direction import select_context
     units = pens_from_prices([1,10,6,15,8,20,9,18,7])
     bootstrap = breakout_context(units)
-    boundary = {**bootstrap,'reason':'confirmed_movement_boundary','process_direction':'down'}
+    obsolete = {**bootstrap,'reason':'confirmed_movement_boundary','process_direction':'down'}
     broken = {**bootstrap,'reason':'confirmed_departure_retest'}
-    assert select_context(units,evidence=[broken,boundary]) == boundary
+    assert select_context(units,evidence=[broken,obsolete]) == broken
     result = build_level_centers(units,1)[0][0]
     assert result['formation_type']=='pullback'
     assert any(e['process_direction']=='down' for e in result['successor_direction_evidence'])

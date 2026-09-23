@@ -1,7 +1,4 @@
 from app.chan_structure import atomic_pen_units, build_level_centers, build_structure_hierarchy, validate_structure
-import json
-import sqlite3
-from pathlib import Path
 
 
 def _pens(prices):
@@ -44,18 +41,17 @@ def test_v31_no_future_candidate_unit_is_selected():
         assert all(unit["confirmed_at"] <= candidate["observed_at"] for unit in pens if unit["id"] in candidate["source_unit_ids"])
 
 
-def test_v31_science50_weekly_successor_cores():
-    db = Path(__file__).parents[1] / "data" / "v30-candidate-20260920" / "v30-staging.db"
-    if not db.exists():
-        return
-    con = sqlite3.connect(db)
-    pens = [json.loads(row[0]) for row in con.execute(
-        "select payload_json from chan_pens where run_id=32 order by ordinal"
-    )]
+def test_weekly_successor_cores_use_canonical_nonoverlapping_windows():
+    pens = _pens([
+        22, 11, 29, 19, 25, 17, 28, 21, 23, 5,
+        16, 6, 13, 9, 15, 4, 8, 1, 3, 2,
+        12, 10, 14, 7, 27, 20, 26, 18, 30, 24,
+    ])
     result = build_structure_hierarchy(pens, calculation_profile="pen_centers_only")
-    cores = {tuple(item["core_unit_ids"]) for item in result["centers"]}
-    assert tuple(item["id"] for item in pens[17:20]) in cores
-    assert tuple(item["id"] for item in pens[20:23]) in cores
-    assert tuple(item["id"] for item in pens[24:27]) in cores
-    assert not any(tuple(item["source_unit_ids"]) == tuple(pens[19:22]) and item["status"] == "selected"
-                   for item in result["center_candidate_revisions"])
+    cores = {tuple(center["core_unit_ids"]) for center in result["centers"]}
+    assert all(tuple(pen["id"] for pen in pens[start:start + 3]) in cores for start in (17, 20, 24))
+    assert not any(
+        tuple(candidate["source_unit_ids"]) == tuple(pen["id"] for pen in pens[19:22])
+        and candidate["status"] == "selected"
+        for candidate in result["center_candidate_revisions"]
+    )

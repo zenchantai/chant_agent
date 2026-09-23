@@ -34,31 +34,34 @@ def audit_calculation_profile(meta: dict, structure: dict, timeframe: str | None
     problems = []
     profile = meta.get("calculation_profile")
     if timeframe in STRUCTURE_TIMEFRAMES:
-        expected = "pen_centers_only" if timeframe in REFERENCE_TIMEFRAMES else "full"
+        expected = "pen_centers_only" if timeframe in REFERENCE_TIMEFRAMES else "pen_centers_l2"
         if profile != expected:
             problems.append(f"profile:unexpected:{timeframe}:{profile}")
-    if timeframe not in REFERENCE_TIMEFRAMES and profile != "pen_centers_only":
+    if timeframe not in REFERENCE_TIMEFRAMES and profile != "pen_centers_l2":
         return problems
-    for group in (
-        "movements", "movement_revisions", "points", "point_revisions", "relations",
-        "promotion_candidates", "promotion_candidate_revisions",
-    ):
-        if structure.get(group):
+    for group in ("movements", "movement_revisions", "points", "point_revisions", "movement_levels"):
+        if group in structure:
             problems.append(f"profile:forbidden_group:{group}")
-    if int(meta.get("max_level", 0)) > 1 or int(structure.get("max_level", 0)) > 1:
-        problems.append("profile:max_level_above_l1")
+    max_level = 1 if profile == "pen_centers_only" else 2
+    if int(meta.get("max_level", 0)) > max_level or int(structure.get("max_level", 0)) > max_level:
+        problems.append("profile:max_level_above_limit")
     for group in ("levels", "display_center_levels"):
-        if any(int(level) != 1 for level in structure.get(group, [])):
+        if any(int(level) < 1 or int(level) > max_level for level in structure.get(group, [])):
             problems.append(f"profile:forbidden_levels:{group}")
+    if profile == "pen_centers_only" and any(structure.get(group) for group in ("promotion_candidates", "promotion_candidate_revisions", "segment_proofs", "segment_proof_revisions")):
+        problems.append("profile:promotion_evidence_forbidden")
     for group in ("centers", "center_revisions", "components"):
         for item in structure.get(group, []):
             identifier = item.get("id", "unknown")
-            if int(item.get("level", 0)) != 1:
-                problems.append(f"profile:non_l1:{group}:{identifier}")
-            if item.get("unit_kind") not in {None, "pen"}:
+            level = int(item.get("level", 0))
+            if level < 1 or level > max_level:
+                problems.append(f"profile:invalid_level:{group}:{identifier}")
+            if level == 1 and item.get("unit_kind") not in {None, "pen"}:
                 problems.append(f"profile:non_pen_units:{group}:{identifier}")
-            if (item.get("promotion_confirmed_at") or item.get("child_center_ids")
-                    or item.get("child_movement_ids") or item.get("absorbed_into_family_id")
+            if level == 2 and item.get("unit_kind") != "segment_proof":
+                problems.append(f"profile:non_segment_parent:{group}:{identifier}")
+            if profile == "pen_centers_only" and (item.get("promotion_confirmed_at") or item.get("child_center_ids")
+                    or item.get("absorbed_into_family_id")
                     or set(item.get("formation_modes", [])) - {"entry_then_earliest_three_unit_core", "directional_core", "origin_overlap"}):
                 problems.append(f"profile:promotion_evidence:{group}:{identifier}")
     for group in ("pens", "components", "centers", "center_revisions", "display_centers"):
@@ -201,20 +204,19 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
         problems.append(f"运行状态错误: {run['status']}")
 
     center_revisions = json_rows(connection, "chan_center_revisions", run["id"], "evidence_json")
-    movement_revisions = json_rows(connection, "chan_movement_revisions", run["id"], "evidence_json")
-    point_revisions = json_rows(connection, "chan_point_revisions", run["id"], "evidence_json")
     promotion_candidate_revisions = optional_json_rows(
         connection, "chan_promotion_candidates", run["id"], "evidence_json",
+    )
+    segment_proof_revisions = optional_json_rows(
+        connection, "chan_segment_proofs", run["id"], "evidence_json",
     )
     structure = {
         "pens": json_rows(connection, "chan_pens", run["id"], "payload_json"),
         "components": json_rows(connection, "chan_components", run["id"], "evidence_json"),
         "centers": [item for item in center_revisions if item.get("active")],
         "center_revisions": center_revisions,
-        "movements": [item for item in movement_revisions if item.get("active", True)],
-        "movement_revisions": movement_revisions,
-        "points": [item for item in point_revisions if item.get("active", True)],
-        "point_revisions": point_revisions,
+        "segment_proofs": [item for item in segment_proof_revisions if item.get("active", True) and item.get("selection_status") == "selected"],
+        "segment_proof_revisions": segment_proof_revisions,
         "promotion_candidates": [
             item for item in promotion_candidate_revisions if item.get("active")
         ],
@@ -231,7 +233,7 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
         if [row["unit_id"] for row in z_rows] != center.get("z_unit_ids", []):
             problems.append(f"normalized_z_units:{center['id']}")
         for row in rows:
-            expected_kind = "center_revision" if row["role"] == "child_center" else "movement" if row["role"] == "child_movement" else center["unit_kind"]
+            expected_kind = "center_revision" if row["role"] == "child_center" else center["unit_kind"]
             if row["unit_kind"] != expected_kind:
                 problems.append(f"normalized_unit_kind:{center['id']}:{row['unit_id']}")
     for family in connection.execute("SELECT id,current_revision_id FROM chan_center_families WHERE run_id=?", (run["id"],)):
@@ -245,9 +247,7 @@ def audit_run(connection: sqlite3.Connection, symbol: str, timeframe: str) -> di
         "pens": len(structure["pens"]),
         "centers": len(structure["centers"]),
         "center_revisions": len(center_revisions),
-        "movements": len(structure["movements"]),
-        "movement_revisions": len(movement_revisions),
-        "points": len(structure["points"]),
+        "segment_proofs": len(structure["segment_proofs"]),
         "promotion_candidates": len(structure["promotion_candidates"]),
         "max_level": max((int(item["level"]) for item in structure["centers"]), default=0),
     })
@@ -273,8 +273,9 @@ def audit_api_payload(payload: dict, requested_level: int) -> list[str]:
         problems.append("API展示级别错误")
     if requested_level and any(int(item.get("level", 0)) != requested_level for item in structure.get("centers", [])):
         problems.append("API centers混入其他级别")
-    if requested_level and any(int(item.get("level", 0)) != requested_level for item in structure.get("movements", [])):
-        problems.append("API movements混入其他级别")
+    for obsolete in ("movements", "movement_revisions", "movement_levels", "points", "point_revisions"):
+        if obsolete in structure:
+            problems.append(f"API返回已删除字段:{obsolete}")
     if "pen_centers" in payload or "buy_sell_points" in payload or "confirmation_center_id" in json.dumps(payload):
         problems.append("API泄漏已删除的旧结构语义")
     timeframe = payload["market"].get("timeframe", meta.get("timeframe"))

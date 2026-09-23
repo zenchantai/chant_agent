@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -324,6 +325,19 @@ class IntradayService:
             elif attempt.get("formal_daily_confirmed"):
                 self._daily_source_errors.pop(key, None)
 
+    def _refresh_quote(self, symbol: str, adjustflag: str) -> dict | None:
+        try:
+            fetched_quotes = fetch_tencent_quotes([symbol])
+            candidate = fetched_quotes[0] if fetched_quotes else None
+            if candidate and candidate.get("status") == "success" and candidate.get("quote_time"):
+                quote_stamp = datetime.strptime(candidate["quote_time"], "%Y%m%d%H%M%S").replace(tzinfo=TZ)
+                if quote_stamp <= self.clock() + timedelta(seconds=60):
+                    self._quotes[(symbol, adjustflag)] = {**candidate, "quote_time": quote_stamp.isoformat()}
+                    return candidate
+        except Exception:
+            pass
+        return None
+
     def record_formal_daily_refresh(self, symbol: str, adjustflag: str,
                                     fetched_at: datetime, confirmed_through: str) -> None:
         """Publish a historical-sync recovery after its accepted row was verified."""
@@ -347,7 +361,13 @@ class IntradayService:
         with lock:
             previous = self._attempts.get(key, {})
             live = self._live_rows.get(key, [])
-            calendar = self.calendar(True)
+            # The persisted calendar already contains today.  Fetching future
+            # dates through BaoStock on every realtime request added seconds of
+            # avoidable latency; only refresh synchronously if today's session
+            # is genuinely unknown.
+            calendar = self.calendar(False)
+            if self.clock().date().isoformat() not in calendar:
+                calendar = self.calendar(True)
             if timeframe in {"d", "w", "m"} and live:
                 live_finalize_at = self.next_period_finalize_at(self.clock(), timeframe, calendar)
             else:
@@ -362,18 +382,9 @@ class IntradayService:
                 if previous:
                     return previous
             quote = None
-            if include_quote:
-                try:
-                    fetched_quotes = fetch_tencent_quotes([symbol])
-                    candidate = fetched_quotes[0] if fetched_quotes else None
-                    if candidate and candidate.get("status") == "success" and candidate.get("quote_time"):
-                        quote_stamp = datetime.strptime(candidate["quote_time"], "%Y%m%d%H%M%S").replace(tzinfo=TZ)
-                        if quote_stamp <= self.clock() + timedelta(seconds=60):
-                            quote = candidate
-                            self._quotes[(symbol, adjustflag)] = {**candidate, "quote_time": quote_stamp.isoformat()}
-                except Exception:
-                    quote = None
-            if session_state(now, calendar)["phase"] == "auction":
+            phase = session_state(now, calendar)["phase"]
+            if phase == "auction":
+                quote = self._refresh_quote(symbol, adjustflag) if include_quote else None
                 available = bool(quote or self.latest_quote(symbol, adjustflag))
                 attempt.update(result="success" if available else "failed",
                                last_success_at=self.clock().isoformat() if available else previous.get("last_success_at"),
@@ -383,6 +394,8 @@ class IntradayService:
                 if timeframe == "d":
                     self._record_daily_source_attempt(symbol, adjustflag, attempt)
                 return attempt
+            quote_executor = ThreadPoolExecutor(max_workers=1) if include_quote else None
+            quote_future = quote_executor.submit(self._refresh_quote, symbol, adjustflag) if quote_executor else None
             try:
                 request_started_at = self.clock()
                 if timeframe in {"w", "m"}:
@@ -406,6 +419,8 @@ class IntradayService:
                         timeframe, self.clock(),
                     )
                     fetched_at = self.clock()
+                if quote_future:
+                    quote = quote_future.result()
                 if quote and rows:
                     quote_stamp = datetime.strptime(quote["quote_time"], "%Y%m%d%H%M%S").replace(tzinfo=TZ)
                     daily_close = self.period_finalize_at(rows[-1], "d", calendar) if timeframe == "d" else None
@@ -442,6 +457,9 @@ class IntradayService:
                 attempt["source_revision"] = rows[-1].get("source_revision", "") if rows else ""
             except Exception as exc:
                 attempt["error"] = f"实时刷新失败：{type(exc).__name__}"
+            finally:
+                if quote_executor:
+                    quote_executor.shutdown(wait=True)
             attempt["finished"] = time.monotonic()
             self._attempts[key] = attempt
             if timeframe == "d":
@@ -578,8 +596,7 @@ class IntradayService:
                            "bars": page, "previous_close": previous_close, "quote": quote,
                            "intraday_refresh": metadata},
                 "structure": {"pens": [], "components": [], "centers": [],
-                              "center_revisions": [], "movements": [], "movement_revisions": [],
-                              "points": [], "point_revisions": [], "relations": [], "issues": [],
+                              "center_revisions": [], "relations": [], "issues": [],
                               "segment_proofs": [], "segment_proof_revisions": [],
                               "center_candidates": [], "center_candidate_revisions": [],
                               "promotion_candidates": [], "promotion_candidate_revisions": [],

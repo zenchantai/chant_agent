@@ -79,14 +79,11 @@ def test_overlap_without_complete_proof_keeps_children_active(missing):
     assert relations[0]["missing_evidence"]
 
 
-def test_pen_and_completed_movement_adapters_share_same_z_rules():
+def test_l1_z_rules_use_pen_units_only():
     pens = atomic_pen_units(pens_from_prices([1, 10, 6, 15, 8, 20, 16, 25, 21, 30, 26, 35]))
-    movements = [{**unit, "kind": "movement", "level": 1} for unit in pens]
-    low = build_level_centers(pens, 1)[0]
-    high = build_level_centers(movements, 2)[0]
-    fields = ("entry_unit_ids", "core_unit_ids", "z_unit_ids", "z_direction", "dd", "gg", "zd", "zg")
-    assert [[item[key] for key in fields] for item in low] == [[item[key] for key in fields] for item in high]
-    assert all(center["unit_kind"] == "movement" for center in high)
+    centers = build_level_centers(pens, 1)[0]
+    assert centers
+    assert all(center["unit_kind"] == "pen" for center in centers)
 
 
 def test_extension_and_return_only_append_immutable_evidence():

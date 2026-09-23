@@ -12,8 +12,7 @@ from .chan_expansion import build_parent_center_proofs, segment_missing_evidence
 
 
 EPSILON = 1e-9
-MAX_LEVEL = 8
-HIERARCHY_VERSION = "center-hierarchy-v31-candidate-ownership"
+HIERARCHY_VERSION = "center-hierarchy-pen-center-l2-v1"
 
 
 def _stable_id(prefix: str, *values: Any) -> str:
@@ -156,45 +155,6 @@ def atomic_pen_units(pens: list[dict[str, Any]], *, include_provisional: bool = 
     return units
 
 
-def movement_units(movements: list[dict[str, Any]], level: int) -> list[dict[str, Any]]:
-    eligible = [
-        movement for movement in movements
-        if movement.get("status") == "confirmed"
-        and movement.get("recursive_eligible")
-        and movement.get("classification") in {"consolidation", "trend"}
-        and movement.get("confirmed_at")
-        and int(movement.get("level", 0)) == level
-    ]
-    eligible.sort(key=lambda item: (item["start_date"], item["end_date"], item["id"]))
-    units: list[dict[str, Any]] = []
-    for ordinal, movement in enumerate(eligible):
-        units.append({
-            "id": movement["id"],
-            "family_id": movement.get("family_id", movement["id"]),
-            "kind": "movement",
-            "level": level,
-            "ordinal": ordinal,
-            "direction": movement["direction"],
-            "start_date": movement["start_date"],
-            "end_date": movement["end_date"],
-            "start_price": float(movement["start_price"]),
-            "end_price": float(movement["end_price"]),
-            "low": float(movement["price_envelope_low"]),
-            "high": float(movement["price_envelope_high"]),
-            "status": "confirmed",
-            "continuous_range_id": int(movement.get("continuous_range_id", 0)),
-            "sequence_id": int(movement.get("sequence_id", 0)),
-            "structure_sequence_id": str(movement.get("structure_sequence_id", "")),
-            "source_pen_ids": list(movement.get("source_pen_ids", [])),
-            "confirmed_at": movement.get("confirmed_at", movement["end_date"]),
-            "max_internal_center_level": max(
-                [int(value) for value in movement.get("center_levels", [])] or [level]
-            ),
-            "confirmed_child_movement_count": len(movement.get("child_movement_ids", [])),
-        })
-    return units
-
-
 def _split_streams(units: list[dict[str, Any]], *, include_provisional: bool = False) -> list[list[dict[str, Any]]]:
     streams: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
@@ -262,7 +222,7 @@ def _component_record(
         "low": min(_low(unit) for unit in units),
         "high": max(_high(unit) for unit in units),
         "source_unit_ids": [unit["id"] for unit in units],
-        "unit_kind": units[0].get("kind", "pen" if level == 1 else "movement"),
+        "unit_kind": units[0].get("kind", "pen"),
         "confirmed_at": max(unit.get("confirmed_at") or unit["end_date"] for unit in units),
         "source_pen_ids": _source_pen_ids(units),
         "continuous_range_id": _stream_key(units[0])[0],
@@ -319,7 +279,7 @@ def _make_center(
         "direction_established_at": (seed.direction_context or {}).get("available_at"),
         "core_unit_ids": [unit["id"] for unit in core],
         "evidence_cursor_unit_id": core[-1]["id"],
-        "unit_kind": "pen" if level == 1 else "movement",
+        "unit_kind": "pen",
         "z_unit_ids": [unit["id"] for unit in z_units],
         "z_direction": _direction(core[0]),
         "formed_at": max([unit.get("confirmed_at") or unit["end_date"] for unit in [*entry, *core]] + [(seed.direction_context or {}).get("available_at", "")]),
@@ -335,7 +295,6 @@ def _make_center(
         "context_unit_ids": [unit["id"] for unit in [*entry, *core]],
         "source_pen_ids": _source_pen_ids(core),
         "child_center_ids": [],
-        "child_movement_ids": [],
         "zd": seed.zd,
         "zg": seed.zg,
         "fixed_zd": seed.zd,
@@ -352,7 +311,6 @@ def _make_center(
         "entry_direction": _component_direction(entry),
         "core_formation_pattern": "-".join(_direction(unit) for unit in core),
         "departure_direction": None,
-        "owner_movement_id": None,
         "formation_modes": ["directional_core" if seed.direction_context else "origin_overlap"],
         "recursive_eligible": bool(seed.direction_context) and not any(unit.get("status") != "confirmed" for unit in [*entry, *core]),
         "continuous_range_id": _stream_key(core[0])[0],
@@ -805,126 +763,6 @@ def build_relations(centers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return relations
 
 
-def _units_between(
-    units: list[dict[str, Any]], start_date: str, end_date: str,
-) -> list[dict[str, Any]]:
-    return [unit for unit in units if unit["start_date"] >= start_date and unit["end_date"] <= end_date]
-
-
-def _component_strength(units: list[dict[str, Any]], market_dates: list[str]) -> dict[str, Any]:
-    if not units:
-        return {
-            "max_internal_center_level": 0,
-            "confirmed_child_movement_count": 0,
-            "amplitude": 0.0,
-            "bar_span": 1,
-            "average_slope": 0.0,
-        }
-    amplitude = abs(float(units[-1]["end_price"]) - float(units[0]["start_price"]))
-    date_index = {stamp: index for index, stamp in enumerate(market_dates)}
-    start = date_index.get(units[0]["start_date"], 0)
-    end = date_index.get(units[-1]["end_date"], start + len(units))
-    span = max(1, end - start)
-    return {
-        "max_internal_center_level": max(int(unit.get("max_internal_center_level", 0)) for unit in units),
-        "confirmed_child_movement_count": sum(int(unit.get("confirmed_child_movement_count", 0)) for unit in units),
-        "amplitude": amplitude,
-        "bar_span": span,
-        "average_slope": amplitude / span,
-    }
-
-
-def _structurally_weaker(before: dict[str, Any], after: dict[str, Any]) -> tuple[bool | None, str]:
-    before_rank = (before["max_internal_center_level"], before["confirmed_child_movement_count"])
-    after_rank = (after["max_internal_center_level"], after["confirmed_child_movement_count"])
-    if after_rank < before_rank:
-        return True, "lower_internal_structure_rank"
-    if after_rank > before_rank:
-        return False, "higher_internal_structure_rank"
-    amplitude_weaker = after["amplitude"] <= before["amplitude"] + EPSILON
-    slope_weaker = after["average_slope"] < before["average_slope"] - EPSILON
-    if amplitude_weaker and slope_weaker:
-        return True, "amplitude_and_slope_weaker"
-    if not amplitude_weaker and not slope_weaker:
-        return False, "amplitude_and_slope_stronger"
-    return None, "mixed_price_strength"
-
-
-def _macd_evidence(macd: list[dict[str, Any]], start: str, end: str) -> dict[str, float | None]:
-    values = [item for item in macd if start <= item["trade_date"] <= end]
-    if not values:
-        return {"area": None, "peak": None}
-    histograms = [abs(float(item.get("histogram", 0))) for item in values]
-    return {"area": sum(histograms), "peak": max(histograms, default=0.0)}
-
-
-def _macd_conclusion(before: dict[str, Any], after: dict[str, Any]) -> str:
-    if before["area"] is None or after["area"] is None:
-        return "unavailable"
-    if after["area"] < before["area"] and after["peak"] <= before["peak"]:
-        return "weaker"
-    if after["area"] > before["area"] and after["peak"] >= before["peak"]:
-        return "stronger"
-    return "neutral"
-
-
-def _point_revision(
-    level: int, point_type: str, status: str, point_date: str, point_price: float,
-    center: dict[str, Any], source_unit: dict[str, Any], components: list[dict[str, Any]],
-    evidence: dict[str, Any], confirmed_at: str | None = None, parent_point_id: str | None = None,
-) -> dict[str, Any]:
-    family_id = _stable_id("point-family", level, point_type, center["family_id"], point_date, point_price)
-    return {
-        "id": f"{family_id}:r1",
-        "kind": "structural_point",
-        "family_id": family_id,
-        "revision_no": 1,
-        "active": True,
-        "level": level,
-        "point_type": point_type,
-        "status": status,
-        "point_date": point_date,
-        "point_price": float(point_price),
-        "confirmed_at": max(confirmed_at or "", center.get("formed_at") or "", *[component.get("confirmed_at") or component["end_date"] for component in components]) if status == "confirmed" else None,
-        "source_unit_id": source_unit["id"],
-        "source_component_ids": [item["id"] for item in components],
-        "center_family_id": center["family_id"],
-        "center_revision_id": center["id"],
-        "movement_family_id": None,
-        "parent_point_id": parent_point_id,
-        "evidence": evidence,
-        "invalidated_reason": None,
-        "start_date": point_date,
-        "end_date": point_date,
-        "continuous_range_id": _stream_key(source_unit)[0],
-        "sequence_id": _stream_key(source_unit)[1],
-        "structure_sequence_id": _stream_key(source_unit)[2],
-    }
-
-
-def _third_point(
-    center: dict[str, Any], units: list[dict[str, Any]], level: int,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    history = center.get("_history", [])
-    for snapshot in history:
-        if snapshot.get("retest_unit_ids"):
-            point, components = _third_point_tail(deepcopy(snapshot), units, level)
-            if point:
-                return point, components
-    tail_ids = center.get("departure_unit_ids", [])
-    for end in range(2, len(tail_ids) + 1):
-        candidate = {**center, "departure_unit_ids": tail_ids[:end]}
-        point, components = _third_point_tail(candidate, units, level)
-        if point:
-            snapshots = [snapshot for snapshot in center.get("_history", []) if snapshot["revision_at"] <= point["confirmed_at"] and set(tail_ids[:end]) <= set(snapshot["departure_unit_ids"])]
-            if snapshots:
-                point["center_revision_id"] = snapshots[0]["id"]
-            center["retest_unit_ids"] = candidate["retest_unit_ids"]
-            center["retest_component_id"] = candidate["retest_component_id"]
-            return point, components
-    return None, []
-
-
 def _departure_retest_evidence(
     center: dict[str, Any], units: list[dict[str, Any]], level: int,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -966,503 +804,6 @@ def _departure_retest_evidence(
             "confirmed_at": max(center["formed_at"], *[unit.get("confirmed_at") or unit["end_date"] for unit in [*departure, *retest]]),
         }, [departure_component, retest_component]
     return None, []
-
-
-def _third_point_tail(
-    center: dict[str, Any], units: list[dict[str, Any]], level: int,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    evidence, components = _departure_retest_evidence(center, units, level)
-    if evidence is None:
-        return None, []
-    departure_component, retest_component = components
-    extreme_unit = evidence["extreme_unit"]
-    point = _point_revision(
-        level, "third_buy" if evidence["departure_direction"] == "up" else "third_sell",
-        "confirmed", extreme_unit["end_date"], evidence["price"], center, extreme_unit, components,
-        {
-            "departure_component_id": departure_component["id"],
-            "retest_component_id": retest_component["id"],
-            "strictly_outside_core": True,
-        },
-        confirmed_at=evidence["confirmed_at"],
-    )
-    return point, components
-
-
-def build_structural_points(
-    units: list[dict[str, Any]], centers: list[dict[str, Any]], relations: list[dict[str, Any]],
-    level: int, market_dates: list[str], macd: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    points: list[dict[str, Any]] = []
-    components: list[dict[str, Any]] = []
-    by_id = {unit["id"]: unit for unit in units}
-    center_by_id = {center["id"]: center for center in centers}
-    index = {unit["id"]: ordinal for ordinal, unit in enumerate(units)}
-    for center in centers:
-        if center.get("formation_stage") in {"origin_overlap", "boundary_candidate"}:
-            continue
-        point, created = _third_point(center, units, level)
-        components.extend(created)
-        if point:
-            points.append(point)
-        entry_units = [by_id[identifier] for identifier in center.get("entry_unit_ids", []) if identifier in by_id]
-        tail_units = [by_id[identifier] for identifier in center.get("departure_unit_ids", []) if identifier in by_id]
-        if entry_units and len(tail_units) >= 2:
-            direction = _component_direction(tail_units)
-            if direction not in {"up", "down"}:
-                direction = _direction(tail_units[0])
-            extreme_index = (
-                max(range(len(tail_units)), key=lambda offset: _high(tail_units[offset]))
-                if direction == "up"
-                else min(range(len(tail_units)), key=lambda offset: _low(tail_units[offset]))
-            )
-            c_units = tail_units[:extreme_index + 1]
-            reversal = tail_units[extreme_index + 1:extreme_index + 2]
-            if c_units and reversal and _component_direction(entry_units) == direction:
-                before = _component_strength(entry_units, market_dates)
-                after = _component_strength(c_units, market_dates)
-                structural, reason = _structurally_weaker(before, after)
-                before_macd = _macd_evidence(macd, entry_units[0]["start_date"], entry_units[-1]["end_date"])
-                after_macd = _macd_evidence(macd, c_units[0]["start_date"], c_units[-1]["end_date"])
-                macd_result = _macd_conclusion(before_macd, after_macd)
-                previous_extreme = max(_high(item) for item in entry_units) if direction == "up" else min(
-                    _low(item) for item in entry_units
-                )
-                current_extreme = max(_high(item) for item in c_units) if direction == "up" else min(
-                    _low(item) for item in c_units
-                )
-                new_extreme = current_extreme > previous_extreme + EPSILON if direction == "up" else (
-                    current_extreme < previous_extreme - EPSILON
-                )
-                qualifies = (not new_extreme or structural is True) and macd_result != "stronger"
-                before_component = _component_record(entry_units, level, "consolidation_before", center["family_id"])
-                after_component = _component_record(c_units, level, "consolidation_after", center["family_id"])
-                if before_component and after_component:
-                    extreme_unit = c_units[-1]
-                    points.append(_point_revision(
-                        level,
-                        "consolidation_divergence_sell" if direction == "up" else "consolidation_divergence_buy",
-                        "confirmed" if qualifies else "candidate",
-                        extreme_unit["end_date"],
-                        _high(extreme_unit) if direction == "up" else _low(extreme_unit),
-                        center,
-                        extreme_unit,
-                        [before_component, after_component],
-                        {
-                            "before_strength": before,
-                            "after_strength": after,
-                            "structural_conclusion": structural,
-                            "structural_reason": reason,
-                            "new_extreme": new_extreme,
-                            "before_macd": before_macd,
-                            "after_macd": after_macd,
-                            "auxiliary_indicator_conclusion": macd_result,
-                        },
-                        confirmed_at=reversal[0].get("confirmed_at", reversal[0]["end_date"]) if qualifies else None,
-                    ))
-                    components.extend([before_component, after_component])
-    trend_relations = [item for item in relations if item["relation_type"] in {"newborn_up", "newborn_down"}]
-    for relation in trend_relations:
-        previous = center_by_id[relation["from_id"]]
-        current = center_by_id[relation["to_id"]]
-        previous_last = max(index.get(identifier, -1) for identifier in previous["owned_unit_ids"])
-        current_entry = min(index.get(identifier, len(units)) for identifier in current["core_unit_ids"])
-        current_last = max(index.get(identifier, -1) for identifier in current["owned_unit_ids"])
-        b_units = units[previous_last + 1:current_entry]
-        c_units = [by_id[identifier] for identifier in current["departure_unit_ids"]]
-        if not b_units or not c_units or not _span_contiguous([*b_units, *[by_id[identifier] for identifier in current["owned_unit_ids"]], *c_units]):
-            continue
-        direction = "up" if relation["relation_type"] == "newborn_up" else "down"
-        if _component_direction(b_units) != direction:
-            continue
-        if direction not in {"up", "down"}:
-            continue
-        extreme_index = max(range(len(c_units)), key=lambda i: c_units[i]["end_price"]) if direction == "up" else min(
-            range(len(c_units)), key=lambda i: c_units[i]["end_price"]
-        )
-        c_move = c_units[:extreme_index + 1]
-        reversal = c_units[extreme_index + 1:extreme_index + 2]
-        if not c_move or _component_direction(c_move) != direction:
-            continue
-        b_component = _component_record(b_units, level, "strength_before", current["family_id"])
-        c_component = _component_record(c_move, level, "strength_after", current["family_id"])
-        if not b_component or not c_component:
-            continue
-        before_strength = _component_strength(b_units, market_dates)
-        after_strength = _component_strength(c_move, market_dates)
-        structural, structural_reason = _structurally_weaker(before_strength, after_strength)
-        before_macd = _macd_evidence(macd, b_units[0]["start_date"], b_units[-1]["end_date"])
-        after_macd = _macd_evidence(macd, c_move[0]["start_date"], c_move[-1]["end_date"])
-        macd_result = _macd_conclusion(before_macd, after_macd)
-        new_extreme = float(c_move[-1]["end_price"]) > max(_high(unit) for unit in b_units) + EPSILON if direction == "up" else float(c_move[-1]["end_price"]) < min(_low(unit) for unit in b_units) - EPSILON
-        status = "confirmed" if new_extreme and structural is True and reversal and macd_result != "stronger" else "candidate"
-        point_type = "first_sell" if direction == "up" else "first_buy"
-        extreme_unit = c_move[-1]
-        point_price = _high(extreme_unit) if direction == "up" else _low(extreme_unit)
-        point = _point_revision(
-            level, point_type, status, extreme_unit["end_date"], point_price,
-            current, extreme_unit, [b_component, c_component],
-            {
-                "before_strength": before_strength,
-                "after_strength": after_strength,
-                "structural_conclusion": structural,
-                "structural_reason": structural_reason,
-                "before_macd": before_macd,
-                "after_macd": after_macd,
-                "auxiliary_indicator_conclusion": macd_result,
-                "new_extreme": new_extreme,
-            },
-            confirmed_at=(reversal[0].get("confirmed_at", reversal[0]["end_date"]) if status == "confirmed" else None),
-        )
-        points.append(point)
-        components.extend([b_component, c_component])
-
-    confirmed_first_points = [
-        point for point in points
-        if point["status"] == "confirmed" and point["point_type"] in {"first_buy", "first_sell"}
-    ]
-    for first in confirmed_first_points:
-        source_index = index.get(first["source_unit_id"])
-        center = center_by_id.get(first["center_revision_id"])
-        if source_index is None or center is None:
-            continue
-        expected = "up" if first["point_type"] == "first_buy" else "down"
-        departure_index = next(
-            (offset for offset in range(source_index + 1, len(units)) if _direction(units[offset]) == expected),
-            None,
-        )
-        if departure_index is None or departure_index + 1 >= len(units):
-            continue
-        retrace_index = departure_index + 1
-        if _direction(units[retrace_index]) == expected:
-            continue
-        confirmation = units[retrace_index + 1] if retrace_index + 1 < len(units) and _direction(
-            units[retrace_index + 1]
-        ) == expected else None
-        retrace = units[retrace_index]
-        point_price = _low(retrace) if expected == "up" else _high(retrace)
-        preserves_extreme = point_price > float(first["point_price"]) + EPSILON if expected == "up" else (
-            point_price < float(first["point_price"]) - EPSILON
-        )
-        departure_component = _component_record([units[departure_index]], level, "second_departure", center["family_id"])
-        retrace_component = _component_record([retrace], level, "second_retest", center["family_id"])
-        if not departure_component or not retrace_component:
-            continue
-        status = "confirmed" if preserves_extreme and confirmation else (
-            "candidate" if preserves_extreme else "invalidated"
-        )
-        second = _point_revision(
-            level, "second_buy" if expected == "up" else "second_sell", status,
-            retrace["end_date"], point_price, center, retrace,
-            [departure_component, retrace_component],
-            {"parent_point_id": first["family_id"], "preserves_first_extreme": preserves_extreme},
-            confirmed_at=confirmation.get("confirmed_at", confirmation["end_date"]) if status == "confirmed" else None,
-            parent_point_id=first["family_id"],
-        )
-        if status == "invalidated":
-            second["active"] = False
-            second["invalidated_reason"] = "first_point_extreme_broken"
-        points.append(second)
-        components.extend([departure_component, retrace_component])
-    points.sort(key=lambda item: (item["point_date"], item["level"], item["id"]))
-    for ordinal, point in enumerate(points):
-        point["ordinal"] = ordinal
-    dedup = {component["id"]: component for component in components}
-    return points, list(dedup.values())
-
-
-def _movement_classification(
-    owned_centers: list[dict[str, Any]], relations: list[dict[str, Any]],
-) -> tuple[str | None, str | None]:
-    if len(owned_centers) == 1:
-        return "consolidation", None
-    center_ids = {center["id"] for center in owned_centers}
-    relevant = [
-        relation["relation_type"] for relation in relations
-        if relation["from_id"] in center_ids and relation["to_id"] in center_ids
-    ]
-    if len(relevant) != len(owned_centers) - 1:
-        return None, None
-    if all(value == "newborn_up" for value in relevant):
-        return "trend", "up"
-    if all(value == "newborn_down" for value in relevant):
-        return "trend", "down"
-    return None, None
-
-
-def _movement_record(
-    level: int, selected: list[dict[str, Any]], centers: list[dict[str, Any]],
-    relations: list[dict[str, Any]], status: str, end_point: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    if not selected or not centers:
-        return None
-    classification, trend_direction = _movement_classification(centers, relations)
-    direction = trend_direction or _component_direction(selected)
-    if direction not in {"up", "down"}:
-        return None
-    family_id = _stable_id("movement-family", level, selected[0]["id"], centers[0]["family_id"])
-    movement_status = status if classification is not None else "undetermined"
-    confirmed = movement_status == "confirmed"
-    start_price = float(selected[0]["start_price"])
-    end_price = float(end_point["point_price"] if end_point else selected[-1]["end_price"])
-    return {
-        "id": f"{family_id}:r1",
-        "kind": "movement",
-        "family_id": family_id,
-        "revision_no": 1,
-        "active": True,
-        "level": level,
-        "status": movement_status,
-        "classification": classification,
-        "direction": direction,
-        "start_date": selected[0]["start_date"],
-        "start_price": start_price,
-        "end_date": end_point["point_date"] if end_point else selected[-1]["end_date"],
-        "end_price": end_price,
-        "point_date": end_point["point_date"] if end_point else None,
-        "confirmed_at": end_point.get("confirmed_at") if confirmed and end_point else None,
-        "start_point_id": None,
-        "end_point_id": end_point["family_id"] if end_point else None,
-        "source_unit_ids": [unit["id"] for unit in selected],
-        "source_pen_ids": _source_pen_ids(selected),
-        "center_family_ids": [center["family_id"] for center in centers],
-        "center_revision_ids": [center["id"] for center in centers],
-        "center_levels": sorted({int(center["level"]) for center in centers}),
-        "child_movement_ids": [unit["id"] for unit in selected if unit.get("kind") == "movement"],
-        "price_envelope_low": min(_low(unit) for unit in selected),
-        "price_envelope_high": max(_high(unit) for unit in selected),
-        "candidate_extreme_date": selected[-1]["end_date"],
-        "candidate_extreme_price": float(selected[-1]["end_price"]),
-        "recursive_eligible": confirmed and classification is not None,
-        "termination_reason": (
-            "first_buy_sell_point" if end_point and end_point["point_type"].startswith("first_")
-            else "third_buy_sell_center_break" if end_point
-            else "provisional_tail"
-        ),
-        "undetermined_reason": None if classification is not None else "mixed_or_incomplete_center_relation",
-        "continuous_range_id": _stream_key(selected[0])[0],
-        "sequence_id": _stream_key(selected[0])[1],
-        "structure_sequence_id": _stream_key(selected[0])[2],
-        "evidence": {
-            "boundary_point_revision_id": end_point["id"] if end_point else None,
-        },
-    }
-
-
-def _boundary_certificates(
-    stream: list[dict[str, Any]], points: list[dict[str, Any]], level: int,
-) -> list[dict[str, Any]]:
-    unit_index = {unit["id"]: index for index, unit in enumerate(stream)}
-    certificates: list[dict[str, Any]] = []
-    for point in points:
-        if (
-            point.get("status") != "confirmed"
-            or point.get("point_type") in {"second_buy", "second_sell"}
-            or not point.get("confirmed_at")
-            or point.get("source_unit_id") not in unit_index
-            or _stream_key(point) != _stream_key(stream[0])
-        ):
-            continue
-        end_index = unit_index[point["source_unit_id"]]
-        certificates.append({
-            "id": _stable_id(
-                "boundary-certificate", level, point.get("family_id", point["id"]),
-                point["source_unit_id"], point["confirmed_at"],
-            ),
-            "kind": "boundary_certificate",
-            "level": level,
-            "point_revision_id": point["id"],
-            "point_family_id": point.get("family_id", point["id"]),
-            "point_type": point["point_type"],
-            "source_unit_id": point["source_unit_id"],
-            "end_index": end_index,
-            "available_at": point["confirmed_at"],
-            "point": point,
-        })
-    return sorted(certificates, key=lambda item: (
-        item["available_at"], item["end_index"], item["point_revision_id"],
-    ))
-
-
-def _center_snapshot_as_of(
-    center: dict[str, Any], selected_ids: set[str], available_at: str,
-) -> dict[str, Any] | None:
-    snapshots = [
-        snapshot for snapshot in center.get("_history", [center])
-        if snapshot.get("formation_stage") not in {"origin_overlap", "boundary_candidate"}
-        and snapshot.get("revision_at", snapshot.get("formed_at", "")) <= available_at
-        and set(snapshot.get("owned_unit_ids", [])) <= selected_ids
-    ]
-    return snapshots[-1] if snapshots else None
-
-
-def _movement_selection_issue(
-    movement: dict[str, Any], certificate: dict[str, Any], status: str, reason: str,
-) -> dict[str, Any]:
-    return {
-        "id": _stable_id(
-            "movement-partition", movement["id"], certificate["id"], status, reason,
-        ),
-        "kind": "movement_partition_proof",
-        "status": status,
-        "level": movement["level"],
-        "start_date": movement["start_date"],
-        "end_date": movement["end_date"],
-        "evidence": {
-            "movement_revision_id": movement["id"],
-            "boundary_certificate_id": certificate["id"],
-            "boundary_point_revision_id": certificate["point_revision_id"],
-            "source_unit_ids": movement["source_unit_ids"],
-            "selection_reason": reason,
-        },
-    }
-
-
-def build_movements(
-    units: list[dict[str, Any]], centers: list[dict[str, Any]], relations: list[dict[str, Any]],
-    points: list[dict[str, Any]], level: int, *, include_provisional: bool = False,
-) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
-    """Select one deterministic, non-overlapping movement partition per stream."""
-    movements: list[dict[str, Any]] = []
-    issues: list[dict[str, Any]] = []
-    assigned: set[str] = set()
-    for stream in _split_streams(units, include_provisional=include_provisional):
-        unit_index = {unit["id"]: index for index, unit in enumerate(stream)}
-        stream_centers = [
-            center for center in centers
-            if _stream_key(center) == _stream_key(stream[0])
-            and center.get("formation_stage") not in {"origin_overlap", "boundary_candidate"}
-        ]
-        if not stream_centers:
-            continue
-        candidate_starts = {0}
-        for center in stream_centers:
-            identifiers = [*center.get("entry_unit_ids", []), *center.get("owned_unit_ids", [])]
-            positions = [unit_index[identifier] for identifier in identifiers if identifier in unit_index]
-            if positions:
-                candidate_starts.add(min(positions))
-        certificates = _boundary_certificates(stream, points, level)
-        candidate_starts.update(
-            certificate["end_index"] + 1
-            for certificate in certificates
-            if certificate["end_index"] + 1 < len(stream)
-        )
-        candidates: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], int, int]] = []
-        for certificate in certificates:
-            end = certificate["end_index"]
-            for start in sorted(index for index in candidate_starts if index <= end - 2):
-                selected = stream[start:end + 1]
-                if len(selected) < 3 or not _span_contiguous(selected):
-                    continue
-                if any(unit.get("confirmed_at", unit["end_date"]) > certificate["available_at"] for unit in selected):
-                    continue
-                selected_ids = {unit["id"] for unit in selected}
-                boundary_centers: list[dict[str, Any]] = []
-                owned_centers: list[dict[str, Any]] = []
-                for center in stream_centers:
-                    snapshot = _center_snapshot_as_of(
-                        center, selected_ids, certificate["available_at"],
-                    )
-                    if snapshot:
-                        boundary_centers.append(snapshot)
-                        owned_centers.append(center)
-                if not boundary_centers:
-                    continue
-                if any(
-                    center.get("formed_at", "") <= certificate["available_at"]
-                    and set(center.get("core_unit_ids", [])) & selected_ids
-                    and not set(center.get("core_unit_ids", [])) <= selected_ids
-                    for center in stream_centers
-                ):
-                    continue
-                movement = _movement_record(
-                    level, selected, boundary_centers, build_relations(boundary_centers),
-                    "confirmed", certificate["point"],
-                )
-                if not movement or movement["status"] != "confirmed":
-                    continue
-                expected_direction = "up" if certificate["point_type"].endswith("sell") else "down"
-                if movement["direction"] != expected_direction:
-                    continue
-                if movement["classification"] == "trend" and not certificate["point_type"].startswith("first_"):
-                    continue
-                movement["evidence"].update({
-                    "boundary_certificate_id": certificate["id"],
-                    "canonical_partition": True,
-                })
-                candidates.append((movement, certificate, owned_centers, start, end))
-
-        candidates.sort(key=lambda item: (
-            item[1]["available_at"], item[0]["start_date"], item[0]["end_date"],
-            len(item[0]["source_unit_ids"]), item[0]["id"],
-        ))
-        accepted: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], int, int]] = []
-        owned_positions: set[int] = set()
-        for candidate in candidates:
-            movement, certificate, _, start, end = candidate
-            positions = set(range(start, end + 1))
-            if positions & owned_positions:
-                issues.append(_movement_selection_issue(
-                    movement, certificate, "rejected", "unit_ownership_conflict",
-                ))
-                continue
-            chronological = sorted(accepted, key=lambda item: (item[3], item[4], item[0]["id"]))
-            left = next((item[0] for item in reversed(chronological) if item[4] < start), None)
-            right = next((item[0] for item in chronological if item[3] > end), None)
-            if any(
-                neighbor and neighbor["direction"] == movement["direction"]
-                for neighbor in (left, right)
-            ):
-                issues.append(_movement_selection_issue(
-                    movement, certificate, "rejected", "direction_not_alternating",
-                ))
-                continue
-            accepted.append(candidate)
-            owned_positions.update(positions)
-            issues.append(_movement_selection_issue(
-                movement, certificate, "selected", "canonical_sort_order",
-            ))
-
-        accepted.sort(key=lambda item: (item[3], item[4], item[0]["id"]))
-        for index, (movement, _, owned_centers, _, _) in enumerate(accepted):
-            movement["start_point_id"] = accepted[index - 1][0]["end_point_id"] if index else None
-            movements.append(movement)
-            assigned.update(movement["source_unit_ids"])
-            for center in owned_centers:
-                center["owner_movement_id"] = movement["family_id"]
-
-        start = max((item[4] for item in accepted), default=-1) + 1
-        if start < len(stream):
-            tail_starts = sorted({start, *(index for index in candidate_starts if index >= start)})
-            if not accepted:
-                tail_starts.append(min(
-                    (unit_index.get(identifier, 0) for identifier in stream_centers[0]["entry_unit_ids"]),
-                    default=0,
-                ))
-                tail_starts = sorted(set(tail_starts))
-            for tail_start in tail_starts:
-                selected = stream[tail_start:]
-                selected_ids = {unit["id"] for unit in selected}
-                owned_centers = [center for center in stream_centers if set(center["owned_unit_ids"]) <= selected_ids]
-                if not owned_centers:
-                    continue
-                movement = _movement_record(level, selected, owned_centers, relations, "provisional", None)
-                if not movement or accepted and movement["direction"] == accepted[-1][0]["direction"]:
-                    continue
-                movement["start_point_id"] = accepted[-1][0]["end_point_id"] if accepted else None
-                movement["evidence"].update({
-                    "boundary_certificate_id": None,
-                    "canonical_partition": True,
-                })
-                movements.append(movement)
-                assigned.update(selected_ids)
-                for center in owned_centers:
-                    center["owner_movement_id"] = movement["family_id"]
-                break
-    for ordinal, movement in enumerate(movements):
-        movement["ordinal"] = ordinal
-    unassigned = [unit["id"] for unit in units if unit["id"] not in assigned]
-    return movements, unassigned, issues
 
 
 def expansion_evidence(
@@ -1717,10 +1058,7 @@ def _parent_family_id(proof: dict[str, Any]) -> str:
             str(first.get("structure_sequence_id", "")),
         ),
         (
-            segment.get("movement_family_id")
-            or segment.get("family_id")
-            or segment.get("movement_revision_id")
-            or segment["id"]
+            segment.get("family_id") or segment["id"]
             for segment in proof["segments"]
         ),
     )
@@ -1750,12 +1088,16 @@ def _commit_parent_centers(
                 "proof": effective_proof,
                 "formation_modes": [],
                 "candidate_source_ids": [],
+                "child_center_ids": [],
             })
             entry["formation_modes"] = _unique([
                 *entry["formation_modes"], candidate["candidate_source"],
             ])
             entry["candidate_source_ids"] = _unique([
                 *entry["candidate_source_ids"], candidate["id"],
+            ])
+            entry["child_center_ids"] = _unique([
+                *entry["child_center_ids"], *candidate.get("child_center_ids", []),
             ])
 
     by_family: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1783,21 +1125,22 @@ def _commit_parent_centers(
         previous = None
         family_modes: list[str] = []
         family_candidate_ids: list[str] = []
+        family_child_center_ids: list[str] = []
         for revision_no, entry in enumerate(entries, 1):
             proof = entry["proof"]
             family_modes = _unique([*family_modes, *entry["formation_modes"]])
             family_candidate_ids = _unique([
                 *family_candidate_ids, *entry["candidate_source_ids"],
             ])
+            family_child_center_ids = _unique([
+                *family_child_center_ids, *entry["child_center_ids"],
+            ])
             parts = proof["segments"]
             core_ids = [part["id"] for part in parts]
             fixed = proof["boundary_status"] == "fixed"
             dd = min(parts[0]["low"], parts[2]["low"])
             gg = max(parts[0]["high"], parts[2]["high"])
-            child_center_ids = _unique(
-                identifier for part in parts if part.get("source_kind") == "movement"
-                for identifier in part.get("level_evidence_ids", [])
-            )
+            child_center_ids = list(family_child_center_ids)
             child_segment_ids = _unique(part["id"] for part in parts)
             item = {
                 "id": f"{family_id}:r{revision_no}",
@@ -1841,10 +1184,6 @@ def _commit_parent_centers(
                 "context_unit_ids": core_ids,
                 "source_pen_ids": proof["source_pen_ids"],
                 "child_center_ids": child_center_ids,
-                "child_movement_ids": [
-                    part["movement_revision_id"] for part in parts
-                    if part.get("movement_revision_id")
-                ],
                 "zd": proof["zd"],
                 "zg": proof["zg"],
                 "fixed_zd": proof["zd"] if fixed else None,
@@ -1861,7 +1200,6 @@ def _commit_parent_centers(
                 "entry_direction": None,
                 "core_formation_pattern": "-".join(part["direction"] for part in parts),
                 "departure_direction": None,
-                "owner_movement_id": None,
                 "formation_modes": list(family_modes),
                 "candidate_source_ids": list(family_candidate_ids),
                 "recursive_eligible": fixed,
@@ -1881,8 +1219,9 @@ def _commit_parent_centers(
 def build_promotion_candidates(
     centers: list[dict[str, Any]], relations: list[dict[str, Any]], child_level: int,
     units: list[dict[str, Any]], components: list[dict[str, Any]],
-    movements: list[dict[str, Any]], points: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    if child_level != 1:
+        raise ValueError("Only L1-to-L2 center promotion is supported")
     unit_by_id = {unit["id"]: unit for unit in units}
     candidates: list[dict[str, Any]] = []
 
@@ -1913,17 +1252,13 @@ def build_promotion_candidates(
             proofs = build_parent_center_proofs(
                 child_level=child_level,
                 units=units,
-                child_centers=centers,
-                boundary_events=points,
-                movements=movements,
                 required_unit_ids=set(required),
                 search_unit_ids=search_ids,
                 candidate_source="extension_decomposition",
                 observed_at=observed_at,
                 include_rejected=True,
-                allow_local=True,
             )
-            candidates.append(_candidate_record(
+            candidate = _candidate_record(
                 family_id=family_id,
                 revision_no=revision_no,
                 source="extension_decomposition",
@@ -1937,7 +1272,9 @@ def build_promotion_candidates(
                 missing_evidence=(segment_missing_evidence(
                     units=units, required_unit_ids=required, search_unit_ids=search_ids,
                 ) if not proofs else None),
-            ))
+            )
+            candidate["child_center_ids"] = [snapshot["id"]]
+            candidates.append(candidate)
             if candidates[-1].get("status") == "fixed":
                 break
 
@@ -2020,20 +1357,16 @@ def build_promotion_candidates(
             proofs = build_parent_center_proofs(
                 child_level=child_level,
                 units=units,
-                child_centers=centers,
-                boundary_events=points,
-                movements=movements,
                 required_unit_ids=set(required_ids),
                 search_unit_ids=search_ids,
                 candidate_source="expansion_decomposition",
                 observed_at=observed_at,
                 include_rejected=True,
-                allow_local=True,
             )
             missing = segment_missing_evidence(
                 units=units, required_unit_ids=required_ids, search_unit_ids=search_ids,
             )
-            expansion_revisions.append(_candidate_record(
+            candidate = _candidate_record(
                 family_id=family_id,
                 revision_no=revision_no,
                 source="expansion_decomposition",
@@ -2045,7 +1378,9 @@ def build_promotion_candidates(
                 proofs=proofs,
                 unit_by_id=unit_by_id,
                 missing_evidence=missing,
-            ))
+            )
+            candidate["child_center_ids"] = [left["id"], right["id"]]
+            expansion_revisions.append(candidate)
             if expansion_revisions[-1].get("status") == "fixed":
                 break
         candidates.extend(expansion_revisions)
@@ -2118,13 +1453,10 @@ def build_promotion_candidates(
 def _promote_expansions(
     centers: list[dict[str, Any]], relations: list[dict[str, Any]], next_level: int,
     units: list[dict[str, Any]], components: list[dict[str, Any]],
-    movements: list[dict[str, Any]] | None = None,
-    points: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Compatibility adapter; production uses ``build_promotion_candidates``."""
     _, promoted, lineage = build_promotion_candidates(
         centers, relations, next_level - 1, units, components,
-        movements or [], points or [],
     )
     return promoted, lineage
 
@@ -2141,7 +1473,7 @@ def _merge_center_revision_record(
     merged = {**deepcopy(other), **deepcopy(preferred)}
     for field in (
         "formation_modes", "candidate_source_ids", "child_center_ids",
-        "child_movement_ids", "source_pen_ids", "alternate_formation_revision_ids",
+        "source_pen_ids", "alternate_formation_revision_ids",
     ):
         merged[field] = _unique([*left.get(field, []), *right.get(field, [])])
     statuses = {left.get("boundary_status"), right.get("boundary_status")}
@@ -2270,160 +1602,76 @@ def merge_formation_paths(centers: list[dict[str, Any]]) -> list[dict[str, Any]]
     return issues
 
 
-def _point_event_history(units, centers, level, market_dates, macd):
-    """Evaluate points as-of confirmation events; later extensions cannot erase an event."""
-    confirmed, components, tail = {}, {}, []
-    for count in range(3, len(units) + 1):
-        prefix = units[:count]
-        prefix_ids = {u["id"] for u in prefix}
-        cutoff = max(u.get("confirmed_at") or u["end_date"] for u in prefix)
-        snapshots = []
-        for center in centers:
-            history = [h for h in center.get("_history", [center]) if h.get("revision_at", h["formed_at"]) <= cutoff
-                       and set(h.get("context_unit_ids", [])) <= prefix_ids
-                       and h.get("evidence_cursor_unit_id", h["core_unit_ids"][-1]) in prefix_ids]
-            if history:
-                snapshot = deepcopy(history[-1])
-                snapshot["_history"] = history
-                snapshots.append(snapshot)
-        if not snapshots:
-            continue
-        points, created = build_structural_points(prefix, snapshots, build_relations(snapshots), level, market_dates, macd)
-        components.update((c["id"], c) for c in created)
-        for point in points:
-            if point["status"] == "confirmed" and point["confirmed_at"] <= cutoff:
-                confirmed.setdefault(point["family_id"], point)
-        tail = points
-    result = list(confirmed.values()) + [p for p in tail if p["family_id"] not in confirmed]
-    result.sort(key=lambda p: (p.get("confirmed_at") or "9999", p["point_date"], p["id"]))
-    for ordinal, point in enumerate(result):
-        point["ordinal"] = ordinal
-    return result, list(components.values())
+def _clean_center_fields(center: dict[str, Any]) -> dict[str, Any]:
+    cleaned = _strip_internal(center)
+    for key in ("recursive_eligible",):
+        cleaned.pop(key, None)
+    return cleaned
 
 
-def build_structure_hierarchy(
-    pens: list[dict[str, Any]], macd: list[dict[str, Any]] | None = None,
-    market_dates: list[str] | None = None,
-    *, calculation_profile: str = "full", include_provisional: bool = False,
+def _build_pen_center_hierarchy(
+    pens: list[dict[str, Any]], profile: str, *, include_provisional: bool = False,
 ) -> dict[str, Any]:
-    if calculation_profile not in {"full", "pen_centers_only"}:
-        raise ValueError(f"不支持的结构计算策略: {calculation_profile}")
-    full = calculation_profile == "full"
-    macd = macd or []
-    market_dates = market_dates or []
+    promotes_l2 = profile == "pen_centers_l2"
+    units = atomic_pen_units(pens, include_provisional=include_provisional)
     all_centers: list[dict[str, Any]] = []
-    all_movements: list[dict[str, Any]] = []
-    all_points: list[dict[str, Any]] = []
     all_candidates: list[dict[str, Any]] = []
     all_center_candidates: dict[str, dict[str, Any]] = {}
     all_segment_proofs: dict[str, dict[str, Any]] = {}
     all_components: dict[str, dict[str, Any]] = {}
     all_relations: list[dict[str, Any]] = []
     all_issues: list[dict[str, Any]] = []
-    unassigned_by_level: dict[str, list[str]] = {}
-    pending_promoted: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    units = atomic_pen_units(pens, include_provisional=include_provisional)
-    level = 1
-    while units and level <= MAX_LEVEL:
+
+    if units:
         regular_centers, components, issues = build_level_centers(
-            units, level, allow_successor_core=True,
+            units, 1, allow_successor_core=True,
             include_provisional=include_provisional,
         )
-        centers, display_only = _merge_level_center_sources(
-            regular_centers, pending_promoted.pop(level, []),
+        centers, display_only = _merge_level_center_sources(regular_centers, [])
+        relations = build_relations(centers)
+        candidate_revisions, promoted, promotion_relations = (
+            build_promotion_candidates(
+                centers, relations, 1, units, components,
+            ) if promotes_l2 else ([], [], [])
         )
-        if full:
-            relations = build_relations(centers)
-            points, point_components = _point_event_history(units, centers, level, market_dates, macd)
-            movements, unassigned, movement_issues = build_movements(
-                units, centers, relations, points, level,
-                include_provisional=include_provisional,
-            )
-            candidate_revisions, promoted, promotion_relations = build_promotion_candidates(
-                centers, relations, level, units, components, movements, points,
-            ) if level < MAX_LEVEL else ([], [], [])
-        else:
-            relations, candidate_revisions, promoted, promotion_relations = [], [], [], []
-            points, point_components = [], []
-            movements, unassigned, movement_issues = [], [], []
-        for center in centers:
+
+        for center in [*centers, *display_only, *promoted]:
             history = center.get("_history") or [center]
             for revision in history:
                 snapshot = deepcopy(revision)
                 snapshot["active"] = center.get("active", True) and snapshot["id"] == center["id"]
-                snapshot["owner_movement_id"] = center.get("owner_movement_id")
                 if center.get("absorbed_into_family_id"):
                     snapshot["absorbed_into_family_id"] = center["absorbed_into_family_id"]
                 all_centers.append(snapshot)
-        all_centers.extend(display_only)
-        if promoted:
-            pending_promoted[level + 1].extend(promoted)
-        all_movements.extend(movements)
-        all_points.extend(points)
+
         for candidate in candidate_revisions:
             for segment in candidate.get("segment_proof_revisions", []):
                 existing = all_segment_proofs.get(segment["id"])
                 item = deepcopy(segment)
                 if existing:
                     if _segment_revision_state(existing) != _segment_revision_state(item):
-                        raise AssertionError(
-                            f"segment revision identity collision: {segment['id']}"
-                        )
+                        raise AssertionError(f"segment revision identity collision: {segment['id']}")
                     if existing.get("selection_status") == "selected" or item.get("selection_status") == "selected":
                         existing["selection_status"] = "selected"
                     continue
                 all_segment_proofs[segment["id"]] = item
             candidate.pop("segment_proof_revisions", None)
         all_candidates.extend(candidate_revisions)
-        for component in [*components, *point_components]:
-            all_components[component["id"]] = component
+        all_components.update({item["id"]: item for item in components})
         all_relations.extend([*relations, *promotion_relations])
         for issue in issues:
-            if issue.get("kind") == "center_candidate":
-                normalized_issue = _strip_internal(issue)
-                previous_issue = all_center_candidates.get(issue["id"])
-                if previous_issue:
-                    if previous_issue.get("selected_center_family_id") and not normalized_issue.get("selected_center_family_id"):
-                        normalized_issue["selected_center_family_id"] = previous_issue["selected_center_family_id"]
-                    if previous_issue.get("status") == "selected" and normalized_issue.get("status") != "selected":
-                        normalized_issue["status"] = "selected"
-                        normalized_issue["active"] = True
-                        normalized_issue["rejection_code"] = None
-                all_center_candidates[issue["id"]] = normalized_issue
-            else:
+            if issue.get("kind") != "center_candidate":
                 all_issues.append(issue)
-        all_issues.extend(movement_issues)
-        unassigned_by_level[str(level)] = unassigned
-        if not full:
-            break
-        next_units = movement_units(movements, level)
-        if not next_units:
-            break
-        units = next_units
-        level += 1
+                continue
+            normalized = _strip_internal(issue)
+            previous = all_center_candidates.get(issue["id"])
+            if previous:
+                if previous.get("selected_center_family_id") and not normalized.get("selected_center_family_id"):
+                    normalized["selected_center_family_id"] = previous["selected_center_family_id"]
+                if previous.get("status") == "selected" and normalized.get("status") != "selected":
+                    normalized.update(status="selected", active=True, rejection_code=None)
+            all_center_candidates[issue["id"]] = normalized
 
-    for pending_level in sorted(pending_promoted):
-        _, display_only = _merge_level_center_sources([], pending_promoted[pending_level])
-        all_centers.extend(display_only)
-        fixed_families = {
-            item["family_id"] for item in pending_promoted[pending_level]
-            if item.get("boundary_status") == "fixed"
-        }
-        for family_id in fixed_families:
-            revisions = [
-                deepcopy(item) for item in pending_promoted[pending_level]
-                if item["family_id"] == family_id
-            ]
-            _, fixed_display = _merge_level_center_sources([], revisions)
-            if fixed_display:
-                all_centers.extend(fixed_display)
-            else:
-                merged, _ = _merge_level_center_sources([], revisions)
-                for center in merged:
-                    all_centers.extend(center.get("_history", [center]))
-
-    if full:
-        all_issues.extend(merge_formation_paths(all_centers))
     latest_center_by_family: dict[str, dict[str, Any]] = {}
     for center in all_centers:
         previous = latest_center_by_family.get(center["family_id"])
@@ -2441,17 +1689,15 @@ def build_structure_hierarchy(
     for relation in all_relations:
         if relation.get("relation_type") != "promoted_into":
             continue
-        family_id = relation.get("evidence", {}).get("parent_family_id")
-        parent = latest_center_by_family.get(family_id)
+        parent = latest_center_by_family.get(relation.get("evidence", {}).get("parent_family_id"))
         if not parent:
             continue
         relation["to_id"] = parent["id"]
         relation["end_date"] = parent["end_date"]
-        relation["id"] = _stable_id(
-            "relation", relation["from_id"], parent["id"], "promoted_into",
-        )
+        relation["id"] = _stable_id("relation", relation["from_id"], parent["id"], "promoted_into")
         if relation["from_id"] not in center_revision_ids:
             relation["status"] = "invalidated"
+
     family_revisions: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for center in all_centers:
         family_revisions[center["family_id"]].append(center)
@@ -2469,17 +1715,12 @@ def build_structure_hierarchy(
         if center["family_id"] not in families:
             families[center["family_id"]] = len(families)
         center["ordinal"] = families[center["family_id"]]
+
     center_revisions = sorted(all_centers, key=lambda item: (item["family_id"], item["revision_no"]))
-    candidate_revisions = sorted(
-        all_candidates, key=lambda item: (item["family_id"], item["revision_no"]),
-    )
+    candidate_revisions = sorted(all_candidates, key=lambda item: (item["family_id"], item["revision_no"]))
     segment_proof_revisions = sorted(
         all_segment_proofs.values(),
-        key=lambda item: (
-            item.get("family_id", item["id"]),
-            int(item.get("revision_no", 1)),
-            item["id"],
-        ),
+        key=lambda item: (item.get("family_id", item["id"]), int(item.get("revision_no", 1)), item["id"]),
     )
     latest_segment_by_family: dict[str, dict[str, Any]] = {}
     for segment in segment_proof_revisions:
@@ -2489,50 +1730,42 @@ def build_structure_hierarchy(
             latest_segment_by_family[segment["family_id"]] = segment
     for segment in latest_segment_by_family.values():
         segment["active"] = True
+
     levels = sorted({int(center["level"]) for center in active_centers})
     return {
-        "centers": [_strip_internal(item) for item in active_centers],
-        "center_revisions": [_strip_internal(item) for item in center_revisions],
-        "movements": [_strip_internal(item) for item in all_movements if item.get("active", True)],
-        "movement_revisions": [_strip_internal(item) for item in all_movements],
-        "points": [_strip_internal(item) for item in all_points if item.get("active", True)],
-        "point_revisions": [_strip_internal(item) for item in all_points],
-        "promotion_candidates": [
-            _strip_internal(item) for item in candidate_revisions if item.get("active")
-        ],
-        "promotion_candidate_revisions": [
-            _strip_internal(item) for item in candidate_revisions
-        ],
-        "center_candidates": sorted(
-            all_center_candidates.values(),
-            key=lambda item: (item.get("evidence_available_at", ""), item.get("core_end_ordinal", 0), item["id"]),
-        ),
-        "center_candidate_revisions": sorted(
-            all_center_candidates.values(),
-            key=lambda item: (item.get("evidence_available_at", ""), item.get("core_end_ordinal", 0), item["id"]),
-        ),
-        "segment_proofs": [
-            _strip_internal(item) for item in segment_proof_revisions
-            if item.get("selection_status") == "selected" and item.get("active", True)
-        ],
-        "segment_proof_revisions": [
-            _strip_internal(item) for item in segment_proof_revisions
-        ],
+        "centers": [_clean_center_fields(item) for item in active_centers],
+        "center_revisions": [_clean_center_fields(item) for item in center_revisions],
+        "promotion_candidates": [_strip_internal(item) for item in candidate_revisions if item.get("active")],
+        "promotion_candidate_revisions": [_strip_internal(item) for item in candidate_revisions],
+        "center_candidates": sorted(all_center_candidates.values(), key=lambda item: (item.get("evidence_available_at", ""), item.get("core_end_ordinal", 0), item["id"])),
+        "center_candidate_revisions": sorted(all_center_candidates.values(), key=lambda item: (item.get("evidence_available_at", ""), item.get("core_end_ordinal", 0), item["id"])),
+        "segment_proofs": [_strip_internal(item) for item in segment_proof_revisions if item.get("selection_status") == "selected" and item.get("active", True)],
+        "segment_proof_revisions": [_strip_internal(item) for item in segment_proof_revisions],
         "components": [_strip_internal(item) for item in sorted(all_components.values(), key=lambda item: (item["start_date"], item["id"]))],
         "relations": [_strip_internal(item) for item in all_relations],
         "issues": all_issues,
-        "unassigned_by_level": unassigned_by_level,
+        "unassigned_by_level": {"1": []} if units else {},
         "levels": levels,
         "max_level": max(levels, default=0),
         "hierarchy_version": HIERARCHY_VERSION,
     }
 
 
+def build_structure_hierarchy(
+    pens: list[dict[str, Any]], macd: list[dict[str, Any]] | None = None,
+    market_dates: list[str] | None = None,
+    *, calculation_profile: str = "pen_centers_l2", include_provisional: bool = False,
+) -> dict[str, Any]:
+    if calculation_profile not in {"pen_centers_l2", "pen_centers_only"}:
+        raise ValueError(f"不支持的结构计算策略: {calculation_profile}")
+    return _build_pen_center_hierarchy(
+        pens, calculation_profile, include_provisional=include_provisional,
+    )
+
+
 def validate_structure(payload: dict[str, Any], *, include_provisional: bool = False) -> list[str]:
     structure = payload.get("structure", payload)
     centers = structure.get("center_revisions", structure.get("centers", []))
-    movements = structure.get("movement_revisions", structure.get("movements", []))
-    points = structure.get("point_revisions", structure.get("points", []))
     segment_proofs = structure.get("segment_proof_revisions", structure.get("segment_proofs", []))
     candidates = structure.get(
         "promotion_candidate_revisions", structure.get("promotion_candidates", []),
@@ -2542,12 +1775,13 @@ def validate_structure(payload: dict[str, Any], *, include_provisional: bool = F
     )
     pens = structure.get("pens", payload.get("pens", []))
     pen_ids = {pen["id"] for pen in pens}
-    movement_by_id = {m["id"]: m for m in movements}
     segment_by_id = {item["id"]: item for item in segment_proofs}
-    point_by_family = {p["family_id"]: p for p in points if p.get("status") == "confirmed"}
     errors: list[str] = []
+    for obsolete in ("movements", "movement_revisions", "movement_levels", "points", "point_revisions"):
+        if obsolete in structure:
+            errors.append(f"obsolete_field:{obsolete}")
     for name, values in (
-        ("centers", centers), ("movements", movements), ("points", points),
+        ("centers", centers),
         ("promotion_candidates", candidates), ("segment_proofs", segment_proofs),
         ("center_candidates", center_candidates),
     ):
@@ -2558,8 +1792,6 @@ def validate_structure(payload: dict[str, Any], *, include_provisional: bool = F
     revision_ids = {center["id"] for center in centers}
     center_by_id = {center["id"]: center for center in centers}
     units = atomic_pen_units(pens, include_provisional=include_provisional)
-    for level in range(1, MAX_LEVEL):
-        units.extend(movement_units(movements, level))
     unit_by_id = {unit["id"]: unit for unit in units}
     for segment in segment_proofs:
         prefix = f"segment-proof:{segment['id']}:"
@@ -2632,7 +1864,6 @@ def validate_structure(payload: dict[str, Any], *, include_provisional: bool = F
             if any(a["end_date"] != b["start_date"] for a, b in zip(parts, parts[1:])):
                 errors.append(prefix + "decomposition_boundary")
             segment_ids = [part.get("id") for part in parts]
-            movement_ids = [part.get("movement_revision_id") for part in parts]
             expected_kind = "segment_proof"
             if center.get("unit_kind") != expected_kind or center.get("core_unit_ids") != segment_ids:
                 errors.append(prefix + "decomposition_core_units")
@@ -2648,26 +1879,10 @@ def validate_structure(payload: dict[str, Any], *, include_provisional: bool = F
                     parent_unit_owner[key] = center["family_id"]
             for part in parts:
                 source_kind = part.get("source_kind")
-                if source_kind == "movement":
-                    movement = movement_by_id.get(part.get("movement_revision_id"))
-                    if (
-                        not movement
-                        or movement["level"] != center["level"] - 1
-                        or not set(part["source_unit_ids"]) <= set(movement["source_unit_ids"])
-                        or part.get("movement_family_id") != movement.get("family_id", movement["id"])
-                    ):
-                        errors.append(prefix + "decomposition_movement")
-                    if part.get("status") == "confirmed":
-                        point = point_by_family.get(part.get("completion_evidence_id"))
-                        if not point or point.get("confirmed_at", "") > part.get("available_at", ""):
-                            errors.append(prefix + "decomposition_completion")
-                elif source_kind == "local_pen_group":
-                    if center["level"] != 2 or not all(
-                        unit_by_id.get(identifier, {}).get("kind") == "pen"
-                        for identifier in part.get("source_unit_ids", [])
-                    ):
-                        errors.append(prefix + "decomposition_local_source")
-                else:
+                if source_kind != "local_pen_group" or center["level"] != 2 or not all(
+                    unit_by_id.get(identifier, {}).get("kind") == "pen"
+                    for identifier in part.get("source_unit_ids", [])
+                ):
                     errors.append(prefix + "decomposition_source_kind")
                 if part.get("status") == "confirmed" and not part.get("completion_evidence_id"):
                     errors.append(prefix + "decomposition_completion")
@@ -2735,7 +1950,7 @@ def validate_structure(payload: dict[str, Any], *, include_provisional: bool = F
         owned = [unit_by_id[identifier] for identifier in owned_ids]
         if not _span_contiguous(owned) or set(core_ids) - set(owned_ids) or set(center.get("entry_unit_ids", [])) & set(owned_ids):
             errors.append(prefix + "invalid_owned_span")
-        expected_kind = "pen" if center["level"] == 1 else "movement"
+        expected_kind = "pen"
         if center.get("unit_kind") != expected_kind or any(unit["kind"] != expected_kind or unit["level"] != center["level"] - 1 for unit in owned):
             errors.append(prefix + "invalid_unit_kind")
         if center.get("source_pen_ids") != _source_pen_ids(owned):
@@ -2805,57 +2020,6 @@ def validate_structure(payload: dict[str, Any], *, include_provisional: bool = F
             errors.append(prefix + "selected_without_center")
         if candidate.get("status") == "rejected" and not candidate.get("rejection_code"):
             errors.append(prefix + "rejected_without_code")
-    point_ids = {point["family_id"] for point in points}
-    movement_unit_owner: dict[tuple[int, str], str] = {}
-    movement_streams: dict[tuple[int, int, str, int], list[dict[str, Any]]] = defaultdict(list)
-    for movement in movements:
-        movement_streams[(*_stream_key(movement), int(movement["level"]))].append(movement)
-        if movement.get("active", True):
-            for unit_id in movement.get("source_unit_ids", []):
-                key = (int(movement["level"]), unit_id)
-                if key in movement_unit_owner:
-                    errors.append(f"movement:{movement['id']}:shared_unit:{unit_id}")
-                movement_unit_owner[key] = movement["id"]
-        if movement.get("status") == "confirmed" and movement.get("end_point_id") not in point_ids:
-            errors.append(f"movement:{movement['id']}:missing_point")
-        if movement.get("status") == "confirmed" and not movement.get("evidence", {}).get("boundary_certificate_id"):
-            errors.append(f"movement:{movement['id']}:missing_boundary_certificate")
-        if movement.get("recursive_eligible") and (
-            movement.get("status") != "confirmed" or movement.get("classification") is None
-        ):
-            errors.append(f"movement:{movement['id']}:invalid_recursion")
-        if any(identifier not in family_ids for identifier in movement.get("center_family_ids", [])):
-            errors.append(f"movement:{movement['id']}:missing_center_family")
-        for center_id in movement.get("center_revision_ids", []):
-            center = center_by_id.get(center_id)
-            if not center or not set(center["source_pen_ids"]) <= set(movement.get("source_pen_ids", [])):
-                errors.append(f"movement:{movement['id']}:center_ownership")
-        if movement.get("status") == "confirmed":
-            selected_ids = set(movement.get("source_unit_ids", []))
-            selected_units = [unit_by_id[identifier] for identifier in selected_ids if identifier in unit_by_id]
-            if len(selected_units) != len(selected_ids) or any(
-                unit.get("confirmed_at", unit["end_date"]) > movement.get("confirmed_at", "")
-                for unit in selected_units
-            ):
-                errors.append(f"movement:{movement['id']}:future_unit")
-            for center in centers:
-                if center["level"] == movement["level"] and center["formed_at"] <= movement["confirmed_at"] and set(center["core_unit_ids"]) & selected_ids and not set(center["core_unit_ids"]) <= selected_ids:
-                    errors.append(f"movement:{movement['id']}:split_core")
-    for stream in movement_streams.values():
-        ordered = sorted(stream, key=lambda item: (item["start_date"], item["end_date"], item["id"]))
-        if any(left["direction"] == right["direction"] for left, right in zip(ordered, ordered[1:])):
-            errors.append(f"movement-stream:{ordered[0]['level']}:{_stream_key(ordered[0])}:direction_not_alternating")
-    for point in points:
-        if point.get("center_revision_id") not in revision_ids:
-            errors.append(f"point:{point['id']}:missing_center")
-        if point.get("status") == "confirmed" and not point.get("confirmed_at"):
-            errors.append(f"point:{point['id']}:missing_confirmation_time")
-        source = unit_by_id.get(point.get("source_unit_id"))
-        if not source or point["point_date"] != source["end_date"] or abs(float(point["point_price"]) - float(source["end_price"])) > EPSILON:
-            errors.append(f"point:{point['id']}:not_real_endpoint")
-        center = center_by_id.get(point.get("center_revision_id"))
-        if point.get("status") == "confirmed" and center and point["confirmed_at"] < center["formed_at"]:
-            errors.append(f"point:{point['id']}:confirmation_before_center")
     for relation in structure.get("relations", []):
         left, right = center_by_id.get(relation["from_id"]), center_by_id.get(relation["to_id"])
         if not left or not right:
