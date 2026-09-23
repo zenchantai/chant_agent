@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { bindChartGestures, chartZoomFromDataZoomEvent, ChartGesture, gestureOwner, initialChartZoom, rebaseChartZoom } from "./chartInteractions";
+import { bindChartGestures, chartZoomFromDataZoomEvent, ChartGesture, gestureOwner, initialChartZoom, panChartZoom, rebaseChartZoom } from "./chartInteractions";
 import type { GestureOwner } from "./chartInteractions";
 
 describe("K线浏览范围", () => {
@@ -49,6 +49,12 @@ describe("K线浏览范围", () => {
     expect(rebaseChartZoom(zoom, [], ["a"])).toEqual(zoom);
     expect(rebaseChartZoom(zoom, ["b", "c"], ["b", "c", "d"])).toEqual(zoom);
     expect(rebaseChartZoom(zoom, ["b", "c"], ["a", "d", "e"])).toEqual(zoom);
+  });
+  it("向右拖动查看更早数据，向左拖动查看更新数据，并限制在边界内", () => {
+    expect(panChartZoom({ start: 60, end: 100 }, 200, 1000)).toEqual({ start: 40, end: 80 });
+    expect(panChartZoom({ start: 20, end: 60 }, -200, 1000)).toEqual({ start: 40, end: 80 });
+    expect(panChartZoom({ start: 10, end: 50 }, 500, 1000)).toEqual({ start: 0, end: 40 });
+    expect(panChartZoom({ start: 60, end: 100 }, -500, 1000)).toEqual({ start: 60, end: 100 });
   });
   it("兼容百分比格式的缩放事件", () => {
     expect(chartZoomFromDataZoomEvent({ batch: [{ start: 10, end: 50 }] }, ["a", "b", "c"])).toEqual({ start: 10, end: 50 });
@@ -135,11 +141,12 @@ describe("手势事件绑定", () => {
     expect(state.captured.size).toBe(0);
     state.cleanup();
   });
-  it("平移事件交给ECharts，松手不误点", () => {
+  it("平移事件交给图表回调，松手不误点", () => {
     const state = setup("pan");
     expect(state.dispatch(state.element, "pointerdown").defaultPrevented).toBe(false);
     expect(state.dispatch(state.view, "pointermove", 12).defaultPrevented).toBe(false);
     expect(state.classes.has("is-panning")).toBe(true);
+    expect(state.callbacks.move).toHaveBeenCalledOnce();
     state.dispatch(state.view, "pointerup", 12);
     expect(state.classes.size).toBe(0);
     expect(state.dispatch(state.element, "click").defaultPrevented).toBe(true);

@@ -290,7 +290,8 @@ def test_api_lightweight_quote_and_parameter_validation(service, monkeypatch):
     assert fresh["market"]["intraday_refresh"]["is_today"] is True
     assert fresh["market"]["intraday_refresh"]["result"] == "success"
     assert len(fresh["indicators"]["macd"]) == len(fresh["market"]["bars"])
-    assert fresh["structure"]["pens"] == fresh["structure"]["centers"] == fresh["structure"]["movements"] == []
+    assert fresh["structure"]["pens"] == fresh["structure"]["centers"] == []
+    assert "movements" not in fresh["structure"] and "points" not in fresh["structure"]
     assert service.store.db.execute("SELECT COUNT(*) FROM chan_structure_runs").fetchone()[0] == 0
 
 

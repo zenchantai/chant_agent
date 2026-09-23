@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chant_agent 架构设计分析</title>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f9f9f7; --surface:#fcfcfb; --surface-2:#f3f2ee;
+  --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
+  --series:#2a78d6; --series-soft:#cde2fb; --series-deep:#184f95;
+  --accent2:#eb6834; --accent3:#1baf7a; --accent4:#4a3aa7;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19; --surface-2:#222221;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+    --series:#3987e5; --series-soft:#184f95; --series-deep:#86b6ef;
+    --accent2:#d95926; --accent3:#199e70; --accent4:#9085e9;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface:#1a1a19; --surface-2:#222221;
+  --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+  --series:#3987e5; --series-soft:#184f95; --series-deep:#86b6ef;
+  --accent2:#d95926; --accent3:#199e70; --accent4:#9085e9;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--plane);color:var(--ink);font-family:var(--sans);
+  font-size:15px;line-height:1.7;overflow-x:hidden}
+.wrap{max-width:1080px;margin:0 auto;padding:48px 20px 96px}
+header{border-bottom:1px solid var(--grid);padding-bottom:28px;margin-bottom:40px}
+h1{font-size:clamp(26px,4vw,38px);line-height:1.25;margin:0 0 12px;letter-spacing:-.01em}
+.sub{color:var(--ink-2);font-size:15px;margin:0}
+.meta{margin-top:18px;display:flex;flex-wrap:wrap;gap:8px}
+.tag{font-family:var(--mono);font-size:12px;padding:3px 9px;border-radius:5px;
+  background:var(--surface-2);color:var(--ink-2);border:1px solid var(--ring)}
+h2{font-size:22px;margin:56px 0 6px;letter-spacing:-.005em}
+h2 .num{font-family:var(--mono);color:var(--muted);font-size:15px;margin-right:10px;font-weight:400}
+h3{font-size:16px;margin:32px 0 10px;color:var(--ink)}
+.lede{color:var(--ink-2);margin:0 0 24px;font-size:14.5px}
+p{margin:0 0 14px}
+code{font-family:var(--mono);font-size:.86em;background:var(--surface-2);
+  padding:1.5px 5px;border-radius:4px;border:1px solid var(--ring)}
+a{color:var(--series)}
+.card{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:22px 24px;margin:20px 0}
+
+/* KPI row */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:28px 0 8px}
+.kpi{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:16px 18px}
+.kpi .v{font-size:30px;font-weight:600;letter-spacing:-.02em;line-height:1.1}
+.kpi .v small{font-size:14px;font-weight:500;color:var(--ink-2);margin-left:3px}
+.kpi .k{font-size:12.5px;color:var(--muted);margin-top:5px}
+
+/* bar-in-table chart */
+figure{margin:24px 0}
+figcaption{font-size:13px;color:var(--muted);margin-top:12px}
+.chart-title{font-size:15px;font-weight:600;margin:0 0 4px}
+.chart-note{font-size:12.5px;color:var(--muted);margin:0 0 16px}
+table.bars{width:100%;border-collapse:collapse;font-size:13.5px}
+table.bars th{text-align:left;font-weight:500;color:var(--muted);font-size:12px;
+  padding:0 0 8px;border-bottom:1px solid var(--grid)}
+table.bars th:last-child{text-align:right}
+table.bars td{padding:5px 0;vertical-align:middle;border-bottom:1px solid var(--grid)}
+table.bars td.name{font-family:var(--mono);font-size:12.5px;color:var(--ink-2);
+  white-space:nowrap;padding-right:14px;width:1%}
+table.bars td.track{width:100%}
+table.bars td.val{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink);
+  padding-left:14px;white-space:nowrap;width:1%}
+.bar{height:11px;background:var(--series);border-radius:0 4px 4px 0;position:relative;min-width:2px}
+.bar[data-lead="1"]{background:var(--series)}
+tr.hoverable:hover td{background:var(--surface-2)}
+tr.hoverable{position:relative}
+tr.hoverable td.track{position:relative}
+tr.hoverable:hover .bar::after{
+  content:attr(data-tip);position:absolute;left:0;bottom:calc(100% + 7px);
+  background:var(--ink);color:var(--plane);font-family:var(--sans);font-size:12px;
+  padding:5px 9px;border-radius:6px;white-space:nowrap;z-index:5;pointer-events:none;
+  box-shadow:0 2px 10px rgba(0,0,0,.18)}
+
+/* layer diagram */
+.layers{display:flex;flex-direction:column;gap:2px;margin:24px 0}
+.layer{background:var(--surface);border:1px solid var(--ring);padding:14px 18px;border-radius:8px}
+.layer .lh{font-size:11.5px;font-family:var(--mono);color:var(--muted);
+  text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px}
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+.chip{font-family:var(--mono);font-size:12px;padding:4px 9px;border-radius:6px;
+  background:var(--surface-2);border:1px solid var(--ring);color:var(--ink)}
+.chip.hot{background:var(--series);border-color:var(--series);color:#fff;font-weight:500}
+.chip.dim{color:var(--muted)}
+.arrow{text-align:center;color:var(--axis);font-size:14px;line-height:1;margin:1px 0}
+
+/* pipeline */
+.pipe{margin:24px 0;overflow-x:auto;padding-bottom:4px}
+.pipe-inner{display:flex;align-items:stretch;gap:0;min-width:min-content}
+.stage{background:var(--surface);border:1px solid var(--ring);border-radius:10px;
+  padding:13px 15px;min-width:132px;flex:0 0 auto}
+.stage .sn{font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:5px}
+.stage .st{font-size:13.5px;font-weight:600;margin-bottom:4px;white-space:nowrap}
+.stage .sd{font-size:11.5px;color:var(--ink-2);line-height:1.5}
+.stage.term{border-color:var(--series);background:color-mix(in srgb,var(--series) 8%,var(--surface))}
+.conn{flex:0 0 auto;align-self:center;color:var(--axis);padding:0 7px;font-size:15px}
+
+/* db tree */
+.tree{font-family:var(--mono);font-size:12.5px;line-height:1.95;overflow-x:auto;
+  background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:18px 20px;margin:22px 0}
+.tree .root{color:var(--series);font-weight:600}
+.tree .ptr{color:var(--accent2);font-weight:600}
+.tree .cm{color:var(--muted)}
+.tree .lf{color:var(--ink-2)}
+
+/* generic tables */
+.scroll{overflow-x:auto;margin:20px 0;border:1px solid var(--ring);border-radius:10px;background:var(--surface)}
+table.grid{width:100%;border-collapse:collapse;font-size:13.5px;min-width:520px}
+table.grid th{text-align:left;font-weight:600;font-size:12px;color:var(--ink-2);
+  background:var(--surface-2);padding:10px 14px;border-bottom:1px solid var(--grid);white-space:nowrap}
+table.grid td{padding:9px 14px;border-bottom:1px solid var(--grid);vertical-align:top}
+table.grid tr:last-child td{border-bottom:none}
+table.grid tbody tr:hover td{background:var(--surface-2)}
+table.grid td.mono,table.grid td .mono{font-family:var(--mono);font-size:12.5px}
+.pill{display:inline-block;font-size:11.5px;font-family:var(--mono);padding:2px 7px;
+  border-radius:20px;border:1px solid var(--ring);background:var(--surface-2);white-space:nowrap}
+.pill.l2{border-color:var(--series);color:var(--series)}
+.pill.l1{border-color:var(--accent3);color:var(--accent3)}
+.pill.no{color:var(--muted)}
+
+/* invariant cards */
+.inv{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin:24px 0}
+.inv .card{margin:0}
+.inv h4{margin:0 0 8px;font-size:14.5px;display:flex;align-items:center;gap:8px}
+.inv .n{font-family:var(--mono);font-size:11px;color:var(--plane);background:var(--series);
+  width:19px;height:19px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto}
+.inv p{font-size:13.5px;color:var(--ink-2);margin:0 0 9px}
+.inv .src{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+
+/* findings */
+.find{border-left:3px solid var(--axis);padding:2px 0 2px 16px;margin:16px 0}
+.find .fh{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;margin-bottom:5px}
+.find p{font-size:13.5px;color:var(--ink-2);margin:0 0 7px}
+.find .src{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.find.verified{border-left-color:var(--good)}
+.find.judged{border-left-color:var(--warning)}
+.find.open{border-left-color:var(--series)}
+.ico{width:16px;height:16px;flex:0 0 auto}
+.counter{font-size:12px;color:var(--muted);font-family:var(--mono)}
+.legend-band{display:flex;flex-wrap:wrap;gap:16px;margin:20px 0 4px;font-size:13px}
+.legend-band .li{display:flex;align-items:center;gap:7px;color:var(--ink-2)}
+.swatch{width:11px;height:11px;border-radius:3px;flex:0 0 auto}
+.contra{background:var(--surface-2);border-radius:8px;padding:11px 14px;margin:9px 0 0;
+  font-size:13px;color:var(--ink-2);border:1px solid var(--ring)}
+.contra b{color:var(--ink);font-weight:600}
+pre{background:var(--surface);border:1px solid var(--ring);border-radius:10px;
+  padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.7;margin:18px 0}
+ul{padding-left:22px;margin:0 0 14px}
+li{margin:5px 0;font-size:14px}
+footer{margin-top:72px;padding-top:24px;border-top:1px solid var(--grid);
+  font-size:12.5px;color:var(--muted)}
+.disabled-list{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 4px}
+.disabled-list .chip{text-decoration:line-through;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>chant_agent 架构设计分析</h1>
+  <p class="sub">这不是一个信号系统，而是一台<strong>为缠论结构计算留证的机器</strong>——架构的重量全压在「如何证明某个中枢是这样算出来的，以及如何回滚」上。</p>
+  <div class="meta">
+    <span class="tag">2026-09-23</span>
+    <span class="tag">branch refactor_zs_hongluhuo_0919</span>
+    <span class="tag">chan-period-pen-center-l2-v1</span>
+    <span class="tag">事实源 → 同名 .md</span>
+  </div>
+</header>
+
+<p class="lede">口径说明：下文所有数字与行号均为本轮工具实测。<code>.md</code> 是唯一事实源，本页只承载视觉表达。</p>
+
+<div class="kpis">
+  <div class="kpi"><div class="v">7 694<small>行</small></div><div class="k">后端 Python（20 文件）</div></div>
+  <div class="kpi"><div class="v">4 044<small>行</small></div><div class="k">前端源码（13 模块，不含测试）</div></div>
+  <div class="kpi"><div class="v">25<small>张</small></div><div class="k">SQLite 表（结构相关 15）</div></div>
+  <div class="kpi"><div class="v">28<small>条</small></div><div class="k">启动强校验规则</div></div>
+  <div class="kpi"><div class="v">417<small>MB</small></div><div class="k">当前库体积</div></div>
+  <div class="kpi"><div class="v">29<small>个</small></div><div class="k">后端测试文件</div></div>
+</div>
+
+<h2><span class="num">01</span>三个决定性设计</h2>
+<p class="lede">整套架构可以由这三个决策推导出来，其余都是它们的推论。</p>
+
+<div class="inv">
+  <div class="card">
+    <h4><span class="n">1</span>run 快照 + 指针切换</h4>
+    <p>结构结果从不原地更新。每次重算插一条新 <code>chan_structure_runs</code>，13 张子表挂 <code>run_id</code> 级联；<code>chan_active_runs</code> 单张指针表决定哪个 run 生效。成功 run 是不可变证据与回滚目标；写失败也插一条 <code>status='failed'</code> 留痕。</p>
+    <div class="src">store.py:90-104 · store.py:1240-1330</div>
+  </div>
+  <div class="card">
+    <h4><span class="n">2</span>三重指纹决定是否重算</h4>
+    <p><code>definition_version</code>（规则版本）+ <code>calculator_fingerprint</code>（11 个源文件内容 sha256，<strong>含 knowledge/ 两个规则文件</strong>）+ <code>market_version</code>（行情 sha）。改一行算法或改一句规则文本，指纹变，全量重算。</p>
+    <div class="src">period_structure.py:50-76 · 300-318</div>
+  </div>
+  <div class="card">
+    <h4><span class="n">3</span>修订链而非覆盖</h4>
+    <p>中枢是 <code>family → revisions</code> 两级：<code>(family_id, revision_no)</code> 唯一 + <code>previous_revision_id</code> 链表 + <code>active</code> 标志。候选、晋级候选、段证明三张表复用<strong>同一套</strong>模式。冲突按证据时间仲裁。</p>
+    <div class="src">store.py:123-154 · CENTER-LIFECYCLE-ARBITRATION-V31</div>
+  </div>
+</div>
+
+<h2><span class="num">02</span>分层架构</h2>
+<p class="lede">单进程 FastAPI + 单库 SQLite。橙色是唯一的「生效版本」开关，蓝色是计算核心。</p>
+
+<div class="layers">
+  <div class="layer">
+    <div class="lh">前端 · React + ECharts + Vite</div>
+    <div class="chips">
+      <span class="chip hot">App.tsx</span><span class="chip">chartBuilders</span><span class="chip">chartInteractions</span>
+      <span class="chip">centerDisplay</span><span class="chip">dailyL2Overlay</span><span class="chip">intradayRefresh</span>
+      <span class="chip">intradayTimeline</span><span class="chip">structureColors</span><span class="chip">watchlistQuotes</span>
+      <span class="chip dim">types.ts = 前后端契约</span>
+    </div>
+  </div>
+  <div class="arrow">↕ HTTP / JSON</div>
+  <div class="layer">
+    <div class="lh">接口层 · main.py（30 路由，三条读路径）</div>
+    <div class="chips">
+      <span class="chip">/api/chart-data 全量页</span><span class="chip">/api/chart-realtime 增量 delta</span>
+      <span class="chip">timeframe=1 分时独立路径</span><span class="chip dim">/api/analyze</span>
+      <span class="chip dim">/api/drawings</span><span class="chip dim">/api/watchlist</span>
+    </div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="layer">
+    <div class="lh">编排层 · 服务</div>
+    <div class="chips">
+      <span class="chip hot">PeriodStructureService</span><span class="chip">IntradayService</span>
+      <span class="chip">SyncService</span><span class="chip">SecurityCatalogService</span>
+      <span class="chip">WatchlistQuoteService</span><span class="chip">structure_display 投影</span>
+    </div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="layer">
+    <div class="lh">缠论引擎 · 纯计算</div>
+    <div class="chips">
+      <span class="chip hot">chan_structure.py 层级引擎</span><span class="chip">engine.py 包含/分型/笔</span>
+      <span class="chip">chan_expansion.py SegmentProof</span><span class="chip">chan_direction.py 方向证据</span>
+      <span class="chip">coverage.py 完整性</span><span class="chip">indicators.py</span>
+    </div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="layer">
+    <div class="lh">规则契约 · 启动期强校验</div>
+    <div class="chips">
+      <span class="chip">knowledge/chan_rules.yaml</span><span class="chip">knowledge/chan_rules.md</span>
+      <span class="chip dim">rules.py:38 模块级加载，版本不符即拒绝启动</span>
+    </div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="layer">
+    <div class="lh">持久层 · store.py 单连接 + RLock</div>
+    <div class="chips">
+      <span class="chip">market_bars</span><span class="chip">period_confirmations</span>
+      <span class="chip hot">chan_structure_runs</span><span class="chip" style="background:var(--accent2);border-color:var(--accent2);color:#fff;font-weight:500">chan_active_runs</span>
+      <span class="chip">13 张 run 子表</span><span class="chip dim">drawing_objects</span>
+    </div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="layer">
+    <div class="lh">数据源</div>
+    <div class="chips">
+      <span class="chip">BaoStock（历史 + 日历 + 目录）</span><span class="chip">腾讯（实时快照 + 分时）</span><span class="chip">CSV 人工导入</span>
+    </div>
+  </div>
+</div>
+
+<h2><span class="num">03</span>缠论计算管道</h2>
+<p class="lede">左到右单向，每一步都有对应规则 ID。终点是 L2——<strong>刻意不构造 L3</strong>。</p>
+
+<div class="pipe">
+  <div class="pipe-inner">
+    <div class="stage"><div class="sn">输入</div><div class="st">已确认 K 线</div><div class="sd">RAW-5M-001<br>未收口只作预览</div></div>
+    <div class="conn">→</div>
+    <div class="stage"><div class="sn">engine.py:82</div><div class="st">包含处理</div><div class="sd">INC-001<br>左→右，高高低高</div></div>
+    <div class="conn">→</div>
+    <div class="stage"><div class="sn">engine.py:110</div><div class="st">严格分型</div><div class="sd">FX-001<br>右侧 K 完成才确认</div></div>
+    <div class="conn">→</div>
+    <div class="stage"><div class="sn">engine.py:290</div><div class="st">确认笔</div><div class="sd">PEN-NEW-001/002<br>+ 5 条特殊笔规则</div></div>
+    <div class="conn">→</div>
+    <div class="stage"><div class="sn">chan_structure:508</div><div class="st">L1 笔中枢</div><div class="sd">CENTER-STRICT-CORE<br>三笔严格重叠</div></div>
+    <div class="conn">→</div>
+    <div class="stage"><div class="sn">:708 / :809</div><div class="st">延伸 · 扩展</div><div class="sd">Z-WAVE-V26<br>DD/GG 只取 Z 单位</div></div>
+    <div class="conn">→</div>
+    <div class="stage"><div class="sn">chan_expansion</div><div class="st">SegmentProof</div><div class="sd">SEGMENT-PEN-NATIVE<br>笔原生，≥3 笔</div></div>
+    <div class="conn">→</div>
+    <div class="stage term"><div class="sn">:1219</div><div class="st">L2 中枢</div><div class="sd">三段区间交集定界<br><strong>到此停止</strong></div></div>
+  </div>
+</div>
+
+<h3>显式关闭的能力</h3>
+<p>这些不是缺失，是有迁移脚本和专门测试保障的<strong>下线</strong>（<code>period_structure.py:26-48</code>、<code>tests/test_retired_structure.py</code>）：</p>
+<div class="disabled-list">
+  <span class="chip">走势分区</span><span class="chip">走势边界</span><span class="chip">背驰</span>
+  <span class="chip">结构买卖点</span><span class="chip">L3 及以上递归</span><span class="chip">人工结构修订</span>
+</div>
+
+<h2><span class="num">04</span>三条贯穿全局的不变式</h2>
+<p class="lede">引擎的骨架。V31 那一代重构基本就是在把这三条写实。</p>
+
+<div class="inv">
+  <div class="card">
+    <h4><span class="n">A</span>所有权账本</h4>
+    <p>同级别同连续流的直接单位<strong>只能有一个正式拥有者</strong>：L1 拥有笔，L2 拥有段证明。<code>entry / departure / retest / connection / boundary_evidence</code> 只能进 <code>context_unit_ids</code>，可以重叠，但不进 <code>owned_unit_ids</code>。</p>
+    <p>DB 层用一条部分索引兜底：<br><code>idx_chan_core_owner … WHERE role='core'</code></p>
+    <div class="src">OWNERSHIP-LEDGER-V31 · store.py:142</div>
+  </div>
+  <div class="card">
+    <h4><span class="n">B</span>前缀稳定（无未来函数）</h4>
+    <p>追加数据只能扩展<strong>未确认后缀</strong>；已提交候选与确认前缀结果必须稳定。结构时间与证据可用时间是独立字段：<code>observed_at</code> / <code>evidence_available_at</code> / <code>confirmed_at</code>。</p>
+    <p>无法唯一确认的结构保留 <code>candidate / provisional / undetermined / truncated</code>。</p>
+    <div class="src">PREFIX-STABILITY-V31 · CONFIRM-V25</div>
+  </div>
+  <div class="card">
+    <h4><span class="n">C</span>确认 / 形成中二分</h4>
+    <p><code>daily_bar_confirmations</code> → <code>period_confirmations</code>（泛化，含 request / fetch / confirm 三段时间）。未收口数据只能作 <code>provisional</code> 预览，<strong>不能因墙钟或跨日自动转正式</strong>。</p>
+    <div class="src">DAILY-CONFIRMED-SOURCE-V27 · store.py:309-357</div>
+  </div>
+</div>
+
+<h2><span class="num">05</span>周期与计算策略矩阵</h2>
+<p class="lede">周月只算 L1；它们图上的 L2 是<strong>日线结构的跨周期投影</strong>，不参与周月原生计算。</p>
+
+<div class="scroll">
+<table class="grid">
+  <thead><tr><th>周期</th><th>抓取</th><th>算结构</th><th>calculation_profile</th><th>max_level</th><th>L2 来源</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">1 分时</td><td>是</td><td><span class="pill no">否</span></td><td class="mono">—</td><td>—</td><td class="mono">—</td></tr>
+    <tr><td class="mono">5 / 30</td><td>是</td><td><span class="pill l2">是</span></td><td class="mono">pen_centers_l2</td><td>2</td><td>本周期原生</td></tr>
+    <tr><td class="mono">15 / 60 / 120</td><td>是</td><td><span class="pill no">否</span></td><td class="mono">—</td><td>—</td><td class="mono">—</td></tr>
+    <tr><td class="mono">d 日线</td><td>是</td><td><span class="pill l2">是</span></td><td class="mono">pen_centers_l2</td><td>2</td><td>本周期原生</td></tr>
+    <tr><td class="mono">w / m</td><td>是</td><td><span class="pill l1">是</span></td><td class="mono">pen_centers_only</td><td>1</td><td>日线投影叠加</td></tr>
+    <tr><td class="mono">y 年线</td><td>是</td><td><span class="pill no">否</span></td><td class="mono">—</td><td>—</td><td class="mono">—</td></tr>
+  </tbody>
+</table>
+</div>
+<figcaption>来源：providers.py:14-16 · period_structure.py:18-26 · chan_rules.yaml:2-7 · DAILY-L2-PROJECTION-V27</figcaption>
+
+<h2><span class="num">06</span>数据库设计</h2>
+<p class="lede">25 张表分四组。结构组 15 张全部以 <code>run_id</code> 为根，删 run 即整体级联回收。</p>
+
+<div class="tree">
+<span class="cm">// A. 行情与日历（4）</span><br>
+market_bars <span class="cm">UNIQUE(symbol,timeframe,trade_date,adjustflag) + uq_market_bars_period(…,period_key)</span><br>
+daily_bar_confirmations <span class="cm">日线已确认基线，存 row_hash</span><br>
+period_confirmations <span class="cm">泛化版：request_started_at / fetched_at / confirmed_at</span><br>
+trade_calendar <span class="cm">含 expected_5m_count / expected_30m_count，供 coverage 用</span><br>
+<br>
+<span class="cm">// B. 自选与目录（5）</span><br>
+stock_pool · watchlist_groups · watchlist_group_members · watchlist_section_order · security_catalog<br>
+<br>
+<span class="cm">// C. 结构快照（15）</span><br>
+<span class="root">chan_structure_runs</span> <span class="cm">(definition_version, calculator_fingerprint, market_version,</span><br>
+<span class="cm">                     structure_version, status, max_level, meta_json)</span><br>
+&nbsp;&nbsp;&nbsp;▲ <span class="cm">指针</span><br>
+<span class="ptr">chan_active_runs</span> (symbol, timeframe, adjustflag) → run_id&nbsp;&nbsp;&nbsp;<span class="cm">← 生效版本只此一处</span><br>
+&nbsp;&nbsp;&nbsp;│<br>
+&nbsp;&nbsp;&nbsp;├─ <span class="lf">chan_processed_bars</span> ┐<br>
+&nbsp;&nbsp;&nbsp;├─ <span class="lf">chan_fractals</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├ <span class="cm">同构：(run_id,id) PK + UNIQUE(run_id,ordinal) + payload_json</span><br>
+&nbsp;&nbsp;&nbsp;├─ <span class="lf">chan_pens</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;┘<br>
+&nbsp;&nbsp;&nbsp;├─ <span class="lf">chan_components</span> ──── chan_component_units <span class="cm">(unit_kind, unit_id, role, ordinal)</span><br>
+&nbsp;&nbsp;&nbsp;├─ <span class="lf">chan_center_families</span> ─ chan_center_revisions ─ chan_center_units<br>
+&nbsp;&nbsp;&nbsp;├─ <span class="lf">chan_center_candidates</span> <span class="cm">(family/revision/active + rejection_code)</span><br>
+&nbsp;&nbsp;&nbsp;├─ <span class="lf">chan_promotion_candidates</span> <span class="cm">(child_level, parent_level, candidate_source)</span><br>
+&nbsp;&nbsp;&nbsp;├─ <span class="lf">chan_segment_proofs</span> <span class="cm">(source_kind, direction, evidence_available_at)</span><br>
+&nbsp;&nbsp;&nbsp;├─ <span class="lf">chan_relations</span> <span class="cm">(relation_type, from_id, to_id)</span><br>
+&nbsp;&nbsp;&nbsp;└─ <span class="lf">chan_issues</span> <span class="cm">(issue_type)</span><br>
+<br>
+<span class="cm">// D. 用户标注（1）</span><br>
+drawing_objects <span class="cm">软删除 deleted_at；不因走势功能下线而删除</span>
+</div>
+
+<h3>三个值得复用的表设计决策</h3>
+<div class="scroll">
+<table class="grid">
+  <thead><tr><th style="width:24%">决策</th><th>做法</th><th style="width:26%">买到了什么</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>结构化列 + payload_json 双写</b></td>
+      <td>查询维度（level / status / 日期 / 价格 / family）提列建索引，完整实体存 JSON；读取时直接反序列化还原对象</td>
+      <td>结构演进不需要 schema 迁移，也不需要 ORM 映射<br><span class="mono">store.py:1338-1382</span></td>
+    </tr>
+    <tr>
+      <td><b>写失败也留痕</b></td>
+      <td>except 分支回滚后<strong>再插一条 status='failed' 的 run</strong>，且只保留最近一条失败记录；成功 run 永不自动删</td>
+      <td>失败可追溯，成功可回滚<br><span class="mono">store.py:1301-1316</span></td>
+    </tr>
+    <tr>
+      <td><b>迁移必须 dry-run 精确确认</b></td>
+      <td><code>canonicalize_period_bars(expected_delete_ids)</code> 要求传入精确待删 ID 列表，与当轮报告不一致即 ValueError 中止</td>
+      <td>不可能「顺手删掉」历史行<br><span class="mono">store.py:263-308</span></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<h2><span class="num">07</span>模块规模</h2>
+<p class="lede">条长编码行数。两个超大单文件一眼可见——但它们该不该拆，答案相反（见 §09-d）。</p>
+
+<figure>
+  <p class="chart-title">后端 Python 模块行数</p>
+  <p class="chart-note">共 7 693 行 / 19 个模块（另有 __init__.py 1 行）· 单一系列，条长即量级 · 悬停看职责</p>
+  <table class="bars">
+    <thead><tr><th>模块</th><th>规模</th><th>行数</th></tr></thead>
+    <tbody>
+      <tr class="hoverable"><td class="name">chan_structure.py</td><td class="track"><div class="bar" style="width:100%" data-tip="缠论层级引擎：中枢构建 · 候选选择 · 关系分类 · 晋级 · 校验"></div></td><td class="val">2 051</td></tr>
+      <tr class="hoverable"><td class="name">store.py</td><td class="track"><div class="bar" style="width:70.8%" data-tip="全部 DDL · 行情/结构/标注读写 · 迁移"></div></td><td class="val">1 453</td></tr>
+      <tr class="hoverable"><td class="name">main.py</td><td class="track"><div class="bar" style="width:45.6%" data-tip="FastAPI 装配 · 30 路由 · 三条读路径编排"></div></td><td class="val">935</td></tr>
+      <tr class="hoverable"><td class="name">intraday.py</td><td class="track"><div class="bar" style="width:29.8%" data-tip="实时刷新：会话状态机 · 周期收口时间 · provisional 预览"></div></td><td class="val">612</td></tr>
+      <tr class="hoverable"><td class="name">period_structure.py</td><td class="track"><div class="bar" style="width:24.4%" data-tip="周期编排：profile 决策 · 指纹 · run 缓存 · 分页投影"></div></td><td class="val">500</td></tr>
+      <tr class="hoverable"><td class="name">chan_expansion.py</td><td class="track"><div class="bar" style="width:18.6%" data-tip="笔原生 SegmentProof 构造（L1→L2 定界证据）"></div></td><td class="val">381</td></tr>
+      <tr class="hoverable"><td class="name">providers.py</td><td class="track"><div class="bar" style="width:18.5%" data-tip="BaoStock / 腾讯 / CSV 三数据源 + 交易日历 + 证券目录"></div></td><td class="val">379</td></tr>
+      <tr class="hoverable"><td class="name">engine.py</td><td class="track"><div class="bar" style="width:17.0%" data-tip="包含 → 分型 → 笔，纯函数 + dataclass"></div></td><td class="val">348</td></tr>
+      <tr class="hoverable"><td class="name">sync.py</td><td class="track"><div class="bar" style="width:10.5%" data-tip="后台定时同步：工作日 20:30 / 周六 18:00 / 每月 1 日 18:00"></div></td><td class="val">216</td></tr>
+      <tr class="hoverable"><td class="name">structure_display.py</td><td class="track"><div class="bar" style="width:9.4%" data-tip="展示投影：中枢显示目录 · 跨周期日线 L2 叠加"></div></td><td class="val">193</td></tr>
+      <tr class="hoverable"><td class="name">coverage.py</td><td class="track"><div class="bar" style="width:6.6%" data-tip="按交易日历校验完整性，产出 continuous_ranges"></div></td><td class="val">135</td></tr>
+      <tr class="hoverable"><td class="name">watchlist_quotes.py</td><td class="track"><div class="bar" style="width:4.8%" data-tip="左栏批量报价，仅内存缓存，不落 K 线"></div></td><td class="val">99</td></tr>
+      <tr class="hoverable"><td class="name">securities.py</td><td class="track"><div class="bar" style="width:4.5%" data-tip="证券目录刷新与检索（含别名）"></div></td><td class="val">93</td></tr>
+      <tr class="hoverable"><td class="name">agent.py</td><td class="track"><div class="bar" style="width:3.6%" data-tip="LLM 解释：只能引用已持久化 evidence，禁止创造走势/买卖点"></div></td><td class="val">74</td></tr>
+      <tr class="hoverable"><td class="name">indicators.py</td><td class="track"><div class="bar" style="width:3.4%" data-tip="MA / BOLL / MACD"></div></td><td class="val">70</td></tr>
+      <tr class="hoverable"><td class="name">periods.py</td><td class="track"><div class="bar" style="width:2.0%" data-tip="逻辑周期键 period_key 的唯一定义处"></div></td><td class="val">42</td></tr>
+      <tr class="hoverable"><td class="name">chan_direction.py</td><td class="track"><div class="bar" style="width:2.0%" data-tip="方向证据：突破上下文 / 离开回试的最早可用仲裁"></div></td><td class="val">40</td></tr>
+      <tr class="hoverable"><td class="name">models.py</td><td class="track"><div class="bar" style="width:1.9%" data-tip="Bar / Signal dataclass"></div></td><td class="val">39</td></tr>
+      <tr class="hoverable"><td class="name">rules.py</td><td class="track"><div class="bar" style="width:1.6%" data-tip="规则库加载 + 启动时强校验（28 条必需规则）"></div></td><td class="val">33</td></tr>
+    </tbody>
+  </table>
+  <figcaption>实测：<code>find . -name "*.py" | xargs wc -l</code></figcaption>
+</figure>
+
+<figure>
+  <p class="chart-title">前端源码模块行数（不含 .test.ts）</p>
+  <p class="chart-note">共 4 044 行 / 13 个模块 · 与上图共用同一量纲</p>
+  <table class="bars">
+    <thead><tr><th>模块</th><th>规模</th><th>行数</th></tr></thead>
+    <tbody>
+      <tr class="hoverable"><td class="name">App.tsx</td><td class="track"><div class="bar" style="width:100%" data-tip="页面主体：布局 · 状态 · 交互 · 请求编排（单文件）"></div></td><td class="val">2 190</td></tr>
+      <tr class="hoverable"><td class="name">chartBuilders.ts</td><td class="track"><div class="bar" style="width:44.7%" data-tip="ECharts option 构建 · 数据归一化"></div></td><td class="val">980</td></tr>
+      <tr class="hoverable"><td class="name">intradayRefresh.ts</td><td class="track"><div class="bar" style="width:9.2%" data-tip="轮询节奏 · 全量与增量合并"></div></td><td class="val">202</td></tr>
+      <tr class="hoverable"><td class="name">chartInteractions.ts</td><td class="track"><div class="bar" style="width:6.9%" data-tip="缩放/平移/手势归属仲裁（pan vs draw vs structure）"></div></td><td class="val">151</td></tr>
+      <tr class="hoverable"><td class="name">structureColors.ts</td><td class="track"><div class="bar" style="width:5.0%" data-tip="级别配色（注释明确：配色不代表真实周月级别）"></div></td><td class="val">110</td></tr>
+      <tr class="hoverable"><td class="name">watchlistQuotes.ts</td><td class="track"><div class="bar" style="width:4.6%" data-tip="左栏报价轮询与合并"></div></td><td class="val">100</td></tr>
+      <tr class="hoverable"><td class="name">types.ts</td><td class="track"><div class="bar" style="width:3.8%" data-tip="前后端契约类型——接口的实际事实源"></div></td><td class="val">83</td></tr>
+      <tr class="hoverable"><td class="name">centerDisplay.ts</td><td class="track"><div class="bar" style="width:3.0%" data-tip="中枢显示集合选择 · 父子标签"></div></td><td class="val">66</td></tr>
+      <tr class="hoverable"><td class="name">dailyL2Overlay.ts</td><td class="track"><div class="bar" style="width:2.8%" data-tip="周月图上的日线 L2 投影渲染"></div></td><td class="val">62</td></tr>
+      <tr class="hoverable"><td class="name">intradayTimeline.ts</td><td class="track"><div class="bar" style="width:1.8%" data-tip="09:30–15:00 固定时间轴，午休折叠为同一坐标"></div></td><td class="val">39</td></tr>
+      <tr class="hoverable"><td class="name">watchlistGroupOrder.ts</td><td class="track"><div class="bar" style="width:1.7%" data-tip="分组拖拽排序（含系统分组混合排序）"></div></td><td class="val">37</td></tr>
+      <tr class="hoverable"><td class="name">marketFormatters.ts</td><td class="track"><div class="bar" style="width:0.9%" data-tip="价格/成交量/指标数值格式化"></div></td><td class="val">19</td></tr>
+      <tr class="hoverable"><td class="name">main.tsx</td><td class="track"><div class="bar" style="width:0.2%" data-tip="挂载入口"></div></td><td class="val">5</td></tr>
+    </tbody>
+  </table>
+  <figcaption>另有 11 个 .test.ts 共 1 716 行，覆盖 10 个纯函数模块</figcaption>
+</figure>
+
+<h2><span class="num">08</span>目录职责</h2>
+<div class="scroll">
+<table class="grid">
+  <thead><tr><th style="width:18%">目录</th><th>职责</th><th style="width:32%">值得注意的地方</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">app/</td><td>后端全部逻辑，19 个模块，无子包</td><td>引擎（纯函数）与服务（有状态）边界清晰，<code>periods.py</code> 是 period_key 的唯一定义处</td></tr>
+    <tr><td class="mono">knowledge/</td><td>规则契约：yaml（运行时校验）+ md（人读版）</td><td><strong>参与计算器指纹</strong>——改规则文本即触发全量重算</td></tr>
+    <tr><td class="mono">web/src/</td><td>React + ECharts 前端，25 个文件</td><td><code>types.ts</code> 83 行高密度定义，是接口的实际契约</td></tr>
+    <tr><td class="mono">scripts/</td><td>4 个运维脚本：审计 / 重算 / 两个迁移</td><td>全部 dry-run 优先，<code>--execute</code> 前复制 db/wal/shm 三件套</td></tr>
+    <tr><td class="mono">tests/</td><td>29 个后端测试文件</td><td>按规则版本命名：<code>test_v31_candidate_ownership</code>、<code>test_z_wave_expansion</code>、<code>test_reference_profile</code></td></tr>
+    <tr><td class="mono">docs/plans/</td><td>57 份日期命名方案文档</td><td>等于一份完整重构编年史（V25→V26→V27→V29→V30→V31）</td></tr>
+    <tr><td class="mono">docs/reports/</td><td>每次大版本晋级后的验证报告</td><td>与 plans 配对，形成「方案 → 实现 → 验证」闭环</td></tr>
+    <tr><td class="mono">data/</td><td>SQLite 库 + 备份 + 导入 CSV</td><td>不入 Git；<code>backups/</code> 里有带时间戳的迁移前快照</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="card">
+  <p style="margin:0"><b>目录设计上最强的一点：</b><code>docs/plans/</code> 与 <code>tests/</code> 的命名直接绑定规则版本。这条「每次规则变更都留方案 + 验证报告 + 版本化测试」的纪律，是这个项目能在两周内完成 6 次结构引擎重构而不失控的实际原因——而不是某个技术选型。</p>
+</div>
+
+<h2><span class="num">09</span>评价与风险</h2>
+<p class="lede">按证据强度分层。颜色只是分层提示，每条都带图标与文字标签。</p>
+
+<div class="legend-band">
+  <span class="li"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#0ca30c" stroke-width="1.6"/><path d="M4.7 8.2l2.1 2.1 4.5-4.5" stroke="#0ca30c" stroke-width="1.8" stroke-linecap="round"/></svg> 已核实 · 本轮工具验证</span>
+  <span class="li"><svg class="ico" viewBox="0 0 16 16" fill="none"><path d="M8 1.8l6.2 11.4H1.8L8 1.8z" stroke="#fab219" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 6v3.2" stroke="#fab219" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.4" r=".95" fill="#fab219"/></svg> 我的判断 · 含反方</span>
+  <span class="li"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#2a78d6" stroke-width="1.6"/><path d="M6 6.1c0-1.1.9-1.9 2-1.9s2 .8 2 1.9c0 1.4-2 1.4-2 2.9" stroke="#2a78d6" stroke-width="1.7" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".95" fill="#2a78d6"/></svg> 待你拍板 · 不替你决策</span>
+</div>
+
+<h3><span class="counter">6 项</span> 已核实</h3>
+
+<div class="find verified">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#0ca30c" stroke-width="1.6"/><path d="M4.7 8.2l2.1 2.1 4.5-4.5" stroke="#0ca30c" stroke-width="1.8" stroke-linecap="round"/></svg>已核实 · 全局锁串行化所有 DB 访问</div>
+  <p>单 sqlite3 连接 + 全局 <code>RLock</code>。FastAPI 同步 <code>def</code> 路由跑在线程池，因此并发请求在这把锁上排队；<code>chart_data</code> 更是整段业务逻辑持锁，锁内含两次可能触发完整重算的 <code>ensure</code>。</p>
+  <div class="src">store.py:22-26 · main.py:711-723</div>
+</div>
+
+<div class="find verified">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#0ca30c" stroke-width="1.6"/><path d="M4.7 8.2l2.1 2.1 4.5-4.5" stroke="#0ca30c" stroke-width="1.8" stroke-linecap="round"/></svg>已核实 · 启动时无条件全表扫描 market_bars</div>
+  <p><code>_initialize_period_keys</code> 执行 <code>SELECT id,timeframe,trade_date,period_key FROM market_bars</code>（无 WHERE），逐行比对 period_key。当前库 417 MB。</p>
+  <div class="src">store.py:187-214</div>
+</div>
+
+<div class="find verified">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#0ca30c" stroke-width="1.6"/><path d="M4.7 8.2l2.1 2.1 4.5-4.5" stroke="#0ca30c" stroke-width="1.8" stroke-linecap="round"/></svg>已核实 · 成功 run 永不自动回收</div>
+  <p>代码只清理多余的 failed run，注释明写 retention 是显式维护操作。13 张 run 子表随重算次数单调增长，这是 417 MB 的主要来源之一，而 <code>scripts/</code> 里目前没有 retention 脚本。</p>
+  <div class="src">store.py:1297-1316</div>
+</div>
+
+<div class="find verified">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#0ca30c" stroke-width="1.6"/><path d="M4.7 8.2l2.1 2.1 4.5-4.5" stroke="#0ca30c" stroke-width="1.8" stroke-linecap="round"/></svg>已核实 · rules.py 在 import 期读文件并可能抛错</div>
+  <p>模块级 <code>RULEBOOK = load_rulebook()</code>。任何 import <code>app.rules</code> 的路径（含 pytest 收集）都依赖 <code>knowledge/</code> 可读且版本匹配，否则 RuntimeError。</p>
+  <div class="src">rules.py:38</div>
+</div>
+
+<div class="find verified">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#0ca30c" stroke-width="1.6"/><path d="M4.7 8.2l2.1 2.1 4.5-4.5" stroke="#0ca30c" stroke-width="1.8" stroke-linecap="round"/></svg>已核实 · 两个超大单文件</div>
+  <p><code>app/chan_structure.py</code> 2 051 行、<code>web/src/App.tsx</code> 2 190 行。</p>
+  <div class="src">wc -l 实测</div>
+</div>
+
+<div class="find verified">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#0ca30c" stroke-width="1.6"/><path d="M4.7 8.2l2.1 2.1 4.5-4.5" stroke="#0ca30c" stroke-width="1.8" stroke-linecap="round"/></svg>已核实 · 两条读路径的响应组装逻辑并行存在</div>
+  <p>指标计算、报价拼装、live 行合并在 <code>chart_realtime</code> 与 <code>chart_data</code> 两处各写一遍。</p>
+  <div class="src">main.py:533-650 · main.py:651-770</div>
+</div>
+
+<h3><span class="counter">5 项</span> 我的判断</h3>
+
+<div class="find judged">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><path d="M8 1.8l6.2 11.4H1.8L8 1.8z" stroke="#fab219" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 6v3.2" stroke="#fab219" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.4" r=".95" fill="#fab219"/></svg>我的判断 a · 全局锁 + 持锁重算是当前最可能的性能天花板</div>
+  <p>一次 <code>ensure</code> 触发的 <code>analyze_period_ranges</code> 是 CPU 密集全量重算，持锁期间所有其他请求（含左栏报价、切换股票）被阻塞。</p>
+  <div class="contra"><b>反方：</b>这是单用户本地工作台。<code>_snapshot_cache</code> 已按 run_id 缓存快照，命中时不落库不重算；<code>chart_realtime</code> 的增量设计正是为此，<code>docs/plans/2026-09-23-kline-realtime-performance.md</code> 的存在支持「已知取舍」这个解读。<b>建议先量 Server-Timing（main.py:521 已埋点），再决定是否拆读写连接。</b></div>
+</div>
+
+<div class="find judged">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><path d="M8 1.8l6.2 11.4H1.8L8 1.8z" stroke="#fab219" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 6v3.2" stroke="#fab219" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.4" r=".95" fill="#fab219"/></svg>我的判断 b · 启动全表扫描随数据量线性恶化</div>
+  <p>可改为建好唯一索引后只扫 <code>period_key IS NULL</code>，或用一张 <code>schema_migrations</code> 表记录完成状态。</p>
+  <div class="contra"><b>反方：</b>作者显然知道这是迁移代码——docstring 明写「Filling the key is lossless」，且刻意不做删除。作为一次性迁移它是正确的，缺的只是<strong>完成标记</strong>。<b>这是我认为最值得修且风险最低的一条。</b></div>
+</div>
+
+<div class="find judged">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><path d="M8 1.8l6.2 11.4H1.8L8 1.8z" stroke="#fab219" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 6v3.2" stroke="#fab219" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.4" r=".95" fill="#fab219"/></svg>我的判断 c · 结构 run 需要保留策略，而不是「该删」</div>
+  <p>代码注释已把回收定义为 explicit maintenance operation，说明是留位而非遗漏。缺的是那个入口：可配置保留窗口 + 手工回收脚本。</p>
+</div>
+
+<div class="find judged">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><path d="M8 1.8l6.2 11.4H1.8L8 1.8z" stroke="#fab219" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 6v3.2" stroke="#fab219" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.4" r=".95" fill="#fab219"/></svg>我的判断 d · chan_structure.py 2 051 行不等于该拆，App.tsx 2 190 行该拆</div>
+  <p>前者内聚的是同一套不变式（所有权、前缀稳定、修订链），拆开容易让不变式跨文件漂移——<code>chan_expansion.py</code> 和 <code>chan_direction.py</code> 已经是按「证据种类」切出的合理边界。</p>
+  <div class="contra"><b>相比之下：</b><code>App.tsx</code> 的拆分收益更明确，因为周边已有 10 个纯函数模块 + 对应测试，说明拆分路径已经验证可行。</div>
+</div>
+
+<div class="find judged">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><path d="M8 1.8l6.2 11.4H1.8L8 1.8z" stroke="#fab219" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 6v3.2" stroke="#fab219" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.4" r=".95" fill="#fab219"/></svg>我的判断 e · 这套架构最强的部分是可审计性，不是算法</div>
+  <p>三重指纹 + run 快照 + 修订链 + 证据时间分离 + dry-run 迁移，这套组合让「结构算错了」可定位、可回滚、可复现。对缠论这种<strong>规则本身存在解释分歧</strong>的领域，这个选择比追求算法先进更正确。</p>
+</div>
+
+<h3><span class="counter">4 项</span> 待你拍板</h3>
+
+<div class="find open">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#2a78d6" stroke-width="1.6"/><path d="M6 6.1c0-1.1.9-1.9 2-1.9s2 .8 2 1.9c0 1.4-2 1.4-2 2.9" stroke="#2a78d6" stroke-width="1.7" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".95" fill="#2a78d6"/></svg>待拍板 1 · on_event 是否迁移到 lifespan</div>
+  <p><code>main.py:55,76</code> 用的是 <code>@app.on_event</code>。我<strong>未核实</strong>本项目 FastAPI 版本对该 API 的弃用状态，需要先 <code>pip show fastapi</code> 确认再讨论。</p>
+</div>
+
+<div class="find open">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#2a78d6" stroke-width="1.6"/><path d="M6 6.1c0-1.1.9-1.9 2-1.9s2 .8 2 1.9c0 1.4-2 1.4-2 2.9" stroke="#2a78d6" stroke-width="1.7" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".95" fill="#2a78d6"/></svg>待拍板 2 · 两条读路径是否合并组装层</div>
+  <p>收益是消除双份逻辑；风险是把已验证的增量路径和全量路径重新耦合。这是架构取舍，我不替你决定。</p>
+</div>
+
+<div class="find open">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#2a78d6" stroke-width="1.6"/><path d="M6 6.1c0-1.1.9-1.9 2-1.9s2 .8 2 1.9c0 1.4-2 1.4-2 2.9" stroke="#2a78d6" stroke-width="1.7" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".95" fill="#2a78d6"/></svg>待拍板 3 · run 保留窗口取多少</div>
+  <p>按数量？按天数？按 definition_version 只留最新两代？这依赖你回溯审计的实际习惯。</p>
+</div>
+
+<div class="find open">
+  <div class="fh"><svg class="ico" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#2a78d6" stroke-width="1.6"/><path d="M6 6.1c0-1.1.9-1.9 2-1.9s2 .8 2 1.9c0 1.4-2 1.4-2 2.9" stroke="#2a78d6" stroke-width="1.7" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".95" fill="#2a78d6"/></svg>待拍板 4 · 周月是否长期维持 pen_centers_only</div>
+  <p>当前靠日线 L2 投影补齐。这是产品决策而非技术限制。</p>
+</div>
+
+<h2><span class="num">10</span>可直接执行的核实命令</h2>
+<pre># 结构 run 数量与行情行数
+sqlite3 data/chant_agent.db "SELECT timeframe,status,COUNT(*) FROM chan_structure_runs GROUP BY 1,2;"
+sqlite3 data/chant_agent.db "SELECT COUNT(*) FROM market_bars;"
+
+# 全部表清单
+sqlite3 data/chant_agent.db "SELECT name FROM sqlite_master WHERE type='table';"
+
+# 接口耗时分解（Server-Timing 已埋点于 main.py:521）
+curl -s -D- -o/dev/null 'http://127.0.0.1:8765/api/chart-data/000001?timeframe=d' | grep -i server-timing
+
+# 只读结构审计
+uv run python scripts/audit_structure.py --help</pre>
+
+<footer>
+  事实源：<code>docs/reports/2026-09-23-architecture-analysis.md</code> · 本页为其视觉版，数据与结论以 md 为准<br>
+  配色取自已验证调色板（sequential 单 hue + 保留状态色），浅色/深色两套均通过对比度与色带校验；状态色一律带图标与文字标签，不靠颜色单独承载含义。
+</footer>
+
+</div>
+</body>
+</html>

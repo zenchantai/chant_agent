@@ -11,7 +11,7 @@ from app.period_structure import PeriodStructureService, analyze_period
 from app.rules import PERIOD_DEFINITION_VERSION
 from app.store import Store
 from app.structure_display import center_display_catalog, project_daily_l2
-from tests.chan_fixtures import pens_from_prices
+from tests.chan_fixtures import pens_from_prices, legacy_expansion_snapshot
 
 
 def daily_snapshot():
@@ -21,7 +21,7 @@ def daily_snapshot():
                  "definition_version": PERIOD_DEFINITION_VERSION, "calculator_fingerprint": "test",
                  "market_version": "daily-market", "structure_version": "daily-structure",
                  "source_cutoff": "2026-01-12", "persisted": True, "preview": False},
-        "structure": {"pens": pens, **build_structure_hierarchy(pens)},
+        "structure": legacy_expansion_snapshot(),
     }
 
 
@@ -124,8 +124,9 @@ def test_reference_formal_and_preview_have_the_same_calculation_profile(tmp_path
     for snapshot in (formal, preview, store.load_chan_structure(formal["meta"]["run_id"])):
         assert snapshot["meta"]["calculation_profile"] == "pen_centers_only"
         assert snapshot["meta"]["max_level"] <= 1
-        assert all(snapshot["structure"][name] == [] for name in ("movements", "points", "relations"))
-    assert analyze_period(rows, "000001", "d")["meta"]["calculation_profile"] == "full"
+        assert all(snapshot["structure"][name] == [] for name in ("promotion_candidates", "segment_proofs"))
+        assert "movements" not in snapshot["structure"] and "points" not in snapshot["structure"]
+    assert analyze_period(rows, "000001", "d")["meta"]["calculation_profile"] == "pen_centers_l2"
 
 
 def api_client(tmp_path, monkeypatch):
@@ -157,7 +158,7 @@ def test_api_overlay_is_independent_of_native_level_filter_and_version(tmp_path,
     assert store.db.execute("SELECT COUNT(*) FROM chan_structure_runs WHERE timeframe='d'").fetchone()[0] == 0
 
 
-def test_api_refresh_failure_preserves_formal_source_and_preview_does_not_replace_it(tmp_path, monkeypatch):
+def test_api_refresh_failure_preserves_formal_source_without_recalculating_preview(tmp_path, monkeypatch):
     client, _, _, intraday, _ = api_client(tmp_path, monkeypatch)
     called = []
     def refresh(symbol, period, adjustflag, include_quote=False):
@@ -170,8 +171,9 @@ def test_api_refresh_failure_preserves_formal_source_and_preview_does_not_replac
     response = client.get("/api/chart-data/000001?timeframe=m&refresh=true")
     assert response.status_code == 200
     payload = response.json()
-    assert called == ["m", "d"]
-    assert payload["meta"]["preview"] is True
+    assert called == ["d", "m"]
+    assert payload["meta"]["preview"] is False
+    assert payload["meta"]["persisted"] is True
     assert payload["meta"]["calculation_profile"] == "pen_centers_only"
     assert payload["overlays"]["daily_l2"]["status"] == "stale"
     assert payload["overlays"]["daily_l2"]["source"]["structure_version"] == "daily-structure"

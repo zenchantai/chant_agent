@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { advanceSession, mergeIntradayData, refreshDelay, startIntradayRefresh } from "./intradayRefresh";
-import type { ChartData, IntradayRefresh } from "./types";
+import { advanceSession, mergeIntradayData, mergeRealtimeData, refreshDelay, startIntradayRefresh } from "./intradayRefresh";
+import type { ChartData, ChartRealtimeResponse, IntradayRefresh } from "./types";
 
 function state(time = "10:00:00", phase: IntradayRefresh["phase"] = "trading", next = "11:30:00"): IntradayRefresh {
   return { server_time: `2026-09-16T${time}+08:00`, phase,
@@ -160,7 +160,7 @@ describe("分时刷新调度", () => {
 describe("静默行情合并", () => {
   const data = (symbol: string, close: number): ChartData => ({
     symbol, timeframe: "1", adjustflag: "2", bars: [{ trade_date: "2026-09-16 10:00:00", open: 10, high: 12, low: 9, close, volume: 10, amount: 0 }],
-    pens: [], centers: [], center_revisions: [], movements: [], movement_revisions: [], components: [], points: [], point_revisions: [], relations: [], issues: [], levels: [], unassigned_by_level: {}, center_levels: [], movement_levels: [],
+    pens: [], centers: [], center_revisions: [], components: [], promotion_candidates: [], promotion_candidate_revisions: [], relations: [], issues: [], levels: [], unassigned_by_level: {}, center_levels: [],
     drawings: [], drawings_version: "", indicators: { macd: [] }, has_more: false, available: true,
     definition_version: "test", calculator_fingerprint: "test", structure_version: "", active_structure_level: 1, max_available_center_level: 0, intraday_refresh: state(),
   });
@@ -193,5 +193,49 @@ describe("静默行情合并", () => {
     const fresh = data("000001", 11);
     fresh.bars[0].trade_date = "2026-09-17 09:30:00";
     expect(mergeIntradayData(current, fresh).bars).toEqual(fresh.bars);
+  });
+
+  it("增量刷新保留历史分页和未变结构引用", () => {
+    const current = { ...data("000001", 10), timeframe: "5", has_more: true, next_before: "2026-01-01",
+      market_version: "market-1", structure_version: "structure-1" };
+    const pens = current.pens;
+    const fresh = {
+      symbol: "000001", timeframe: "5", adjustflag: "2", market_version: "market-2",
+      formal_market_version: "formal-1", structure_version: "structure-1", structure_changed: false,
+      bar_upserts: [{ ...current.bars[0], close: 11 }],
+      indicator_upserts: { macd: [], ma: [], boll: [] },
+      intraday_refresh: state(), structure_update: null,
+    } as ChartRealtimeResponse;
+    const merged = mergeRealtimeData(current, fresh)!;
+    expect(merged.bars[0].close).toBe(11);
+    expect(merged.has_more).toBe(true);
+    expect(merged.next_before).toBe("2026-01-01");
+    expect(merged.pens).toBe(pens);
+  });
+
+  it("结构更新从 replace_from 起替换，保留不受影响的前缀", () => {
+    const oldPen = { id: "old", kind: "pen" as const, ordinal: 0, level: 1, status: "confirmed",
+      start_date: "2026-01-01", end_date: "2026-01-02", start_price: 1, end_price: 2 };
+    const replacedPen = { ...oldPen, id: "tail", ordinal: 1, start_date: "2026-01-03", end_date: "2026-01-04" };
+    const newPen = { ...replacedPen, id: "new", end_price: 3 };
+    const current = { ...data("000001", 10), timeframe: "5", pens: [oldPen, replacedPen],
+      structure_version: "structure-1" };
+    const fresh = {
+      symbol: "000001", timeframe: "5", adjustflag: "2", market_version: "market-2",
+      formal_market_version: "formal-2", structure_version: "structure-2", structure_changed: true,
+      bar_upserts: [], indicator_upserts: { macd: [], ma: [], boll: [] }, intraday_refresh: state(),
+      structure_update: {
+        replace_from: "2026-01-03", removed_ids: { pens: ["tail"] },
+        meta: { structure_version: "structure-2", run_id: 2, max_level: 1 },
+        structure: { pens: [newPen], components: [], centers: [], center_revisions: [],
+          center_candidates: [], center_candidate_revisions: [], segment_proofs: [], segment_proof_revisions: [],
+          promotion_candidates: [], promotion_candidate_revisions: [], relations: [], issues: [], levels: [1],
+          unassigned_by_level: {} },
+      },
+    } as ChartRealtimeResponse;
+    const merged = mergeRealtimeData(current, fresh)!;
+    expect(merged.pens.map((item) => item.id)).toEqual(["old", "new"]);
+    expect(merged.structure_version).toBe("structure-2");
+    expect(merged.run_id).toBe(2);
   });
 });

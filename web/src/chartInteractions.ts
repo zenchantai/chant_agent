@@ -40,6 +40,15 @@ export const rebaseChartZoom = (zoom: ChartZoom, previous: string[], dates: stri
     : zoom;
 };
 
+export const panChartZoom = (zoom: ChartZoom, dragPixels: number, chartWidth: number): ChartZoom => {
+  if (!Number.isFinite(dragPixels) || !Number.isFinite(chartWidth) || chartWidth <= 0) return zoom;
+  const window = Math.max(0, Math.min(100, zoom.end - zoom.start));
+  if (window >= 100) return { start: 0, end: 100 };
+  const shiftedStart = zoom.start - dragPixels / chartWidth * 100;
+  const start = Math.max(0, Math.min(100 - window, shiftedStart));
+  return { start, end: start + window };
+};
+
 export const gestureOwner = (drawingTool: boolean, drawingHit: boolean, structureHit: boolean): GestureOwner =>
   drawingTool ? "draw" : drawingHit ? "drawing" : structureHit ? "structure" : "pan";
 
@@ -96,6 +105,7 @@ export const bindChartGestures = (element: HTMLElement, gesture: ChartGesture, c
     const dragging = gesture.move(event);
     if (active.owner === "pan") {
       element.classList.toggle("is-panning", dragging);
+      if (dragging) callbacks().move(event);
     } else {
       stopEditingEvent(event);
       if (dragging) callbacks().move(event);

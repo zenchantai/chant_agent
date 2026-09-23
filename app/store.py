@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .periods import period_row_key
+
 
 MARKET_TZ = ZoneInfo("Asia/Shanghai")
-MARKET_BAR_FIELDS = "trade_date,open,high,low,close,volume,amount,source,snapshot_id,source_revision,adjust_factor,is_suspended,limit_up,limit_down"
+MARKET_BAR_FIELDS = "trade_date,period_key,open,high,low,close,volume,amount,source,snapshot_id,source_revision,adjust_factor,is_suspended,limit_up,limit_down"
 
 
 class Store:
@@ -34,7 +36,7 @@ class Store:
             self.db.execute("PRAGMA busy_timeout=5000")
             self.db.execute("""CREATE TABLE IF NOT EXISTS market_bars (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
-                trade_date TEXT NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL,
+                trade_date TEXT NOT NULL, period_key TEXT, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL,
                 close REAL NOT NULL, volume REAL NOT NULL, amount REAL DEFAULT 0, adjustflag TEXT NOT NULL,
                 UNIQUE(symbol,timeframe,trade_date,adjustflag))""")
             self.db.execute("""CREATE TABLE IF NOT EXISTS stock_pool (
@@ -72,6 +74,7 @@ class Store:
                 expected_30m_count INTEGER, PRIMARY KEY(exchange, trade_date))""")
             market_columns = {row[1] for row in self.db.execute("PRAGMA table_info(market_bars)")}
             for name, definition in {
+                "period_key": "TEXT",
                 "source": "TEXT NOT NULL DEFAULT 'baostock'",
                 "snapshot_id": "TEXT NOT NULL DEFAULT ''",
                 "source_revision": "TEXT NOT NULL DEFAULT ''",
@@ -81,7 +84,9 @@ class Store:
             }.items():
                 if name not in market_columns:
                     self.db.execute(f"ALTER TABLE market_bars ADD COLUMN {name} {definition}")
+            self._initialize_period_keys()
             self._initialize_daily_confirmations()
+            self._initialize_period_confirmations()
             self.db.execute("""CREATE TABLE IF NOT EXISTS chan_structure_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL, timeframe TEXT NOT NULL, adjustflag TEXT NOT NULL,
@@ -126,7 +131,7 @@ class Store:
                 status TEXT NOT NULL, active INTEGER NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
                 zd REAL NOT NULL, zg REAL NOT NULL, dd REAL NOT NULL, gg REAL NOT NULL,
                 entry_direction TEXT, core_formation_pattern TEXT, departure_direction TEXT,
-                owner_movement_id TEXT, evidence_json TEXT NOT NULL DEFAULT '{}',
+                evidence_json TEXT NOT NULL DEFAULT '{}',
                 PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no),
                 FOREIGN KEY(run_id,family_id) REFERENCES chan_center_families(run_id,id) ON DELETE CASCADE)""")
             self.db.execute("""CREATE TABLE IF NOT EXISTS chan_center_units (
@@ -136,45 +141,17 @@ class Store:
                 FOREIGN KEY(run_id,center_revision_id) REFERENCES chan_center_revisions(run_id,id) ON DELETE CASCADE)""")
             self.db.execute("""CREATE INDEX IF NOT EXISTS idx_chan_core_owner
                 ON chan_center_units(run_id,unit_kind,unit_id) WHERE role='core'""")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_movement_families (
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_center_candidates (
                 run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
-                id TEXT NOT NULL, current_revision_id TEXT NOT NULL, base_level INTEGER NOT NULL,
-                current_level INTEGER NOT NULL, status TEXT NOT NULL,
-                PRIMARY KEY(run_id,id))""")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_movement_revisions (
-                run_id INTEGER NOT NULL, id TEXT NOT NULL, family_id TEXT NOT NULL,
-                revision_no INTEGER NOT NULL, level INTEGER NOT NULL, status TEXT NOT NULL,
-                classification TEXT, direction TEXT NOT NULL, active INTEGER NOT NULL,
-                start_date TEXT NOT NULL, end_date TEXT NOT NULL, start_price REAL NOT NULL, end_price REAL NOT NULL,
-                confirmed_at TEXT, recursive_eligible INTEGER NOT NULL,
-                termination_reason TEXT NOT NULL, evidence_json TEXT NOT NULL DEFAULT '{}',
-                PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no),
-                FOREIGN KEY(run_id,family_id) REFERENCES chan_movement_families(run_id,id) ON DELETE CASCADE)""")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_movement_units (
-                run_id INTEGER NOT NULL, movement_revision_id TEXT NOT NULL, unit_kind TEXT NOT NULL,
-                unit_id TEXT NOT NULL, role TEXT NOT NULL, ordinal INTEGER NOT NULL,
-                PRIMARY KEY(run_id,movement_revision_id,role,ordinal),
-                FOREIGN KEY(run_id,movement_revision_id) REFERENCES chan_movement_revisions(run_id,id) ON DELETE CASCADE)""")
-            self.db.execute("""CREATE INDEX IF NOT EXISTS idx_chan_movement_unit_owner
-                ON chan_movement_units(run_id,unit_kind,unit_id) WHERE role='source'""")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_movement_centers (
-                run_id INTEGER NOT NULL, movement_revision_id TEXT NOT NULL,
-                center_family_id TEXT NOT NULL, center_revision_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
-                PRIMARY KEY(run_id,movement_revision_id,ordinal),
-                FOREIGN KEY(run_id,movement_revision_id) REFERENCES chan_movement_revisions(run_id,id) ON DELETE CASCADE)""")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_point_families (
-                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
-                id TEXT NOT NULL, current_revision_id TEXT NOT NULL, status TEXT NOT NULL,
-                PRIMARY KEY(run_id,id))""")
-            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_point_revisions (
-                run_id INTEGER NOT NULL, id TEXT NOT NULL, family_id TEXT NOT NULL,
-                revision_no INTEGER NOT NULL, level INTEGER NOT NULL, point_type TEXT NOT NULL,
-                status TEXT NOT NULL, active INTEGER NOT NULL, point_date TEXT NOT NULL, point_price REAL NOT NULL,
-                confirmed_at TEXT, source_unit_id TEXT NOT NULL, center_family_id TEXT NOT NULL,
-                center_revision_id TEXT NOT NULL, movement_family_id TEXT, invalidated_reason TEXT,
-                evidence_json TEXT NOT NULL DEFAULT '{}',
-                PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no),
-                FOREIGN KEY(run_id,family_id) REFERENCES chan_point_families(run_id,id) ON DELETE CASCADE)""")
+                id TEXT NOT NULL, family_id TEXT NOT NULL, revision_no INTEGER NOT NULL,
+                previous_revision_id TEXT, active INTEGER NOT NULL, level INTEGER NOT NULL,
+                stream_id TEXT NOT NULL, source_kind TEXT NOT NULL, status TEXT NOT NULL,
+                direction TEXT, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+                zd REAL, zg REAL, observed_at TEXT NOT NULL, evidence_available_at TEXT NOT NULL,
+                rejection_code TEXT, evidence_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no))""")
+            self.db.execute("""CREATE INDEX IF NOT EXISTS idx_chan_center_candidate_active
+                ON chan_center_candidates(run_id,level,stream_id,active)""")
             self.db.execute("""CREATE TABLE IF NOT EXISTS chan_relations (
                 run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
                 id TEXT NOT NULL, level INTEGER NOT NULL, relation_type TEXT NOT NULL,
@@ -185,7 +162,166 @@ class Store:
                 id TEXT NOT NULL, level INTEGER NOT NULL DEFAULT 0, issue_type TEXT NOT NULL,
                 start_date TEXT NOT NULL DEFAULT '', end_date TEXT NOT NULL DEFAULT '',
                 evidence_json TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(run_id,id))""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_promotion_candidates (
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                id TEXT NOT NULL, family_id TEXT NOT NULL, revision_no INTEGER NOT NULL,
+                active INTEGER NOT NULL, status TEXT NOT NULL, candidate_source TEXT NOT NULL,
+                child_level INTEGER NOT NULL, parent_level INTEGER NOT NULL,
+                start_date TEXT NOT NULL, end_date TEXT NOT NULL, observed_at TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no))""")
+            self.db.execute("""CREATE INDEX IF NOT EXISTS idx_chan_promotion_candidate_active
+                ON chan_promotion_candidates(run_id,family_id,active)""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS chan_segment_proofs (
+                run_id INTEGER NOT NULL REFERENCES chan_structure_runs(id) ON DELETE CASCADE,
+                id TEXT NOT NULL, family_id TEXT NOT NULL, revision_no INTEGER NOT NULL,
+                previous_revision_id TEXT, active INTEGER NOT NULL, level INTEGER NOT NULL,
+                source_kind TEXT NOT NULL, status TEXT NOT NULL, direction TEXT NOT NULL,
+                start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+                evidence_available_at TEXT NOT NULL, evidence_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(run_id,id), UNIQUE(run_id,family_id,revision_no))""")
+            self.db.execute("""CREATE INDEX IF NOT EXISTS idx_chan_segment_proof_active
+                ON chan_segment_proofs(run_id,family_id,active)""")
             self.db.commit()
+
+    def _initialize_period_keys(self) -> None:
+        """Backfill logical period identities without silently deleting history.
+
+        Legacy week/month providers can have more than one ``trade_date`` for the
+        same logical period.  Filling the key is lossless; removing those rows is
+        deliberately left to :meth:`canonicalize_period_bars`, whose caller must
+        first approve the exact deletion set.
+        """
+        self.db.execute("SAVEPOINT period_key_migration")
+        try:
+            rows = self.db.execute(
+                "SELECT id,timeframe,trade_date,period_key FROM market_bars"
+            ).fetchall()
+            updates = []
+            for row in rows:
+                key = period_row_key(dict(row), row["timeframe"])
+                if row["period_key"] != key:
+                    updates.append((key, row["id"]))
+            if updates:
+                self.db.executemany("UPDATE market_bars SET period_key=? WHERE id=?", updates)
+            if not self._duplicate_period_groups():
+                self._create_period_key_index()
+            self.db.execute("RELEASE SAVEPOINT period_key_migration")
+        except BaseException:
+            self.db.execute("ROLLBACK TO SAVEPOINT period_key_migration")
+            self.db.execute("RELEASE SAVEPOINT period_key_migration")
+            raise
+
+    def _duplicate_period_groups(self) -> list[sqlite3.Row]:
+        return self.db.execute("""SELECT symbol,timeframe,adjustflag,period_key,COUNT(*) AS row_count
+            FROM market_bars WHERE period_key IS NOT NULL
+            GROUP BY symbol,timeframe,adjustflag,period_key HAVING COUNT(*)>1
+            ORDER BY symbol,timeframe,adjustflag,period_key""").fetchall()
+
+    def _create_period_key_index(self) -> None:
+        self.db.execute("""CREATE UNIQUE INDEX IF NOT EXISTS uq_market_bars_period
+            ON market_bars(symbol,timeframe,adjustflag,period_key)""")
+
+    def _has_period_key_index(self) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_market_bars_period'"
+        ).fetchone() is not None
+
+    def period_key_migration_report(self) -> dict[str, Any]:
+        """Return the exact keep/delete set for a non-destructive migration review."""
+        with self._lock:
+            groups = []
+            delete_ids: list[int] = []
+            for duplicate in self._duplicate_period_groups():
+                rows = [dict(row) for row in self.db.execute("""SELECT * FROM market_bars
+                    WHERE symbol=? AND timeframe=? AND adjustflag=? AND period_key=?
+                    ORDER BY trade_date DESC,id DESC""", (
+                        duplicate["symbol"], duplicate["timeframe"],
+                        duplicate["adjustflag"], duplicate["period_key"],
+                    )).fetchall()]
+                keep, removed = rows[0], rows[1:]
+                removed_ids = [int(row["id"]) for row in removed]
+                delete_ids.extend(removed_ids)
+                groups.append({
+                    "symbol": duplicate["symbol"],
+                    "timeframe": duplicate["timeframe"],
+                    "adjustflag": duplicate["adjustflag"],
+                    "period_key": duplicate["period_key"],
+                    "keep_id": int(keep["id"]),
+                    "keep_trade_date": keep["trade_date"],
+                    "delete_ids": removed_ids,
+                    "delete_trade_dates": [row["trade_date"] for row in removed],
+                })
+            return {
+                "duplicate_group_count": len(groups),
+                "delete_row_count": len(delete_ids),
+                "delete_ids": sorted(delete_ids),
+                "groups": groups,
+                "unique_index_ready": not groups,
+            }
+
+    def canonicalize_period_bars(self, expected_delete_ids: list[int]) -> dict[str, Any]:
+        """Delete reviewed duplicate logical periods and enforce their uniqueness.
+
+        The exact ID list from :meth:`period_key_migration_report` is mandatory.
+        A stale or incomplete approval aborts before mutation, which makes the
+        method safe to call after an operator has taken the required DB backup.
+        For duplicate legacy week/month rows the latest ``trade_date`` (then
+        latest SQLite ID) is retained; callers that can rebuild from confirmed
+        daily bars should do so before invoking this fallback canonicalization.
+        """
+        expected = sorted({int(identifier) for identifier in expected_delete_ids})
+        with self._lock:
+            report = self.period_key_migration_report()
+            if expected != report["delete_ids"]:
+                raise ValueError("待删除周期行已变化，请重新执行 dry-run 并确认精确 ID")
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                affected = []
+                if expected:
+                    placeholders = ",".join("?" for _ in expected)
+                    affected = [tuple(row) for row in self.db.execute(f"""SELECT symbol,timeframe,adjustflag,period_key
+                        FROM market_bars WHERE id IN ({placeholders})""", expected).fetchall()]
+                if expected:
+                    self.db.execute(f"DELETE FROM market_bars WHERE id IN ({placeholders})", expected)
+                for symbol, timeframe, adjustflag, key in affected:
+                    survivor = self.db.execute("""SELECT * FROM market_bars
+                        WHERE symbol=? AND timeframe=? AND adjustflag=? AND period_key=?""",
+                        (symbol, timeframe, adjustflag, key)).fetchone()
+                    if not survivor:
+                        self.db.execute("""DELETE FROM period_confirmations
+                            WHERE symbol=? AND timeframe=? AND adjustflag=? AND period_key=?""",
+                            (symbol, timeframe, adjustflag, key))
+                    else:
+                        self.db.execute("""DELETE FROM period_confirmations
+                            WHERE symbol=? AND timeframe=? AND adjustflag=? AND period_key=?
+                            AND row_hash<>?""", (
+                            symbol, timeframe, adjustflag, key, self._daily_bar_hash(dict(survivor)),
+                        ))
+                self._create_period_key_index()
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
+            final_report = self.period_key_migration_report()
+            return {**final_report, "status": "success", "deleted_row_count": len(expected)}
+
+    def _initialize_period_confirmations(self) -> None:
+        self.db.execute("""CREATE TABLE IF NOT EXISTS period_confirmations (
+            symbol TEXT NOT NULL, timeframe TEXT NOT NULL, adjustflag TEXT NOT NULL,
+            period_key TEXT NOT NULL, row_hash TEXT NOT NULL, source_revision TEXT NOT NULL DEFAULT '',
+            request_started_at TEXT NOT NULL, fetched_at TEXT NOT NULL, confirmed_at TEXT NOT NULL,
+            PRIMARY KEY(symbol,timeframe,adjustflag,period_key))""")
+        # Keep the proven daily baseline available through the generic interface.
+        # INSERT OR IGNORE is important: newer request/fetch evidence must win.
+        self.db.execute("""INSERT OR IGNORE INTO period_confirmations
+            (symbol,timeframe,adjustflag,period_key,row_hash,source_revision,
+             request_started_at,fetched_at,confirmed_at)
+            SELECT c.symbol,'d',c.adjustflag,c.trade_date,c.row_hash,
+                   COALESCE(b.source_revision,''),c.confirmed_at,c.confirmed_at,c.confirmed_at
+            FROM daily_bar_confirmations c
+            LEFT JOIN market_bars b ON b.symbol=c.symbol AND b.timeframe='d'
+                 AND b.adjustflag=c.adjustflag AND b.period_key=c.trade_date""")
 
     def _initialize_daily_confirmations(self) -> None:
         # The table's existence marks this one-time migration as complete, so
@@ -662,6 +798,17 @@ class Store:
                 ON CONFLICT(symbol,adjustflag,trade_date) DO UPDATE SET
                 row_hash=excluded.row_hash,confirmed_at=excluded.confirmed_at""",
                 (symbol, adjustflag, day, candidate_hash, fetched_at.isoformat()))
+            self.db.execute("""INSERT INTO period_confirmations
+                (symbol,timeframe,adjustflag,period_key,row_hash,source_revision,
+                 request_started_at,fetched_at,confirmed_at) VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(symbol,timeframe,adjustflag,period_key) DO UPDATE SET
+                row_hash=excluded.row_hash,source_revision=excluded.source_revision,
+                request_started_at=excluded.request_started_at,fetched_at=excluded.fetched_at,
+                confirmed_at=excluded.confirmed_at""", (
+                symbol, "d", adjustflag, period_row_key(candidate, "d"), candidate_hash,
+                candidate.get("source_revision", ""), request_started_at.isoformat(),
+                fetched_at.isoformat(), fetched_at.isoformat(),
+            ))
         return changed
 
     def confirm_daily_bars(self, symbol: str, adjustflag: str, rows: list[dict[str, Any]],
@@ -681,6 +828,95 @@ class Store:
             except Exception:
                 self.db.rollback()
                 raise
+
+    def _confirm_period_rows(self, symbol: str, timeframe: str, adjustflag: str,
+                             rows: list[dict[str, Any]], fetched_at: datetime,
+                             request_started_at: datetime) -> list[str]:
+        """Confirm non-daily periods whose caller has already checked finalization."""
+        fetched_at = self._market_time(fetched_at)
+        request_started_at = self._market_time(request_started_at)
+        if fetched_at < request_started_at:
+            raise ValueError("周期确认的请求开始时间不能晚于响应时间")
+        changed = []
+        for candidate in rows:
+            key = candidate.get("period_key") or period_row_key(candidate, timeframe)
+            stored = self.db.execute("""SELECT * FROM market_bars
+                WHERE symbol=? AND timeframe=? AND adjustflag=? AND period_key=?""",
+                (symbol, timeframe, adjustflag, key)).fetchone()
+            candidate_hash = self._daily_bar_hash(candidate)
+            if not stored or self._daily_bar_hash(dict(stored)) != candidate_hash:
+                continue
+            previous = self.db.execute("""SELECT row_hash,request_started_at,fetched_at
+                FROM period_confirmations WHERE symbol=? AND timeframe=? AND adjustflag=? AND period_key=?""",
+                (symbol, timeframe, adjustflag, key)).fetchone()
+            if previous:
+                try:
+                    previous_started = self._market_time(previous["request_started_at"])
+                    previous_fetched = self._market_time(previous["fetched_at"])
+                except (TypeError, ValueError):
+                    previous_started = previous_fetched = datetime.min.replace(tzinfo=MARKET_TZ)
+                if request_started_at < previous_started or fetched_at < previous_fetched:
+                    continue
+                if previous["row_hash"] != candidate_hash:
+                    changed.append(key)
+            else:
+                changed.append(key)
+            self.db.execute("""INSERT INTO period_confirmations
+                (symbol,timeframe,adjustflag,period_key,row_hash,source_revision,
+                 request_started_at,fetched_at,confirmed_at) VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(symbol,timeframe,adjustflag,period_key) DO UPDATE SET
+                row_hash=excluded.row_hash,source_revision=excluded.source_revision,
+                request_started_at=excluded.request_started_at,fetched_at=excluded.fetched_at,
+                confirmed_at=excluded.confirmed_at""", (
+                symbol, timeframe, adjustflag, key, candidate_hash,
+                candidate.get("source_revision", ""), request_started_at.isoformat(),
+                fetched_at.isoformat(), fetched_at.isoformat(),
+            ))
+        return changed
+
+    def confirm_period_bars(self, symbol: str, timeframe: str, adjustflag: str,
+                            rows: list[dict[str, Any]], fetched_at: datetime,
+                            request_started_at: datetime | None = None) -> int:
+        """Persist finalization evidence for any logical period.
+
+        Daily confirmation retains its stricter close/calendar checks. For other
+        periods the caller must pass only rows whose exchange-period boundary has
+        already elapsed.
+        """
+        if timeframe == "d":
+            return self.confirm_daily_bars(symbol, adjustflag, rows, fetched_at, request_started_at)
+        with self._lock:
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                changed = self._confirm_period_rows(
+                    symbol, timeframe, adjustflag, rows, fetched_at,
+                    request_started_at or fetched_at,
+                )
+                self.db.commit()
+                return len(changed)
+            except Exception:
+                self.db.rollback()
+                raise
+
+    def confirmed_period_bars(self, symbol: str, timeframe: str, adjustflag: str = "2") -> list[dict[str, Any]]:
+        """Return rows with matching generic confirmation evidence."""
+        with self._lock:
+            rows = self.market_bars(symbol, timeframe, adjustflag, "0000-01-01")
+            proofs = {(row["period_key"]): dict(row) for row in self.db.execute("""SELECT *
+                FROM period_confirmations WHERE symbol=? AND timeframe=? AND adjustflag=?""",
+                (symbol, timeframe, adjustflag)).fetchall()}
+            now = self._market_time(self.clock())
+            result = []
+            for row in rows:
+                proof = proofs.get(row.get("period_key"))
+                if not proof or proof["row_hash"] != self._daily_bar_hash(row):
+                    continue
+                try:
+                    if self._market_time(proof["confirmed_at"]) <= now:
+                        result.append(row)
+                except (TypeError, ValueError):
+                    continue
+            return result
 
     def confirmed_daily_bars(self, symbol: str, adjustflag: str = "2") -> list[dict[str, Any]]:
         """Return full-history daily input with matching content and close evidence."""
@@ -710,39 +946,100 @@ class Store:
                                 *, fetched_at: datetime | None = None,
                                 request_started_at: datetime | None = None) -> tuple[int, str | None]:
         priority = {"tencent": 0, "baostock": 1, "api": 2, "csv": 3}
-        values = [(symbol, timeframe, row["trade_date"], row["open"], row["high"], row["low"], row["close"], row.get("volume", 0), row.get("amount", 0), adjustflag,
-                   row.get("source", source), row.get("snapshot_id", snapshot_id), row.get("source_revision", ""), row.get("adjust_factor", 1),
-                   int(bool(row.get("is_suspended", False))), row.get("limit_up"), row.get("limit_down")) for row in rows]
-        if not values:
+        prepared = [
+            {
+                **row,
+                "period_key": row.get("period_key") or period_row_key(row, timeframe),
+                "source": row.get("source", source),
+                "snapshot_id": row.get("snapshot_id", snapshot_id),
+            }
+            for row in rows
+        ]
+        if not prepared:
             return 0, None
         with self._lock:
-            start, end = min(row["trade_date"] for row in rows), max(row["trade_date"] for row in rows)
+            start = min(row["trade_date"] for row in prepared)
+            end = max(row["trade_date"] for row in prepared)
             existing_rows = self.db.execute("SELECT * FROM market_bars WHERE symbol=? AND timeframe=? AND adjustflag=? AND trade_date BETWEEN ? AND ?", (symbol, timeframe, adjustflag, start, end)).fetchall()
             existing = {row["trade_date"]: dict(row) for row in existing_rows}
+            existing_by_period = {row["period_key"]: dict(row) for row in self.db.execute(
+                "SELECT * FROM market_bars WHERE symbol=? AND timeframe=? AND adjustflag=? AND period_key IS NOT NULL",
+                (symbol, timeframe, adjustflag),
+            ).fetchall()}
             accepted = []
+            legacy_updates = []
             changed = []
-            for row, value in zip(rows, values):
-                old = existing.get(row["trade_date"])
-                new_source = row.get("source", source)
+            started = self._market_time(request_started_at) if request_started_at is not None else None
+            fetched = self._market_time(fetched_at) if fetched_at is not None else None
+            for row in prepared:
+                old = existing.get(row["trade_date"]) or existing_by_period.get(row["period_key"])
+                new_source = row["source"]
+                if started is not None:
+                    proof = self.db.execute("""SELECT request_started_at,fetched_at
+                        FROM period_confirmations WHERE symbol=? AND timeframe=? AND adjustflag=? AND period_key=?""",
+                        (symbol, timeframe, adjustflag, row["period_key"])).fetchone()
+                    if proof:
+                        try:
+                            if started < self._market_time(proof["request_started_at"]):
+                                continue
+                            if fetched is not None and fetched < self._market_time(proof["fetched_at"]):
+                                continue
+                        except (TypeError, ValueError):
+                            pass
                 if old and not allow_lower_priority and priority.get(new_source, 0) < priority.get(old.get("source", "baostock"), 0):
                     continue
                 new_prices = tuple(float(row.get(key, 0) or 0) for key in ("open", "high", "low", "close", "volume", "amount"))
                 old_prices = tuple(old[key] for key in ("open", "high", "low", "close", "volume", "amount")) if old else None
                 if old_prices != new_prices:
                     changed.append(row["trade_date"])
-                accepted.append(value)
+                values = (
+                    symbol, timeframe, row["trade_date"], row["period_key"],
+                    row["open"], row["high"], row["low"], row["close"],
+                    row.get("volume", 0), row.get("amount", 0), adjustflag,
+                    row["source"], row["snapshot_id"], row.get("source_revision", ""),
+                    row.get("adjust_factor", 1), int(bool(row.get("is_suspended", False))),
+                    row.get("limit_up"), row.get("limit_down"),
+                )
+                if old and not self._has_period_key_index() and old.get("period_key") == row["period_key"]:
+                    legacy_updates.append((*values[2:], old["id"]))
+                else:
+                    accepted.append(values)
+                # Later items in one provider response must use the same logical
+                # identity as earlier items, too.
+                existing_by_period[row["period_key"]] = {
+                    **row,
+                    "volume": row.get("volume", 0),
+                    "amount": row.get("amount", 0),
+                }
             try:
                 self.db.execute("BEGIN IMMEDIATE")
-                self.db.executemany("""INSERT INTO market_bars(symbol,timeframe,trade_date,open,high,low,close,volume,amount,adjustflag,source,snapshot_id,source_revision,adjust_factor,is_suspended,limit_up,limit_down)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,trade_date,adjustflag) DO UPDATE SET
+                conflict = ("symbol,timeframe,adjustflag,period_key" if self._has_period_key_index()
+                            else "symbol,timeframe,trade_date,adjustflag")
+                if accepted:
+                    self.db.executemany(f"""INSERT INTO market_bars(symbol,timeframe,trade_date,period_key,open,high,low,close,volume,amount,adjustflag,source,snapshot_id,source_revision,adjust_factor,is_suspended,limit_up,limit_down)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT({conflict}) DO UPDATE SET
+                    trade_date=excluded.trade_date,period_key=excluded.period_key,
                     open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,amount=excluded.amount,
                     source=excluded.source,snapshot_id=excluded.snapshot_id,source_revision=excluded.source_revision,adjust_factor=excluded.adjust_factor,
                     is_suspended=excluded.is_suspended,limit_up=excluded.limit_up,limit_down=excluded.limit_down""", accepted)
+                if legacy_updates:
+                    self.db.executemany("""UPDATE market_bars SET
+                        trade_date=?,period_key=?,open=?,high=?,low=?,close=?,volume=?,amount=?,
+                        adjustflag=?,source=?,snapshot_id=?,source_revision=?,adjust_factor=?,
+                        is_suspended=?,limit_up=?,limit_down=? WHERE id=?""", legacy_updates)
+                accepted_periods = {value[3] for value in accepted} | {value[1] for value in legacy_updates}
+                for row in prepared:
+                    if row["period_key"] not in accepted_periods:
+                        continue
+                    invalidated = self.db.execute("""DELETE FROM period_confirmations
+                        WHERE symbol=? AND timeframe=? AND adjustflag=? AND period_key=?
+                        AND row_hash<>?""", (
+                        symbol, timeframe, adjustflag, row["period_key"], self._daily_bar_hash(row),
+                    ))
+                    if invalidated.rowcount:
+                        changed.append(row["trade_date"])
                 if timeframe == "d":
-                    accepted_dates = {value[2] for value in accepted}
-                    supplied = [{**row, "source": row.get("source", source),
-                                 "snapshot_id": row.get("snapshot_id", snapshot_id)}
-                                for row in rows if row["trade_date"] in accepted_dates]
+                    supplied = [row for row in prepared if row["period_key"] in accepted_periods]
                     # Invalidate immediately; reverting to older prices must not
                     # resurrect their former close proof without a new fetch.
                     for row in supplied:
@@ -759,7 +1056,7 @@ class Store:
                         # source. Existing unconfirmed rows never gain a proof here.
                         imported_at = self._market_time(self.clock())
                         historical = [row for row in supplied
-                                      if row["trade_date"] not in existing
+                                      if row["period_key"] not in {item.get("period_key") for item in existing.values()}
                                       and row["trade_date"] < imported_at.date().isoformat()]
                         changed.extend(self._confirm_daily_rows(symbol, adjustflag, historical,
                                        imported_at, imported_at))
@@ -767,7 +1064,7 @@ class Store:
             except Exception:
                 self.db.rollback()
                 raise
-        return len(accepted), min(changed) if changed else None
+        return len(accepted) + len(legacy_updates), min(changed) if changed else None
 
     def market_bars(self, symbol: str, timeframe: str, adjustflag: str, start_date: str = "2015-01-01", end_date: str = "9999-12-31", limit: int | None = None) -> list[dict[str, Any]]:
         params: list[Any] = [symbol, timeframe, adjustflag, start_date, end_date]
@@ -798,7 +1095,7 @@ class Store:
             condition = " AND trade_date<?"
             params.append(before)
         params.append(limit)
-        sql = f"SELECT * FROM (SELECT trade_date,open,high,low,close,volume,amount FROM market_bars WHERE symbol=? AND timeframe=? AND adjustflag=?{condition} ORDER BY trade_date DESC LIMIT ?) ORDER BY trade_date"
+        sql = f"SELECT * FROM (SELECT trade_date,period_key,open,high,low,close,volume,amount FROM market_bars WHERE symbol=? AND timeframe=? AND adjustflag=?{condition} ORDER BY trade_date DESC LIMIT ?) ORDER BY trade_date"
         with self._lock:
             rows = [dict(row) for row in self.db.execute(sql, params).fetchall()]
             has_more = False
@@ -880,89 +1177,76 @@ class Store:
         for item in values:
             self.db.execute("""INSERT INTO chan_center_revisions
                 (run_id,id,family_id,revision_no,previous_revision_id,level,status,active,start_date,end_date,
-                 zd,zg,dd,gg,entry_direction,core_formation_pattern,departure_direction,owner_movement_id,evidence_json)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                 zd,zg,dd,gg,entry_direction,core_formation_pattern,departure_direction,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
                 run_id, item["id"], item["family_id"], int(item["revision_no"]), item.get("previous_revision_id"),
                 int(item["level"]), item["status"], int(bool(item.get("active"))), item["start_date"], item["end_date"],
                 float(item["zd"]), float(item["zg"]), float(item["dd"]), float(item["gg"]),
                 item.get("entry_direction"), item.get("core_formation_pattern"), item.get("departure_direction"),
-                item.get("owner_movement_id"), self._payload_json(item),
+                self._payload_json(item),
             ))
             role_fields = {
                 "entry": "entry_unit_ids", "core": "core_unit_ids", "extension": "extension_unit_ids",
                 "peripheral": "peripheral_unit_ids", "departure": "departure_unit_ids", "retest": "retest_unit_ids",
-                "child_center": "child_center_ids", "child_movement": "child_movement_ids",
+                "child_center": "child_center_ids",
                 "z_wave": "z_unit_ids",
             }
             for role, field in role_fields.items():
                 for ordinal, unit_id in enumerate(item.get(field, [])):
                     self.db.execute("""INSERT INTO chan_center_units
                         (run_id,center_revision_id,unit_kind,unit_id,role,ordinal) VALUES(?,?,?,?,?,?)""",
-                        (run_id, item["id"], "center_revision" if role == "child_center" else "movement" if role == "child_movement" else item["unit_kind"], unit_id, role, ordinal))
+                        (run_id, item["id"], "center_revision" if role == "child_center" else item["unit_kind"], unit_id, role, ordinal))
 
-    def _insert_movements(self, run_id: int, values: list[dict[str, Any]]) -> None:
-        grouped: dict[str, list[dict[str, Any]]] = {}
+    def _insert_center_candidates(self, run_id: int, values: list[dict[str, Any]]) -> None:
         for item in values:
-            grouped.setdefault(item["family_id"], []).append(item)
-        for family_id, revisions in grouped.items():
-            current = max(revisions, key=lambda item: (bool(item.get("active")), int(item["level"]), int(item["revision_no"])))
-            self.db.execute("""INSERT INTO chan_movement_families
-                (run_id,id,current_revision_id,base_level,current_level,status) VALUES(?,?,?,?,?,?)""",
-                (run_id, family_id, current["id"], min(int(item["level"]) for item in revisions),
-                 int(current["level"]), current["status"]))
-        for item in values:
-            self.db.execute("""INSERT INTO chan_movement_revisions
-                (run_id,id,family_id,revision_no,level,status,classification,direction,active,start_date,end_date,
-                 start_price,end_price,confirmed_at,recursive_eligible,termination_reason,evidence_json)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
-                run_id, item["id"], item["family_id"], int(item["revision_no"]), int(item["level"]),
-                item["status"], item.get("classification"), item["direction"], int(bool(item.get("active"))),
-                item["start_date"], item["end_date"], float(item["start_price"]), float(item["end_price"]),
-                item.get("confirmed_at"), int(bool(item.get("recursive_eligible"))), item["termination_reason"],
+            self.db.execute("""INSERT INTO chan_center_candidates
+                (run_id,id,family_id,revision_no,previous_revision_id,active,level,stream_id,source_kind,
+                 status,direction,start_date,end_date,zd,zg,observed_at,evidence_available_at,rejection_code,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                run_id, item["id"], item["family_id"], int(item.get("revision_no", 1)), item.get("previous_revision_id"),
+                int(bool(item.get("active"))), int(item["level"]), str(item.get("stream_id", "")),
+                item.get("source_kind", "pen"), item["status"], item.get("direction"), item.get("start_date", ""),
+                item.get("end_date", ""), item.get("zd"), item.get("zg"), item.get("observed_at", ""),
+                item.get("evidence_available_at", item.get("observed_at", "")), item.get("rejection_code"),
                 self._payload_json(item),
             ))
-            for ordinal, unit_id in enumerate(item.get("source_unit_ids", [])):
-                self.db.execute("""INSERT INTO chan_movement_units
-                    (run_id,movement_revision_id,unit_kind,unit_id,role,ordinal) VALUES(?,?,?,?,?,?)""",
-                    (run_id, item["id"], "unit", unit_id, "source", ordinal))
-            for ordinal, (family_id, revision_id) in enumerate(zip(
-                item.get("center_family_ids", []), item.get("center_revision_ids", []),
-            )):
-                self.db.execute("""INSERT INTO chan_movement_centers
-                    (run_id,movement_revision_id,center_family_id,center_revision_id,ordinal) VALUES(?,?,?,?,?)""",
-                    (run_id, item["id"], family_id, revision_id, ordinal))
 
-    def _insert_points(self, run_id: int, values: list[dict[str, Any]]) -> None:
-        grouped: dict[str, list[dict[str, Any]]] = {}
+    def _insert_promotion_candidates(self, run_id: int, values: list[dict[str, Any]]) -> None:
         for item in values:
-            grouped.setdefault(item["family_id"], []).append(item)
-        for family_id, revisions in grouped.items():
-            current = max(revisions, key=lambda item: (bool(item.get("active")), int(item["revision_no"])))
-            self.db.execute("""INSERT INTO chan_point_families
-                (run_id,id,current_revision_id,status) VALUES(?,?,?,?)""",
-                (run_id, family_id, current["id"], current["status"]))
+            self.db.execute("""INSERT INTO chan_promotion_candidates
+                (run_id,id,family_id,revision_no,active,status,candidate_source,child_level,parent_level,
+                 start_date,end_date,observed_at,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                run_id, item["id"], item["family_id"], int(item["revision_no"]),
+                int(bool(item.get("active"))), item["status"], item["candidate_source"],
+                int(item["child_level"]), int(item["parent_level"]), item["start_date"],
+                item["end_date"], item["observed_at"], self._payload_json(item),
+            ))
+
+    def _insert_segment_proofs(self, run_id: int, values: list[dict[str, Any]]) -> None:
         for item in values:
-            self.db.execute("""INSERT INTO chan_point_revisions
-                (run_id,id,family_id,revision_no,level,point_type,status,active,point_date,point_price,
-                 confirmed_at,source_unit_id,center_family_id,center_revision_id,movement_family_id,
-                 invalidated_reason,evidence_json)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
-                run_id, item["id"], item["family_id"], int(item["revision_no"]), int(item["level"]),
-                item["point_type"], item["status"], int(bool(item.get("active"))), item["point_date"],
-                float(item["point_price"]), item.get("confirmed_at"), item["source_unit_id"],
-                item["center_family_id"], item["center_revision_id"], item.get("movement_family_id"),
-                item.get("invalidated_reason"), self._payload_json(item),
+            self.db.execute("""INSERT INTO chan_segment_proofs
+                (run_id,id,family_id,revision_no,previous_revision_id,active,level,source_kind,status,
+                 direction,start_date,end_date,evidence_available_at,evidence_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                run_id, item["id"], item["family_id"], int(item.get("revision_no", 1)),
+                item.get("previous_revision_id"), int(bool(item.get("active", True))),
+                int(item["level"]), item.get("source_kind", "local_pen_group"), item["status"],
+                item["direction"], item["start_date"], item["end_date"],
+                item.get("evidence_available_at", item.get("available_at", item["end_date"])),
+                self._payload_json(item),
             ))
 
     def replace_chan_structure(
         self, symbol: str, timeframe: str, adjustflag: str,
-        result: dict[str, Any], market_version: str,
+        result: dict[str, Any], market_version: str, *, activate: bool = True,
     ) -> int:
         from .chan_structure import assert_valid_structure
 
         assert_valid_structure(result)
-        meta = result["meta"]
         structure = result["structure"]
+        meta = {**result["meta"], "structure_aux": {k: structure[k] for k in
+                ("hierarchy_version", "unassigned_by_level", "pen_diagnostics") if k in structure}}
         started_at = datetime.now(timezone.utc).isoformat()
         with self._lock:
             try:
@@ -981,8 +1265,11 @@ class Store:
                 self._insert_base_rows(run_id, "chan_pens", structure.get("pens", []))
                 self._insert_components(run_id, structure.get("components", []))
                 self._insert_centers(run_id, structure.get("center_revisions", []))
-                self._insert_movements(run_id, structure.get("movement_revisions", []))
-                self._insert_points(run_id, structure.get("point_revisions", []))
+                self._insert_center_candidates(run_id, structure.get("center_candidate_revisions", []))
+                self._insert_segment_proofs(run_id, structure.get("segment_proof_revisions", []))
+                self._insert_promotion_candidates(
+                    run_id, structure.get("promotion_candidate_revisions", []),
+                )
                 for item in structure.get("relations", []):
                     self.db.execute("""INSERT INTO chan_relations
                         (run_id,id,level,relation_type,from_id,to_id,start_date,end_date,evidence_json)
@@ -1000,15 +1287,13 @@ class Store:
                     ))
                 finished_at = datetime.now(timezone.utc).isoformat()
                 self.db.execute("UPDATE chan_structure_runs SET status='success',finished_at=? WHERE id=?", (finished_at, run_id))
-                self.db.execute("""INSERT INTO chan_active_runs(symbol,timeframe,adjustflag,run_id,activated_at)
-                    VALUES(?,?,?,?,?) ON CONFLICT(symbol,timeframe,adjustflag) DO UPDATE SET
-                    run_id=excluded.run_id,activated_at=excluded.activated_at""",
-                    (symbol, timeframe, adjustflag, run_id, finished_at))
-                stale = [row[0] for row in self.db.execute("""SELECT id FROM chan_structure_runs
-                    WHERE symbol=? AND timeframe=? AND adjustflag=? AND status='success' AND id!=?""",
-                    (symbol, timeframe, adjustflag, run_id)).fetchall()]
-                if stale:
-                    self.db.executemany("DELETE FROM chan_structure_runs WHERE id=?", [(item,) for item in stale])
+                if activate:
+                    self.db.execute("""INSERT INTO chan_active_runs(symbol,timeframe,adjustflag,run_id,activated_at)
+                        VALUES(?,?,?,?,?) ON CONFLICT(symbol,timeframe,adjustflag) DO UPDATE SET
+                        run_id=excluded.run_id,activated_at=excluded.activated_at""",
+                        (symbol, timeframe, adjustflag, run_id, finished_at))
+                # Successful runs are immutable evidence and rollback targets.
+                # Retention is an explicit maintenance operation, never activation.
                 self.db.commit()
                 return run_id
             except Exception as exc:
@@ -1030,6 +1315,26 @@ class Store:
                 self.db.commit()
                 raise
 
+    def activate_chan_runs(self, run_ids: list[int], *, definition_version: str, calculator_fingerprint: str) -> None:
+        """Switch a validated release matrix in one transaction, retaining old runs."""
+        if not run_ids or len(run_ids) != len(set(run_ids)):
+            raise ValueError("运行矩阵为空或重复")
+        with self._lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            rows = [self.db.execute("SELECT * FROM chan_structure_runs WHERE id=?", (i,)).fetchone() for i in run_ids]
+            if any(not row or row["status"] != "success" or row["definition_version"] != definition_version
+                   or row["calculator_fingerprint"] != calculator_fingerprint for row in rows):
+                raise ValueError("运行矩阵版本或状态不匹配")
+            keys = [(r["symbol"], r["timeframe"], r["adjustflag"]) for r in rows]
+            if len(keys) != len(set(keys)):
+                raise ValueError("运行矩阵有重复标的周期")
+            stamp = datetime.now(timezone.utc).isoformat()
+            for row in rows:
+                self.db.execute("""INSERT INTO chan_active_runs(symbol,timeframe,adjustflag,run_id,activated_at)
+                    VALUES(?,?,?,?,?) ON CONFLICT(symbol,timeframe,adjustflag) DO UPDATE SET
+                    run_id=excluded.run_id,activated_at=excluded.activated_at""",
+                    (row["symbol"], row["timeframe"], row["adjustflag"], row["id"], stamp))
+
     def _load_json_rows(self, table: str, run_id: int, column: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self.db.execute(f"SELECT {column} FROM {table} WHERE run_id=? ORDER BY rowid", (run_id,)).fetchall()
@@ -1046,8 +1351,11 @@ class Store:
         meta = json.loads(run["meta_json"])
         meta.update({"run_id": run_id, "market_version": run["market_version"]})
         center_revisions = self._load_json_rows("chan_center_revisions", run_id, "evidence_json")
-        movement_revisions = self._load_json_rows("chan_movement_revisions", run_id, "evidence_json")
-        point_revisions = self._load_json_rows("chan_point_revisions", run_id, "evidence_json")
+        center_candidate_revisions = self._load_json_rows("chan_center_candidates", run_id, "evidence_json")
+        segment_proof_revisions = self._load_json_rows("chan_segment_proofs", run_id, "evidence_json")
+        promotion_candidate_revisions = self._load_json_rows(
+            "chan_promotion_candidates", run_id, "evidence_json",
+        )
         structure = {
             "processed_bars": self._load_json_rows("chan_processed_bars", run_id, "payload_json"),
             "fractals": self._load_json_rows("chan_fractals", run_id, "payload_json"),
@@ -1055,16 +1363,21 @@ class Store:
             "components": self._load_json_rows("chan_components", run_id, "evidence_json"),
             "centers": [item for item in center_revisions if item.get("active")],
             "center_revisions": center_revisions,
-            "movements": [item for item in movement_revisions if item.get("active", True)],
-            "movement_revisions": movement_revisions,
-            "points": [item for item in point_revisions if item.get("active", True)],
-            "point_revisions": point_revisions,
+            "center_candidates": [item for item in center_candidate_revisions if item.get("active")],
+            "center_candidate_revisions": center_candidate_revisions,
+            "segment_proofs": [item for item in segment_proof_revisions if item.get("active", True) and item.get("selection_status") == "selected"],
+            "segment_proof_revisions": segment_proof_revisions,
+            "promotion_candidates": [
+                item for item in promotion_candidate_revisions if item.get("active")
+            ],
+            "promotion_candidate_revisions": promotion_candidate_revisions,
             "relations": self._load_json_rows("chan_relations", run_id, "evidence_json"),
             "issues": self._load_json_rows("chan_issues", run_id, "evidence_json"),
         }
         structure["levels"] = sorted({int(item["level"]) for item in structure["centers"]})
         structure["max_level"] = max(structure["levels"], default=0)
         structure["unassigned_by_level"] = meta.get("unassigned_by_level", {})
+        structure.update(meta.pop("structure_aux", {}))
         return {"meta": meta, "structure": structure}
 
     def drawings(self, symbol: str, timeframe: str):

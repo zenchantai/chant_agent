@@ -1,15 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { centersForStructureLevel, formatCenterTooltip, formatCompactNumber, formatKlineTooltip, formatMovementTooltip, formatPrice, formatTradeDate, formatVolume, movementEndpointMarkers, movementLineEndpoints, movementVisualStyle, normalizeChartData, watchlistStocksForGroup, watchlistUngroupedStocks } from "./App";
-import type { Center, Movement } from "./types";
-
-const movement = (overrides: Partial<Movement> = {}): Movement => ({
-  id: "m1", family_id: "mf1", revision_no: 1, ordinal: 0, level: 1, kind: "movement",
-  direction: "up", classification: "trend", status: "confirmed", start_date: "2026-01-01",
-  end_date: "2026-02-01", start_price: 10, end_price: 20, source_unit_ids: [],
-  center_family_ids: ["cf1", "cf2"], center_revision_ids: ["cr1", "cr2"], center_levels: [1],
-  child_movement_ids: [], price_envelope_low: 10, price_envelope_high: 20, recursive_eligible: true,
-  termination_reason: "first_buy_sell_point", ...overrides,
-});
+import { centersForStructureLevel, formatCenterTooltip, formatCompactNumber, formatKlineTooltip, formatPrice, formatTradeDate, formatVolume, normalizeChartData, watchlistStocksForGroup, watchlistUngroupedStocks } from "./App";
+import type { Center } from "./types";
 
 const center = (overrides: Partial<Center> = {}): Center => ({
   id: "c1", family_id: "cf1", revision_no: 1, ordinal: 0, level: 1, kind: "center",
@@ -18,8 +9,8 @@ const center = (overrides: Partial<Center> = {}): Center => ({
   entry_unit_ids: [], core_unit_ids: [], extension_unit_ids: [], peripheral_unit_ids: [],
   departure_unit_ids: [], retest_unit_ids: [], owned_unit_ids: [], context_unit_ids: [],
   z_unit_ids: [], connection_component_ids: [], overlap_witness_unit_ids: [], missing_evidence: [],
-  child_center_ids: [], child_movement_ids: [], formation_modes: ["strict_three_unit_core"],
-  recursive_eligible: true, ...overrides,
+  child_center_ids: [], formation_modes: ["strict_three_unit_core"],
+  ...overrides,
 });
 
 describe("行情数值格式", () => {
@@ -120,24 +111,6 @@ describe("K线 tooltip", () => {
   });
 });
 
-describe("走势 tooltip", () => {
-  it("区分实际边界与确认时间", () => {
-    const html = formatMovementTooltip(movement({ confirmed_at:"2026-02-10" }));
-    expect(html).toContain("结束原因：一类买卖点确认结束");
-    expect(html).toContain("趋势 · 向上");
-    expect(html).toContain("实际边界：2026-01-01 → 2026-02-01");
-    expect(html).toContain("确认时间：2026-02-10");
-  });
-
-  it("展示正式层级走势来源和级别语义", () => {
-    const html = formatMovementTooltip(movement({ confirmed_at:"2026-02-10" }), "d");
-    expect(html).toContain("结构级别：L1");
-    expect(html).toContain("计算来源：日线独立结构");
-    expect(html).toContain("语义对应：日线内部 L1 走势（结构买卖点定边界）");
-    expect(html).not.toContain("简化的周线一笔");
-  });
-});
-
 describe("中枢级别显示", () => {
   const centers = [
     center({ id:"l1", family_id:"f1" }),
@@ -163,43 +136,6 @@ describe("中枢级别显示", () => {
   });
 });
 
-describe("走势端点", () => {
-  const movements = [
-    movement({ id:"m1", family_id:"mf1", end_date:"2026-01-03", end_price:15, price_envelope_high:15 }),
-    movement({ id:"m2", family_id:"mf2", ordinal:1, direction:"down", start_date:"2026-01-03", end_date:"2026-01-05", start_price:15, end_price:9, price_envelope_low:9, price_envelope_high:15 }),
-    movement({ id:"m3", family_id:"mf3", ordinal:2, status:"provisional", start_date:"2026-01-05", end_date:"2026-01-06", start_price:9, end_price:12, price_envelope_low:9, price_envelope_high:12, recursive_eligible:false }),
-  ];
-
-  it("共享端点按日期和价格去重并稳定编号高低点", () => {
-    const markers = movementEndpointMarkers(movements);
-    expect(markers).toHaveLength(4);
-    expect(markers.filter((marker) => marker.kind === "high").map((marker) => marker.label)).toEqual(["高点1", "高点2"]);
-    expect(markers.filter((marker) => marker.kind === "low").map((marker) => marker.label)).toEqual(["低点1", "低点2"]);
-    expect(markers.find((marker) => marker.key === "2026-01-03|15")?.label).toBe("高点1");
-  });
-
-  it("忽略内部 path_points，仅用真实起止点生成直线", () => {
-    const movement = {
-      ...movements[0],
-      path_points: [
-        { trade_date:"2026-01-01", price:10 },
-        { trade_date:"2026-01-02", price:12 },
-        { trade_date:"2026-01-03", price:15 },
-      ],
-    };
-    expect(movementLineEndpoints(movement)).toEqual([
-      { value:["2026-01-01", 10], movementId:"m1" },
-      { value:["2026-01-03", 15], movementId:"m1" },
-    ]);
-  });
-
-  it("按级别着色，并让 provisional 使用虚线", () => {
-    expect(movementVisualStyle("dark", movements[0], "d")).toEqual({ color:"#F2C14E", lineType:"solid" });
-    expect(movementVisualStyle("light", movements[1], "d")).toEqual({ color:"#A87800", lineType:"solid" });
-    expect(movementVisualStyle("dark", movements[2], "d")).toEqual({ color:"#F2C14E", lineType:"dashed" });
-  });
-});
-
 describe("图表数据归一化", () => {
   it("过滤非法 K 线并补齐可选结构数组", () => {
     const result = normalizeChartData({ bars: [
@@ -208,7 +144,7 @@ describe("图表数据归一化", () => {
     ], pens: undefined as any, centers: [], movements: undefined as any, indicators: {} as any } as any);
     expect(result?.bars).toHaveLength(1);
     expect(result?.pens).toEqual([]);
-    expect(result?.movements).toEqual([]);
+    expect("movements" in (result || {})).toBe(false);
     expect(result?.indicators.macd).toEqual([]);
   });
 });

@@ -4,7 +4,7 @@ from app.store import Store
 def test_fresh_v25_store_never_creates_legacy_structure_or_analysis_tables(tmp_path):
     store = Store(str(tmp_path / "v25.db"))
     tables = {row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert not any(name.startswith("period_") for name in tables)
+    assert not ({name for name in tables if name.startswith("period_")} - {"period_confirmations"})
     assert not {
         "active_period_structure_runs", "structure_overrides", "structure_override_events",
         "analyses", "journals", "sync_runs", "market_data_conflicts", "market_coverage",
@@ -16,7 +16,7 @@ def test_deleting_run_cascades_all_normalized_detail_rows(tmp_path):
     store = Store(str(tmp_path / "cascade.db"))
     tables = [
         "chan_processed_bars", "chan_fractals", "chan_pens", "chan_components",
-        "chan_center_revisions", "chan_movement_revisions", "chan_point_revisions",
+        "chan_center_revisions", "chan_promotion_candidates", "chan_segment_proofs",
         "chan_relations", "chan_issues",
     ]
     store.db.execute("PRAGMA foreign_keys=ON")

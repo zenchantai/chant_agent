@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .agent import run_agent
 from .coverage import validate_5m_coverage, validate_coverage
 from .indicators import calculate_bollinger, calculate_macd, calculate_moving_averages
-from .intraday import LIVE_STRUCTURE_PERIODS, IntradayService, merge_period_rows
-from .period_structure import PeriodStructureService, REFERENCE_TIMEFRAMES, STRUCTURE_TIMEFRAMES, calculation_profile
+from .intraday import IntradayService, merge_period_rows
+from .period_structure import (
+    PeriodStructureService, REFERENCE_TIMEFRAMES, STRUCTURE_TIMEFRAMES,
+    calculation_profile, structure_mode_metadata,
+)
 from .providers import TIMEFRAMES, fetch_api, fetch_baostock, normalize_security_symbol, read_csv
 from .rules import PERIOD_DEFINITION_VERSION
 from .securities import SecurityCatalogService
@@ -36,7 +43,11 @@ watchlist_quote_service = WatchlistQuoteService(store, intraday_service)
 sync_service = SyncService(store, structures=period_structure_service, intraday=intraday_service)
 security_catalog_service = SecurityCatalogService(store)
 app = FastAPI(title="缠论 AI 交易 Agent", version="0.2.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    expose_headers=["Server-Timing", "X-Uncompressed-Bytes"],
+)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 if (WEB_DIST / "assets").exists():
     app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
@@ -145,16 +156,10 @@ def health():
         "timeframes": list(TIMEFRAMES),
         "structure_timeframes": list(STRUCTURE_TIMEFRAMES),
         "structure_mode": "period_profiled",
+        "hierarchy_version": "center-hierarchy-pen-center-l2-v1",
         "calculation_profiles": {period: calculation_profile(period) for period in STRUCTURE_TIMEFRAMES},
         "reference_timeframes": list(REFERENCE_TIMEFRAMES),
-        "decomposition_mode": "non_same_level",
-        "base_unit_mode": "current_period_confirmed_pen",
-        "center_selection_mode": "entry_then_earliest_three_unit_core",
-        "center_envelope_mode": "owned_z_units",
-        "center_promotion_mode": "verified_expansion_or_recursive_core",
-        "envelope_touch_mode": "candidate",
-        "movement_boundary_mode": "structural_buy_sell_point",
-        "divergence_mode": "structural_strength_vector",
+        **structure_mode_metadata(calculation_profile("d")),
         "max_computed_level": store.highest_active_chan_level(PERIOD_DEFINITION_VERSION),
         "active_run_status": "ready",
     }
@@ -443,6 +448,206 @@ def _live_quote(rows: list[dict], *, daily_rows: list[dict], metadata: dict,
     }
 
 
+REALTIME_DELTA_TIMEFRAMES = {"5", "30", "d"}
+STRUCTURE_DELTA_FIELDS = (
+    "pens", "components", "centers", "center_revisions",
+    "center_candidates", "center_candidate_revisions",
+    "segment_proofs", "segment_proof_revisions",
+    "promotion_candidates", "promotion_candidate_revisions", "relations",
+)
+
+
+def _live_market_version(formal_market_version: str, rows: list[dict]) -> str:
+    raw = json.dumps(
+        {"formal": formal_market_version, "live": rows},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+def _indicator_payload(rows: list[dict], stamps: set[str], periods: tuple[int, ...],
+                       boll_period: int, boll_multiplier: float) -> dict:
+    return {
+        "macd": [item for item in calculate_macd(rows) if item["trade_date"] in stamps],
+        "ma": [
+            {**item, "values": {str(period): item.get(f"ma{period}") for period in periods}}
+            for item in calculate_moving_averages(rows, periods)
+            if item["trade_date"] in stamps
+        ],
+        "boll": [
+            item for item in calculate_bollinger(rows, boll_period, boll_multiplier)
+            if item["trade_date"] in stamps
+        ],
+    }
+
+
+def _structure_delta(old_snapshot: dict | None, new_snapshot: dict,
+                     projected: dict, fallback: str | None) -> dict:
+    old_source = old_snapshot.get("structure", {}) if old_snapshot else {}
+    new_source = new_snapshot.get("structure", {})
+    changed_dates: list[str] = []
+    removed_ids: dict[str, list[str]] = {}
+    for field in STRUCTURE_DELTA_FIELDS:
+        old_map = {str(item.get("id")): item for item in old_source.get(field, []) if item.get("id")}
+        new_map = {str(item.get("id")): item for item in new_source.get(field, []) if item.get("id")}
+        removed_ids[field] = sorted(set(old_map) - set(new_map))
+        changed = set(old_map) ^ set(new_map)
+        changed.update(
+            identifier for identifier in set(old_map) & set(new_map)
+            if old_map[identifier] != new_map[identifier]
+        )
+        for identifier in changed:
+            item = new_map.get(identifier) or old_map.get(identifier) or {}
+            stamp = str(item.get("start_date") or item.get("point_date") or item.get("end_date") or "")
+            if stamp:
+                changed_dates.append(stamp)
+    replace_from = min(changed_dates) if changed_dates else fallback
+    meta = new_snapshot["meta"]
+    return {
+        "replace_from": replace_from,
+        "removed_ids": removed_ids,
+        "meta": {
+            "run_id": meta.get("run_id"),
+            "market_version": meta.get("market_version"),
+            "structure_version": meta.get("structure_version", ""),
+            "definition_version": meta.get("definition_version", ""),
+            "calculator_fingerprint": meta.get("calculator_fingerprint", ""),
+            "max_level": meta.get("max_level", 0),
+        },
+        "structure": projected["structure"],
+    }
+
+
+def _timed_json(payload: dict, timings: dict[str, float]) -> JSONResponse:
+    serialize_started = time.perf_counter()
+    response = JSONResponse(payload)
+    timings["serialize"] = (time.perf_counter() - serialize_started) * 1000
+    response.headers["Server-Timing"] = ", ".join(
+        f'{name};dur={duration:.2f}' for name, duration in timings.items()
+    )
+    response.headers["X-Uncompressed-Bytes"] = str(len(response.body))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/chart-realtime/{symbol}")
+def chart_realtime(
+    symbol: str, timeframe: str = "d", adjustflag: str = "2",
+    known_market_version: str = "", known_structure_version: str = "",
+    ma_periods: str = "5,10,20,60", boll_period: int = 20,
+    boll_multiplier: float = 2.0, structure_level: int = 0,
+):
+    if timeframe not in REALTIME_DELTA_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail=f"该周期不支持增量实时刷新: {timeframe}")
+    periods = tuple(sorted({int(item) for item in ma_periods.split(",") if item.strip()}))
+    periods = tuple(item for item in periods if 1 <= item <= 1000)[:10] or (5, 10, 20, 60)
+    boll_period = max(1, min(boll_period, 1000))
+    boll_multiplier = max(0.01, boll_multiplier)
+    timings: dict[str, float] = {}
+    old_run = store.active_chan_run(symbol, timeframe, adjustflag)
+
+    source_started = time.perf_counter()
+    attempt = intraday_service.refresh_period(symbol, timeframe, adjustflag, include_quote=True)
+    timings["provider"] = (time.perf_counter() - source_started) * 1000
+
+    db_started = time.perf_counter()
+    live_rows = intraday_service.live_rows(symbol, timeframe, adjustflag)
+    forming = intraday_service.forming_bar(symbol, timeframe, adjustflag)
+    refresh_meta = intraday_service.period_metadata(symbol, timeframe, adjustflag)
+    quote_snapshot = intraday_service.latest_quote(symbol, adjustflag)
+    page = store.market_page(symbol, timeframe, adjustflag, None, 300)
+    merged_rows = merge_period_rows(page["bars"], live_rows, timeframe)
+    if forming:
+        merged_rows = [
+            {
+                **row,
+                "is_forming": row["trade_date"] == forming["trade_date"],
+                "status": "provisional" if row["trade_date"] == forming["trade_date"] else "confirmed",
+            }
+            for row in merged_rows
+        ]
+    daily_rows = store.market_bars(symbol, "d", adjustflag, "0000-01-01", limit=3)
+    timings["sqlite"] = (time.perf_counter() - db_started) * 1000
+
+    structure_started = time.perf_counter()
+    snapshot = None
+    if attempt.get("finalized_count") or old_run is None:
+        # ensure() compares the accepted market version with the active formal
+        # run, so a duplicate close-boundary request cannot recalculate twice.
+        snapshot = period_structure_service.ensure(symbol, timeframe, adjustflag, False)
+    active_run = store.active_chan_run(symbol, timeframe, adjustflag)
+    formal_market_version = str(
+        (active_run or {}).get("market_version")
+        or (snapshot or {}).get("meta", {}).get("market_version")
+        or ""
+    )
+    structure_version = str(
+        (active_run or {}).get("structure_version")
+        or (snapshot or {}).get("meta", {}).get("structure_version")
+        or ""
+    )
+    market_version = _live_market_version(formal_market_version, live_rows)
+    structure_changed = bool(structure_version and structure_version != known_structure_version)
+    structure_update = None
+    if structure_changed:
+        snapshot = snapshot or period_structure_service.ensure(symbol, timeframe, adjustflag, False)
+        projected = period_structure_service.chart_page(
+            symbol, timeframe, adjustflag, None, 300, periods,
+            boll_period, boll_multiplier, structure_level, False,
+            snapshot=snapshot,
+        )
+        projected = project_center_display(projected, snapshot["structure"], structure_level, False)
+        old_snapshot = None
+        if (
+            old_run and known_structure_version
+            and old_run.get("structure_version") == known_structure_version
+            and int(old_run["id"]) != int(snapshot["meta"].get("run_id") or 0)
+        ):
+            old_snapshot = store.load_chan_structure(int(old_run["id"]))
+        structure_update = _structure_delta(
+            old_snapshot, snapshot, projected, attempt.get("changed_from"),
+        )
+    timings["structure"] = (time.perf_counter() - structure_started) * 1000
+
+    bar_upserts: list[dict] = []
+    if market_version != known_market_version:
+        if attempt.get("finalized_count"):
+            cutoff = attempt.get("changed_from") or (merged_rows[-1]["trade_date"] if merged_rows else "")
+            bar_upserts = [row for row in merged_rows if not cutoff or row["trade_date"] >= cutoff]
+        elif live_rows:
+            live_stamps = {row["trade_date"] for row in live_rows}
+            bar_upserts = [row for row in merged_rows if row["trade_date"] in live_stamps]
+        elif merged_rows:
+            bar_upserts = [merged_rows[-1]]
+
+    indicator_started = time.perf_counter()
+    indicator_stamps = {row["trade_date"] for row in bar_upserts}
+    indicator_upserts = _indicator_payload(
+        merged_rows, indicator_stamps, periods, boll_period, boll_multiplier,
+    ) if indicator_stamps else {"macd": [], "ma": [], "boll": []}
+    timings["indicator"] = (time.perf_counter() - indicator_started) * 1000
+    payload = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "adjustflag": adjustflag,
+        "market_version": market_version,
+        "formal_market_version": formal_market_version,
+        "structure_version": structure_version,
+        "structure_changed": structure_changed,
+        "bar_upserts": bar_upserts,
+        "indicator_upserts": indicator_upserts,
+        "quote": _live_quote(
+            merged_rows, daily_rows=daily_rows,
+            metadata=refresh_meta, snapshot=quote_snapshot,
+        ),
+        "forming_bar": forming,
+        "intraday_refresh": refresh_meta,
+        "period_refresh": refresh_meta.get("period_refresh"),
+        "structure_update": structure_update,
+    }
+    return _timed_json(payload, timings)
+
+
 @app.get("/api/chart-data/{symbol}")
 def chart_data(
     symbol: str, timeframe: str = "d", adjustflag: str = "2", before: str | None = None,
@@ -466,19 +671,20 @@ def chart_data(
             symbol, adjustflag, before, page_limit, periods, boll_period, boll_multiplier,
         )
 
-    attempt = intraday_service.refresh_period(
-        symbol, timeframe, adjustflag, include_quote=True,
-    ) if refresh else None
     daily_error = intraday_service.daily_source_error(symbol, adjustflag)
+    daily_attempt = None
     if refresh and timeframe in REFERENCE_TIMEFRAMES:
         try:
-            daily_attempt = intraday_service.refresh_period(symbol, "d", adjustflag)
+            daily_attempt = intraday_service.refresh_period(symbol, "d", adjustflag, include_quote=True)
             if daily_attempt.get("result") != "success":
                 daily_error = daily_attempt.get("error") or "日线刷新失败，显示已确认数据"
             else:
                 daily_error = intraday_service.daily_source_error(symbol, adjustflag)
         except Exception as exc:
             daily_error = f"日线刷新失败：{type(exc).__name__}"
+    attempt = intraday_service.refresh_period(
+        symbol, timeframe, adjustflag, include_quote=True,
+    ) if refresh else None
     # Calendar helpers acquire their own lock before the Store lock. Read live
     # presentation state first, never call them inside the captured DB snapshot.
     live_rows = intraday_service.live_rows(symbol, timeframe, adjustflag)
@@ -486,7 +692,7 @@ def chart_data(
     forming = intraday_service.forming_bar(symbol, timeframe, adjustflag) if include_live else None
     refresh_meta = intraday_service.period_metadata(symbol, timeframe, adjustflag) if include_live else None
     quote_snapshot = intraday_service.latest_quote(symbol, adjustflag) if include_live else None
-    preview, daily_snapshot = None, None
+    daily_snapshot = None
     all_rows, quote_daily_rows = [], []
     # Fetches have finished. The run, page, coverage, and projection source now
     # come from one Store state even when another request is activating a run.
@@ -507,8 +713,6 @@ def chart_data(
             stored_rows = store.market_bars(symbol, timeframe, adjustflag, "0000-01-01")
             all_rows = merge_period_rows(stored_rows, live_rows, timeframe)
             quote_daily_rows = store.confirmed_daily_bars(symbol, adjustflag)
-            if forming and timeframe in LIVE_STRUCTURE_PERIODS:
-                preview = period_structure_service.preview_period(symbol, timeframe, adjustflag, all_rows)
         if timeframe in REFERENCE_TIMEFRAMES:
             try:
                 daily_snapshot = period_structure_service.ensure(symbol, "d", adjustflag)
@@ -534,6 +738,7 @@ def chart_data(
                                  metadata=refresh_meta, snapshot=quote_snapshot),
             "forming_bar": forming,
             "intraday_refresh": refresh_meta,
+            "period_refresh": refresh_meta.get("period_refresh") if refresh_meta else None,
         })
         result["pagination"] = {
             "has_more": len(eligible) > len(page),
@@ -551,16 +756,14 @@ def chart_data(
                 if item["trade_date"] in stamps
             ],
         }
-        if preview is not None:
-            result["meta"].update(preview["meta"])
-            result["structure"] = preview["structure"]
-            display_source = preview["structure"]
-        else:
-            result["meta"].update({"preview": False, "persisted": True})
+        # Live quotes update the forming K-line only.  Formal pens and centers
+        # are recalculated after the period is confirmed, never on every quote
+        # tick.  This also keeps the already page-projected structure payload.
+        result["meta"].update({"preview": False, "persisted": True})
         result["meta"]["available"] = bool(page)
     result["meta"]["formal_coverage"] = formal_coverage
-    result["meta"]["sampling_coverage"] = preview["meta"]["coverage"] if preview else formal_coverage
-    result = project_center_display(result, display_source, structure_level)
+    result["meta"]["sampling_coverage"] = formal_coverage
+    result = project_center_display(result, display_source, structure_level, diagnostics)
     if timeframe in REFERENCE_TIMEFRAMES:
         result = project_daily_l2(result, daily_snapshot, daily_error)
     return result

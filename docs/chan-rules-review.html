@@ -1,0 +1,637 @@
+<title>中枢规则校对报告</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+:root {
+  --paper:#EDEFF2; --surface:#F8F9FB; --surface-2:#E3E7ED;
+  --ink:#14181F; --ink-soft:#434E5E; --muted:#6B7686;
+  --rule:#C6CCD6; --rule-soft:#DCE0E7;
+  --accent:#1B4D8F; --accent-bg:#E0E8F4;
+  --warn:#A2331F;  --warn-bg:#F3E1DD;
+  --ok:#2A6354;    --ok-bg:#DCEAE5;
+  --shadow:0 1px 2px rgba(20,24,31,.06),0 8px 24px -16px rgba(20,24,31,.28);
+  --f-display:"Noto Serif SC","Songti SC",Georgia,serif;
+  --f-body:"IBM Plex Sans","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono",Menlo,Consolas,monospace;
+  --col:76ch; --aside:10rem; --gap:2.25rem;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0F141A; --surface:#171D25; --surface-2:#1F2731;
+    --ink:#E4E8EE; --ink-soft:#B4BECB; --muted:#8894A4;
+    --rule:#2D3641; --rule-soft:#232B35;
+    --accent:#74ACEA; --accent-bg:#16283C;
+    --warn:#E2775F;  --warn-bg:#2F1E1A;
+    --ok:#6FBFA6;    --ok-bg:#162A25;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 28px -18px rgba(0,0,0,.9);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0F141A; --surface:#171D25; --surface-2:#1F2731;
+  --ink:#E4E8EE; --ink-soft:#B4BECB; --muted:#8894A4;
+  --rule:#2D3641; --rule-soft:#232B35;
+  --accent:#74ACEA; --accent-bg:#16283C;
+  --warn:#E2775F;  --warn-bg:#2F1E1A;
+  --ok:#6FBFA6;    --ok-bg:#162A25;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 28px -18px rgba(0,0,0,.9);
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--f-body);font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.wrap{max-width:calc(var(--aside) + var(--gap) + var(--col));margin:0 auto;padding:0 1.5rem 6rem}
+
+.masthead{padding:4.5rem 0 2rem;border-bottom:2px solid var(--ink)}
+.kicker{font-family:var(--f-mono);font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin:0 0 1.1rem}
+.masthead h1{font-family:var(--f-display);font-weight:700;font-size:clamp(2rem,5.2vw,2.95rem);line-height:1.24;letter-spacing:-.01em;text-wrap:balance;margin:0 0 1rem}
+.standfirst{font-size:1.06rem;color:var(--ink-soft);max-width:64ch;margin:0}
+
+.srcbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));border-bottom:1px solid var(--rule);margin-bottom:3rem}
+.srcbar div{padding:.95rem 1.1rem .95rem 0;border-right:1px solid var(--rule-soft)}
+.srcbar div:last-child{border-right:0}
+.srcbar dt{font-family:var(--f-mono);font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 .3rem}
+.srcbar dd{margin:0;font-size:.84rem;color:var(--ink);line-height:1.5}
+
+section.rec{display:grid;grid-template-columns:var(--aside) 1fr;gap:0 var(--gap);padding:3rem 0 .5rem;border-top:1px solid var(--rule)}
+section.rec>.side{grid-column:1}
+section.rec>*:not(.side){grid-column:2}
+.side{position:sticky;top:1.5rem;align-self:start}
+.side .num{font-family:var(--f-mono);font-size:.8rem;font-weight:500;color:var(--accent);letter-spacing:.06em}
+.side .tag{margin-top:.55rem;font-family:var(--f-mono);font-size:.67rem;line-height:1.6;color:var(--muted);word-break:break-word}
+
+h2{font-family:var(--f-display);font-weight:700;font-size:1.58rem;line-height:1.36;text-wrap:balance;margin:0 0 1.1rem}
+h3{font-weight:600;font-size:1.02rem;margin:2.1rem 0 .6rem}
+p{margin:0 0 1.05rem}
+p.lead{font-size:1.04rem;color:var(--ink-soft)}
+strong{font-weight:600}
+code{font-family:var(--f-mono);font-size:.85em;background:var(--surface-2);padding:.1em .38em;border-radius:2px}
+ul.plain{margin:0 0 1.1rem;padding-left:1.15rem}
+ul.plain li{margin-bottom:.45rem}
+ul.plain li::marker{color:var(--muted)}
+
+blockquote{margin:0 0 1.2rem;padding:.9rem 0 .9rem 1.15rem;border-left:3px solid var(--rule);color:var(--ink-soft);font-size:.95rem}
+blockquote p{margin:0 0 .5rem}
+blockquote p:last-child{margin:0}
+blockquote cite{display:block;margin-top:.55rem;font-family:var(--f-mono);font-size:.7rem;font-style:normal;color:var(--muted);letter-spacing:.03em}
+
+.verdict{display:grid;grid-template-columns:auto 1fr;gap:.9rem;align-items:start;padding:1rem 1.2rem;margin:0 0 1.3rem;font-size:.97rem}
+.verdict .sig{font-family:var(--f-mono);font-size:.7rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase;padding-top:.25rem;white-space:nowrap}
+.verdict p:last-child{margin-bottom:0}
+.v-ok{background:var(--ok-bg);border-left:3px solid var(--ok)}
+.v-ok .sig{color:var(--ok)}
+.v-warn{background:var(--warn-bg);border-left:3px solid var(--warn)}
+.v-warn .sig{color:var(--warn)}
+.v-note{background:var(--accent-bg);border-left:3px solid var(--accent)}
+.v-note .sig{color:var(--accent)}
+
+.tablewrap{overflow-x:auto;margin:0 0 1.5rem}
+table{border-collapse:collapse;width:100%;min-width:34rem;font-size:.88rem}
+caption{caption-side:top;text-align:left;font-family:var(--f-mono);font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding-bottom:.6rem}
+th,td{text-align:left;padding:.62rem .9rem .62rem 0;border-bottom:1px solid var(--rule-soft);vertical-align:top}
+thead th{border-bottom:1px solid var(--rule);font-weight:600;font-size:.72rem;letter-spacing:.05em;color:var(--muted);text-transform:uppercase;font-family:var(--f-mono)}
+tbody tr:last-child td{border-bottom:0}
+td.st{font-family:var(--f-mono);font-size:.72rem;white-space:nowrap;letter-spacing:.05em}
+td.st.ok{color:var(--ok)}
+td.st.warn{color:var(--warn)}
+td.st.note{color:var(--accent)}
+td.v{color:var(--ink-soft)}
+
+figure{margin:1.8rem 0 2rem;padding:1.4rem 1.4rem 1rem;background:var(--surface);border:1px solid var(--rule-soft);box-shadow:var(--shadow)}
+figure svg{display:block;width:100%;max-width:100%;height:auto;color:var(--ink-soft)}
+figcaption{margin-top:1rem;padding-top:.8rem;border-top:1px solid var(--rule-soft);font-size:.84rem;line-height:1.65;color:var(--muted)}
+figcaption b{color:var(--ink-soft);font-weight:600}
+
+.opts{display:grid;gap:.1rem;margin:0 0 1.4rem}
+.opt{display:grid;grid-template-columns:5.5rem 1fr;gap:1.1rem;padding:.95rem 0;border-bottom:1px solid var(--rule-soft)}
+.opt:first-child{border-top:1px solid var(--rule-soft)}
+.opt .lbl{font-family:var(--f-mono);font-size:.71rem;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);padding-top:.22rem}
+.opt h4{margin:0 0 .35rem;font-size:.96rem;font-weight:600}
+.opt p{margin:0;font-size:.92rem;color:var(--ink-soft)}
+
+.close{margin-top:3.5rem;padding-top:2rem;border-top:2px solid var(--ink);font-size:.85rem;color:var(--muted)}
+.close p{margin-bottom:.5rem}
+
+@media (max-width:760px){
+  :root{--gap:0rem}
+  section.rec{grid-template-columns:1fr}
+  section.rec>.side{grid-column:1;position:static;display:flex;gap:1rem;align-items:baseline;margin-bottom:.9rem;padding-bottom:.6rem;border-bottom:1px solid var(--rule-soft)}
+  section.rec>*:not(.side){grid-column:1}
+  .side .tag{margin-top:0}
+  .verdict,.opt{grid-template-columns:1fr}
+  .masthead{padding-top:3rem}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="kicker">chant_agent · 对照教材原文的设计校对</p>
+  <h1>中枢规则校对报告</h1>
+  <p class="standfirst">把工程当前的中枢、延伸、扩展、升级、级别规则，逐条对照《读缠论108课札记》和红炉火教材原文。结论：<strong>笔构中枢这个简化教材明确讨论过并给了结论</strong>，几何公式和关系判据高度一致，真正需要你拍板的是四处语义偏离和一处架构混用。</p>
+</header>
+
+<dl class="srcbar">
+  <div><dt>原文</dt><dd>读缠论108课札记 · 651 页</dd></div>
+  <div><dt>教材</dt><dd>红炉火 02 中枢走势类型买卖点 · 38 页</dd></div>
+  <div><dt>教材</dt><dd>红炉火 04 同级别分解 · 17 页</dd></div>
+  <div><dt>被校对</dt><dd>chan_rules v31 + 引擎实现</dd></div>
+</dl>
+
+<!-- 0 结论摘要 -->
+<section class="rec" id="s0">
+  <div class="side"><div class="num">00</div><div class="tag">结论摘要</div></div>
+  <h2>先给结论</h2>
+
+  <div class="tablewrap">
+    <table>
+      <caption>六项裁决</caption>
+      <thead><tr><th>裁决</th><th>事项</th><th>要点</th></tr></thead>
+      <tbody>
+        <tr><td class="st ok">一致</td><td>中枢几何 · 关系判据 · 三类点</td><td class="v">ZD/ZG、DD/GG、新生与扩展的阈值，逐条对得上教材定理，不用动</td></tr>
+        <tr><td class="st warn">需拍板</td><td>九段之后是升级还是继续延伸</td><td class="v">教材：第 9 段中枢<strong>死亡并升级</strong>。工程：九单位只触发检查，不满足三段证明就继续延伸</td></tr>
+        <tr><td class="st warn">需拍板</td><td>升级后低级中枢是否保留</td><td class="v">教材："该级别中枢就<strong>死亡了</strong>"。工程：保留、不改级、不停用</td></tr>
+        <tr><td class="st warn">需拍板</td><td>后继核心可不经三类点关闭旧中枢</td><td class="v">教材定理三用的是"<strong>当且仅当</strong>"，工程多开了一条关闭路径</td></tr>
+        <tr><td class="st warn">需拍板</td><td>两条升级路径混在同一层</td><td class="v">纯中枢扩展 + 走势类型递归同时产出 L2，再 merge。教材视为<strong>两种不同方法</strong></td></tr>
+        <tr><td class="st note">已知取舍</td><td>笔构中枢、无线段</td><td class="v">教材原文专门论证过，结论是"可以做，但稳定性极差"。工程已用五道机制补偿</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="verdict v-note">
+    <div class="sig">前提</div>
+    <div><p>本报告只做规则语义校对，<strong>没有跑回测也没有跑单测</strong>。所有"工程现状"来自源码阅读，所有"教材原文"逐字引用并标注出处页码。</p></div>
+  </div>
+</section>
+
+<!-- 1 笔构中枢 -->
+<section class="rec" id="s1">
+  <div class="side"><div class="num">01</div><div class="tag">你的简化模型<br>第 1、2 条</div></div>
+  <h2>笔构中枢：教材专门写过一节论证这件事</h2>
+  <p class="lead">你的模型去掉线段、用笔直接构中枢。这不是一个未被讨论的空白区——教材 02 有整整一页标题就叫《为什么不能由笔构成最小中枢》，而且结论不是"不行"。</p>
+
+  <blockquote>
+    <p>"一个最简单的问题，为什么不能由笔构成最小中枢？其实，这不是一个问题。为什么？因为实质上，我们是可以设计这样的程序，也就是用笔当成构成最小中枢的零件，<strong>但这样构造出来的系统，其稳定性极差</strong>。众所周知，一笔的基础是顶和底分型，而一些瞬间的交易，就足以影响其结构。例如，突然有人打错单，或者有人给老鼠仓送货，那么全天走势的分析就大变样了。"</p>
+    <p>"而由线段构成最小中枢，则不存在这个问题。为什么？<strong>一个线段的改变，不会因为一个偶尔一笔的错误而改变</strong>……如果说三个 K 线的折腾就可以决定一笔的转折，那么一个线段的破坏转折，就需要三个特征序列分型的折腾，这样，市场买卖双方都有足够的时间去反应。"</p>
+    <cite>红炉火教材 02《中枢、走势类型和买卖点》第 10 页「最小中枢结构的不同心理意义」</cite>
+  </blockquote>
+
+  <div class="verdict v-note">
+    <div class="sig">读法</div>
+    <div><p>教材否定笔构中枢的理由是<strong>工程稳定性</strong>，不是理论不成立。它明确说"我们是可以设计这样的程序"。所以你的简化不是错误，是一笔<strong>需要还债的技术负债</strong>——债主是噪声。</p></div>
+  </div>
+
+  <h3>线段在架构里扮演的是滤波层，去掉它之后债由谁还</h3>
+
+  <figure>
+    <svg viewBox="0 0 760 300" role="img" aria-label="对比图：教材路径中线段作为滤波层隔离分型噪声，工程路径去掉线段后由五道确认机制承担同一职责">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="currentColor"/></marker>
+        <marker id="a1o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#2A6354"/></marker>
+        <marker id="a1w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#A2331F"/></marker>
+      </defs>
+
+      <text x="0" y="18" font-family="IBM Plex Mono, monospace" font-size="11" fill="#2A6354">教材路径</text>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="12.5" fill="currentColor">
+        <rect x="0" y="30" width="104" height="40" fill="none" stroke="currentColor" stroke-width="1.2"/><text x="52" y="55" text-anchor="middle">分型</text>
+        <rect x="140" y="30" width="104" height="40" fill="none" stroke="currentColor" stroke-width="1.2"/><text x="192" y="55" text-anchor="middle">笔</text>
+        <rect x="280" y="24" width="128" height="52" fill="none" stroke="#2A6354" stroke-width="2"/>
+        <text x="344" y="45" text-anchor="middle" fill="#2A6354">线段</text>
+        <text x="344" y="62" text-anchor="middle" fill="#2A6354" font-size="9.5" font-family="IBM Plex Mono, monospace">特征序列分型确认</text>
+        <rect x="444" y="30" width="104" height="40" fill="none" stroke="currentColor" stroke-width="1.2"/><text x="496" y="55" text-anchor="middle">中枢</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#a1)">
+        <line x1="104" y1="50" x2="134" y2="50"/><line x1="244" y1="50" x2="274" y2="50"/>
+      </g>
+      <line x1="408" y1="50" x2="438" y2="50" stroke="#2A6354" stroke-width="1.4" marker-end="url(#a1o)"/>
+      <text x="284" y="92" font-family="IBM Plex Mono, monospace" font-size="10" fill="#2A6354">噪声在这里被吸收</text>
+
+      <line x1="0" y1="118" x2="760" y2="118" stroke="currentColor" stroke-width="1" opacity=".25"/>
+
+      <text x="0" y="146" font-family="IBM Plex Mono, monospace" font-size="11" fill="#A2331F">工程路径 · 你的简化模型</text>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="12.5" fill="currentColor">
+        <rect x="0" y="158" width="104" height="40" fill="none" stroke="currentColor" stroke-width="1.2"/><text x="52" y="183" text-anchor="middle">分型</text>
+        <rect x="140" y="158" width="104" height="40" fill="none" stroke="currentColor" stroke-width="1.2"/><text x="192" y="183" text-anchor="middle">确认笔</text>
+        <rect x="280" y="158" width="128" height="40" fill="none" stroke="#A2331F" stroke-width="1.4" stroke-dasharray="5 4"/>
+        <text x="344" y="183" text-anchor="middle" fill="#A2331F" font-size="11.5">线段（已移除）</text>
+        <rect x="444" y="158" width="104" height="40" fill="none" stroke="currentColor" stroke-width="1.2"/><text x="496" y="183" text-anchor="middle">中枢</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.2" marker-end="url(#a1)">
+        <line x1="104" y1="178" x2="134" y2="178"/>
+      </g>
+      <path d="M 244 178 L 262 178 L 262 132 L 496 132 L 496 152" fill="none" stroke="#A2331F" stroke-width="1.4" marker-end="url(#a1w)"/>
+      <text x="290" y="126" font-family="IBM Plex Mono, monospace" font-size="10" fill="#A2331F">笔直接进中枢</text>
+
+      <!-- 补偿机制 -->
+      <rect x="0" y="228" width="548" height="56" fill="none" stroke="currentColor" stroke-width="1" opacity=".5"/>
+      <text x="12" y="248" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity=".8">工程用来还债的五道机制</text>
+      <text x="12" y="268" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor" opacity=".85">只消费确认笔 · 不可变前缀 · 修正笔只重算活动尾部 · 证据时间戳仲裁 · 候选淘汰码留痕</text>
+
+      <text x="572" y="178" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor" opacity=".75">噪声没有被</text>
+      <text x="572" y="193" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor" opacity=".75">结构吸收，</text>
+      <text x="572" y="208" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor" opacity=".75">而是被流程</text>
+      <text x="572" y="223" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor" opacity=".75">约束住了</text>
+    </svg>
+    <figcaption><b>两条路径想解决的是同一个问题，手段不同。</b>教材用线段这个结构层把分型噪声挡在中枢之外；工程去掉了这一层，改用流程纪律（确认、不可变、时间戳）挡。差别在于：结构层是<b>事前</b>滤波，一根噪声笔根本不会进入中枢；流程纪律是<b>事后</b>约束，噪声笔会进入中枢并被记录，只是不允许它回头改写已确认的结论。</figcaption>
+  </figure>
+
+  <div class="verdict v-warn">
+    <div class="sig">代价</div>
+    <div>
+      <p>事后约束挡不住一件事：<strong>噪声笔会真实参与中枢的构成，把 ZD/ZG 定错，然后这个错误的核心被"终生不变"锁死。</strong></p>
+      <p>教材举的例子（打错单、老鼠仓送货）在 A 股 5 分钟级别上不是假想。一根异常笔如果恰好落在三段核心里，核心区间就被它污染，而工程的不可变前缀纪律会保证这个污染<strong>不被后续数据修正</strong>——纪律在这里反而放大了后果。</p>
+    </div>
+  </div>
+
+  <h3>可选的三条路，按代价从低到高</h3>
+  <div class="opts">
+    <div class="opt">
+      <div class="lbl">方案 A</div>
+      <div>
+        <h4>保持现状，加一道核心笔的异常检测</h4>
+        <p>不引入线段，但在三段核心提交前加一道过滤：核心内任一笔的振幅或 K 线跨度显著偏离同期分布时，该候选标为 <code>suspect</code> 而不是直接提交。成本最低，不改架构，但阈值需要用历史数据标定。</p>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="lbl">方案 B</div>
+      <div>
+        <h4>引入轻量线段层，只做滤波不做级别</h4>
+        <p>按教材做特征序列分型识别线段，但<strong>不</strong>用它定义级别（级别仍走现有递归）。线段只作为"中枢核心候选的最小单位"，等于把教材的事前滤波补回来，同时不推翻现有级别体系。改动集中在中枢核心的输入端。</p>
+      </div>
+    </div>
+    <div class="opt">
+      <div class="lbl">方案 C</div>
+      <div>
+        <h4>回归教材，线段构中枢</h4>
+        <p>完全按教材走。理论最干净，但要重写中枢输入、级别递归和全部基线快照，且线段识别本身有两种破坏方式的歧义，工程复杂度不低于现在的候选账本。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="verdict v-note">
+    <div class="sig">我的判断</div>
+    <div><p>你说笔规则已经很合理，那么<strong>方案 A 的性价比最高</strong>，方案 B 是中期选项。但这是取舍不是对错——决定权在你，因为它取决于你实际交易的周期：5 分钟级别噪声风险高，日线级别这个风险小得多。</p></div>
+  </div>
+</section>
+
+<!-- 2 一致项 -->
+<section class="rec" id="s2">
+  <div class="side"><div class="num">02</div><div class="tag">CENTER-<br>STRICT-CORE<br>CENTER-Z-WAVE<br>POINT-THIRD</div></div>
+  <h2>先说不用改的：几何与判据逐条对得上</h2>
+  <p>这部分我原以为会有出入，实际校对下来高度一致。列出来是为了让你知道<strong>哪些地方不必再动</strong>。</p>
+
+  <div class="tablewrap">
+    <table>
+      <caption>教材定理 对照 工程实现</caption>
+      <thead><tr><th>裁决</th><th>教材原文</th><th>工程实现</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="st ok">一致</td>
+          <td>中枢区间 <code>[max(a2,b2,c2), min(a1,b1,c1)]</code>，简化为 <code>[max(a2,c2), min(a1,c1)]</code><br><cite style="font-family:var(--f-mono);font-size:.68rem;color:var(--muted)">教材 02 第 2、3 页</cite></td>
+          <td class="v">ZD = max(三段低)，ZG = min(三段高)，且要求一三段交集等于三段交集</td>
+        </tr>
+        <tr>
+          <td class="st ok">一致</td>
+          <td><code>GG=max(gn), D=max(dn), DD=min(dn)</code>，<strong>n 遍历中枢中所有 Zn</strong>，Zn 是与中枢方向一致的次级别走势段<br><cite style="font-family:var(--f-mono);font-size:.68rem;color:var(--muted)">教材 02 第 3 页</cite></td>
+          <td class="v">DD/GG 只统计 Z 单位（核心一三段 + 同向延伸），进入/离开/回试不参与</td>
+        </tr>
+        <tr>
+          <td class="st ok">一致</td>
+          <td>中枢延伸等价于任意 <code>[dn,gn]</code> 与 <code>[ZD,ZG]</code> 有重叠<br><cite style="font-family:var(--f-mono);font-size:.68rem;color:var(--muted)">走势中枢中心定理一 · 教材 02 第 15 页</cite></td>
+          <td class="v">回归单位与固定核心闭区间有接触即吸收为延伸</td>
+        </tr>
+        <tr>
+          <td class="st ok">一致</td>
+          <td>后 GG &lt; 前 DD ⟺ 下跌及其延续；后 DD &gt; 前 GG ⟺ 上涨及其延续<br><cite style="font-family:var(--f-mono);font-size:.68rem;color:var(--muted)">走势中枢中心定理二 · 教材 02 第 15 页</cite></td>
+          <td class="v"><code>newborn_up</code> = current.dd &gt; previous.gg；<code>newborn_down</code> = current.gg &lt; previous.dd</td>
+        </tr>
+        <tr>
+          <td class="st ok">一致</td>
+          <td>后 ZG &lt; 前 ZD 且后 GG ≥ 前 DD，或后 ZD &gt; 前 ZG 且后 DD ≤ 前 GG ⟺ 形成高级别中枢<br><cite style="font-family:var(--f-mono);font-size:.68rem;color:var(--muted)">走势中枢中心定理二 · 教材 02 第 15 页</cite></td>
+          <td class="v"><code>expansion_up/down</code> = 核心严格分离 + 包络闭区间接触</td>
+        </tr>
+        <tr>
+          <td class="st ok">一致</td>
+          <td>向上离开后回试，<strong>低点不跌破 ZG</strong> 构成三买；向下离开后回抽，高点不升破 ZD 构成三卖<br><cite style="font-family:var(--f-mono);font-size:.68rem;color:var(--muted)">第三类买卖点定理 · 教材 02 第 15 页</cite></td>
+          <td class="v">回试极值必须严格在核心外，判据用的正是 ZG / ZD</td>
+        </tr>
+        <tr>
+          <td class="st ok">一致</td>
+          <td>"趋势中的走势中枢之间<strong>必须绝对不存在重叠</strong>"<br><cite style="font-family:var(--f-mono);font-size:.68rem;color:var(--muted)">教材 02 第 12 页</cite></td>
+          <td class="v">newborn 要求包络完全分离，只是核心抬高、包络还搭边的判为扩展而非趋势</td>
+        </tr>
+        <tr>
+          <td class="st ok">一致</td>
+          <td>盘整 = 只含一个中枢；趋势 = 至少两个以上依次同向中枢<br><cite style="font-family:var(--f-mono);font-size:.68rem;color:var(--muted)">教材 02 第 2 页</cite></td>
+          <td class="v"><code>_movement_classification</code> 完全按此，且要求相邻关系全为同向 newborn</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="verdict v-ok">
+    <div class="sig">结论</div>
+    <div><p>中枢的<strong>几何定义和关系判据这一层是干净的</strong>。你担心的"中枢规则是否合理"，在数学表达式这个层面上答案是：合理，而且比多数开源实现严格（尤其是趋势要求包络完全分离这一条）。</p></div>
+  </div>
+</section>
+
+<!-- 3 九段 -->
+<section class="rec" id="s3">
+  <div class="side"><div class="num">03</div><div class="tag">偏离 1<br>PROMOTION-<br>OWNED-NINE-V30</div></div>
+  <h2>九段：数字对了，语义反了</h2>
+  <p class="lead">工程的"九单位"门槛数字来源正确，但教材说的是<strong>到点即升级</strong>，工程做的是<strong>到点才开始查</strong>。这一处的差别会直接影响级别判定和买卖点级别。</p>
+
+  <blockquote>
+    <p>"一般来说，<strong>中枢的延伸不能超过 5 段，也就是一旦出现 6 段的延伸，加上形成中枢本身那三段，就构成更大级别的中枢了</strong>。"</p>
+    <cite>教材 04《同级别分解》第 2 页 · 札记第 220 页</cite>
+  </blockquote>
+
+  <blockquote>
+    <p>"【扫地僧：注意，这里说的是中枢延伸，一个中枢有 3 个次级别走势，后面继续延伸，只要不超过 9 个次级别走势，都是中枢的延伸，<strong>当到了第 9 个次级别时，该级别中枢就死亡了，升级成为了高级别中枢，此时叫扩展</strong>，这就是中枢延伸和中枢扩展的区别】"</p>
+    <cite>札记第 123 页 · 扫地僧点评</cite>
+  </blockquote>
+
+  <figure>
+    <svg viewBox="0 0 760 290" role="img" aria-label="时序对比图：教材在第九段时中枢立即死亡并升级，工程在第九单位仅触发检查，未满足三段证明时中枢继续延伸">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="currentColor"/></marker>
+        <marker id="a2w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#A2331F"/></marker>
+      </defs>
+
+      <!-- 教材时序 -->
+      <text x="0" y="18" font-family="IBM Plex Mono, monospace" font-size="11" fill="#2A6354">教材语义</text>
+      <line x1="0" y1="62" x2="700" y2="62" stroke="currentColor" stroke-width="1.2" marker-end="url(#a2)"/>
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" text-anchor="middle">
+        <text x="60" y="52">1-3 段</text><text x="60" y="80" opacity=".65">核心成立</text>
+        <text x="270" y="52">4-8 段</text><text x="270" y="80" opacity=".65">延伸</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1" opacity=".4">
+        <line x1="120" y1="56" x2="120" y2="68"/><line x1="420" y1="56" x2="420" y2="68"/>
+      </g>
+      <line x1="420" y1="30" x2="420" y2="56" stroke="#2A6354" stroke-width="1.6"/>
+      <circle cx="420" cy="62" r="5" fill="#2A6354"/>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="12">
+        <rect x="440" y="16" width="230" height="34" fill="none" stroke="#2A6354" stroke-width="1.6"/>
+        <text x="555" y="38" text-anchor="middle" fill="#2A6354">第 9 段 → 中枢死亡 · 升级</text>
+      </g>
+      <text x="440" y="80" font-family="IBM Plex Mono, monospace" font-size="10" fill="#2A6354">此后不再有该级别中枢</text>
+
+      <line x1="0" y1="118" x2="760" y2="118" stroke="currentColor" stroke-width="1" opacity=".25"/>
+
+      <!-- 工程时序 -->
+      <text x="0" y="146" font-family="IBM Plex Mono, monospace" font-size="11" fill="#A2331F">工程语义</text>
+      <line x1="0" y1="190" x2="700" y2="190" stroke="currentColor" stroke-width="1.2" marker-end="url(#a2)"/>
+      <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" text-anchor="middle">
+        <text x="60" y="180">1-3 单位</text><text x="60" y="208" opacity=".65">核心成立</text>
+        <text x="270" y="180">4-8 单位</text><text x="270" y="208" opacity=".65">延伸 / 外围</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1" opacity=".4">
+        <line x1="120" y1="184" x2="120" y2="196"/><line x1="420" y1="184" x2="420" y2="196"/>
+      </g>
+      <circle cx="420" cy="190" r="5" fill="#A2331F"/>
+      <line x1="420" y1="158" x2="420" y2="184" stroke="#A2331F" stroke-width="1.6"/>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="12">
+        <rect x="440" y="144" width="230" height="34" fill="none" stroke="#A2331F" stroke-width="1.6" stroke-dasharray="5 4"/>
+        <text x="555" y="166" text-anchor="middle" fill="#A2331F">第 9 单位 → 仅触发检查</text>
+      </g>
+      <path d="M 555 178 L 555 200 L 620 200" fill="none" stroke="#A2331F" stroke-width="1.2" marker-end="url(#a2w)"/>
+      <text x="446" y="216" font-family="IBM Plex Mono, monospace" font-size="10" fill="#A2331F">三段证明不成立</text>
+      <text x="446" y="230" font-family="IBM Plex Mono, monospace" font-size="10" fill="#A2331F">→ 中枢继续延伸到 10、11、12…</text>
+
+      <!-- 差异带 -->
+      <rect x="440" y="248" width="300" height="32" fill="#A2331F" opacity=".1"/>
+      <text x="452" y="269" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#A2331F">差异区：教材已进入高级别，工程仍在本级别</text>
+    </svg>
+    <figcaption><b>同一段行情，两套语义会给出不同的级别归属。</b>教材把九段当作<b>判决</b>（到点即死亡升级，用于消除走势的多义性）；工程把九段当作<b>立案条件</b>（到点开始找三段证明，找不到就继续延伸）。工程更保守、更强调证据，但代价是：它会长出教材体系里不应存在的"十段、十二段中枢"。</figcaption>
+  </figure>
+
+  <div class="verdict v-warn">
+    <div class="sig">后果</div>
+    <div>
+      <p>教材设置九段上限的目的写得很明确——<strong>消除多义性</strong>。原文："这种情况，只要对中枢延伸的数量进行限制，就可以消除多义性。"</p>
+      <p>工程放弃了这个硬限制，多义性就回来了：一个 12 段中枢，既可以解释成本级别的超长延伸，也可以解释成高一级别的中枢。工程当前的解法是"证据不足就不升级"，这在逻辑上自洽，但它<strong>没有消除多义性，只是选择了其中一种解释并冻结它</strong>。</p>
+    </div>
+  </div>
+
+  <h3>还有一个计数口径问题</h3>
+  <p>教材数的是"<strong>次级别走势段</strong>"，工程数的是 <code>owned_unit_ids</code>，其中包含 <code>peripheral</code>（外围段）。外围段是"中枢拥有但不入 Z"的笔。这两个口径是否等价，取决于你怎么定义外围——教材语境里，围绕中枢的波动都算延伸段，所以<strong>大概率等价</strong>，但这是我的推断，没有找到教材的直接表述。</p>
+
+  <div class="opts">
+    <div class="opt">
+      <div class="lbl">选项 1</div>
+      <div><h4>按教材，九段硬升级</h4><p>第 9 单位立即升级，低级中枢关闭。多义性消除，与教材完全对齐。代价：会产生一批"几何上不满足三段交集但被判为高级别"的中枢，需要接受高级别中枢的区间由延伸段而非三段证明确定。</p></div>
+    </div>
+    <div class="opt">
+      <div class="lbl">选项 2</div>
+      <div><h4>保持现状，但给超九段中枢打标</h4><p>不改判决逻辑，但对 <code>owned &gt; 9</code> 且未升级的中枢加一个显式状态（如 <code>over_extended</code>），让展示层和策略层知道"这里存在教材意义上的级别歧义"。改动最小，把问题变成可见的。</p></div>
+    </div>
+    <div class="opt">
+      <div class="lbl">选项 3</div>
+      <div><h4>分周期取不同策略</h4><p>日线以上用教材硬升级（数据少、噪声低、级别判定重要），5/30 分钟保持证据优先（噪声高、宁可不升级）。代价是两套语义并存，规则文档要写清楚。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 4 两条路径 -->
+<section class="rec" id="s4">
+  <div class="side"><div class="num">04</div><div class="tag">偏离 2<br>架构层<br>最值得看的一条</div></div>
+  <h2>两条升级路径混在同一层，这是最需要你拍板的地方</h2>
+  <p class="lead">教材把"按中枢处理"和"按走势类型处理"明确当成<strong>两种不同的方法</strong>，并建议在不同级别上分别使用。工程把两者都接在 L2 上，然后 merge。</p>
+
+  <blockquote>
+    <p>"处理走势有两种最基本的方法，一种是<strong>纯粹按中枢来</strong>，一种是<strong>纯粹按走势类型来</strong>【扫地僧：按中枢的，就是非同级别操作，按走势的，就是同级别分解操作】，但更有效的是<strong>在不同级别中组合运用</strong>。"</p>
+    <cite>札记第 244–245 页</cite>
+  </blockquote>
+
+  <blockquote>
+    <p>"【扫地僧：个人经验是，<strong>操作级别用同级别分解，次级别用非同级别分解递归上来</strong>】"</p>
+    <cite>札记第 244 页 · 扫地僧点评</cite>
+  </blockquote>
+
+  <figure>
+    <svg viewBox="0 0 760 340" role="img" aria-label="架构对比图：工程中九单位段证明与走势递归两条路径同时产出L2中枢后合并，教材主张两种方法分属不同级别">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="currentColor"/></marker>
+        <marker id="a3b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#1B4D8F"/></marker>
+        <marker id="a3w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#A2331F"/></marker>
+      </defs>
+
+      <text x="0" y="16" font-family="IBM Plex Mono, monospace" font-size="11" fill="#A2331F">工程现状：两条路径汇入同一个 L2</text>
+
+      <!-- L1 源 -->
+      <g font-family="IBM Plex Sans, sans-serif" font-size="12.5" fill="currentColor">
+        <rect x="0" y="118" width="110" height="44" fill="none" stroke="currentColor" stroke-width="1.8"/>
+        <text x="55" y="145" text-anchor="middle">L1 笔中枢</text>
+      </g>
+
+      <!-- 路径 A 纯中枢 -->
+      <path d="M 110 130 L 150 130 L 150 58 L 196 58" fill="none" stroke="#1B4D8F" stroke-width="1.4" marker-end="url(#a3b)"/>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="12" fill="#1B4D8F">
+        <rect x="196" y="38" width="176" height="40" fill="none" stroke="#1B4D8F" stroke-width="1.4"/>
+        <text x="284" y="55" text-anchor="middle">九单位 + 段证明</text>
+        <text x="284" y="70" text-anchor="middle" font-size="9.5" font-family="IBM Plex Mono, monospace">纯中枢观点 · 非同级别分解</text>
+      </g>
+
+      <!-- 路径 B 走势递归 -->
+      <path d="M 110 150 L 150 150 L 150 236 L 196 236" fill="none" stroke="#1B4D8F" stroke-width="1.4" marker-end="url(#a3b)"/>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="12" fill="#1B4D8F">
+        <rect x="196" y="216" width="176" height="40" fill="none" stroke="#1B4D8F" stroke-width="1.4"/>
+        <text x="284" y="233" text-anchor="middle">走势确认 → 升为单位</text>
+        <text x="284" y="248" text-anchor="middle" font-size="9.5" font-family="IBM Plex Mono, monospace">走势类型观点 · 同级别分解</text>
+      </g>
+
+      <!-- 汇合 -->
+      <path d="M 372 58 L 420 58 L 420 128 L 452 128" fill="none" stroke="#A2331F" stroke-width="1.4" marker-end="url(#a3w)"/>
+      <path d="M 372 236 L 420 236 L 420 152 L 452 152" fill="none" stroke="#A2331F" stroke-width="1.4" marker-end="url(#a3w)"/>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="12.5">
+        <rect x="452" y="112" width="150" height="56" fill="none" stroke="#A2331F" stroke-width="2"/>
+        <text x="527" y="134" text-anchor="middle" fill="#A2331F">merge</text>
+        <text x="527" y="152" text-anchor="middle" fill="#A2331F" font-size="9.5" font-family="IBM Plex Mono, monospace">按修订时间合并</text>
+      </g>
+      <line x1="602" y1="140" x2="640" y2="140" stroke="#A2331F" stroke-width="1.4" marker-end="url(#a3w)"/>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="12.5">
+        <rect x="640" y="118" width="110" height="44" fill="none" stroke="#A2331F" stroke-width="2"/>
+        <text x="695" y="145" text-anchor="middle" fill="#A2331F">L2 中枢</text>
+      </g>
+      <text x="452" y="188" font-family="IBM Plex Mono, monospace" font-size="10" fill="#A2331F">同一个 L2 可能来自两种语义</text>
+
+      <line x1="0" y1="282" x2="760" y2="282" stroke="currentColor" stroke-width="1" opacity=".25"/>
+      <text x="0" y="306" font-family="IBM Plex Mono, monospace" font-size="11" fill="#2A6354">教材主张：两种方法分属不同级别，不在同一层混用</text>
+      <text x="0" y="326" font-family="IBM Plex Sans, sans-serif" font-size="12" fill="currentColor" opacity=".85">操作级别 → 同级别分解（不定义中枢延伸）　｜　次级别及以下 → 非同级别分解（允许延伸、扩展递归上来）</text>
+    </svg>
+    <figcaption><b>这不是 bug，是两种理论视角被并置了。</b>九单位段证明走的是"纯中枢"路线（教材称非同级别分解），走势递归走的是"走势类型"路线（教材称同级别分解）。工程让它们同时产出 L2 家族再合并——教材没有禁止组合运用，但它说的组合是<b>分级别</b>组合，不是<b>同一级别内</b>合并。</figcaption>
+  </figure>
+
+  <div class="verdict v-warn">
+    <div class="sig">风险</div>
+    <div>
+      <p>教材给同级别分解定了一条硬规则：</p>
+      <p style="padding-left:1rem;border-left:2px solid var(--warn);margin:.6rem 0">"在某级别中，<strong>不定义中枢延伸</strong>，允许该级别上的盘整+盘整连接；与此同时，规定该级别以下的所有级别，都允许中枢延伸，<strong>不允许盘整+盘整连接</strong>。"<br><span style="font-family:var(--f-mono);font-size:.7rem;color:var(--muted)">札记第 245 页 · 教材 04 第 12 页</span></p>
+      <p>工程在<strong>每一级都定义了中枢延伸</strong>，同时又在每一级都做走势分解。按教材的口径，这两件事在同一级别上是互斥的。混用的直接后果：同一段行情的 L2 归属可能不唯一，而教材原本靠"分解的唯一性"来保证操作确定性。</p>
+    </div>
+  </div>
+
+  <div class="opts">
+    <div class="opt">
+      <div class="lbl">选项 1</div>
+      <div><h4>按扫地僧的经验分层</h4><p>选定一个操作级别（比如日线）走同级别分解、不定义延伸；该级别以下（5/30 分钟）走非同级别分解、允许延伸和扩展递归。这是札记明确推荐的组合方式，代价是要给"操作级别"这个概念在工程里一个正式位置。</p></div>
+    </div>
+    <div class="opt">
+      <div class="lbl">选项 2</div>
+      <div><h4>保留两条路径，但分开存储不 merge</h4><p>L2 分成 <code>L2-扩展系</code> 和 <code>L2-走势系</code> 两个独立家族，都算、都存、都能展示，但<strong>不合并成一个 family</strong>。多义性从"被隐藏在 merge 里"变成"被显式呈现"，符合教材说的多义性是特性而非缺陷。</p></div>
+    </div>
+    <div class="opt">
+      <div class="lbl">选项 3</div>
+      <div><h4>砍掉一条</h4><p>只保留段证明路径（纯非同级别分解），走势只作为买卖点的边界，不参与级别递归。架构最简单，但会失去同级别分解带来的机械化操作能力——而那恰恰是教材 04 整章在讲的实战价值。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 5 其余两处偏离 -->
+<section class="rec" id="s5">
+  <div class="side"><div class="num">05</div><div class="tag">偏离 3、4<br>CENTER-<br>LIFECYCLE-<br>ARBITRATION</div></div>
+  <h2>另外两处语义偏离</h2>
+
+  <h3>其一：升级后低级中枢是否"死亡"</h3>
+  <blockquote>
+    <p>"当到了第 9 个次级别时，<strong>该级别中枢就死亡了</strong>，升级成为了高级别中枢。"</p>
+    <cite>札记第 123 页</cite>
+  </blockquote>
+  <p>工程规则写的是"低级中枢不因升级被改级或停用"，升级后 L1 中枢继续活跃、继续参与 L1 的关系判定和买卖点。</p>
+
+  <div class="verdict v-note">
+    <div class="sig">反方</div>
+    <div><p>工程这么做有正当理由：<strong>L1 的买卖点对 L1 操作者仍然有效</strong>。教材说"死亡"是站在级别归属的角度（这段行情的级别标签变了），未必是说 L1 的结构证据要作废。这一条我倾向于<strong>工程是对的</strong>，但建议在展示层区分"活跃 L1"和"已被 L2 吸收的 L1"，避免用户误读级别。</p></div>
+  </div>
+
+  <h3>其二：后继核心可以不经三类点关闭旧中枢</h3>
+  <blockquote>
+    <p>"某级别走势中枢的破坏，<strong>当且仅当</strong>一个次级别走势离开该走势中枢后，其后的次级别回抽走势不重新回到该走势中枢内。"</p>
+    <cite>走势中枢定理三 · 教材 02 第 14 页</cite>
+  </blockquote>
+  <p>"当且仅当"是充要条件。工程除了这条路径，还允许"出现独立后继核心"直接关闭旧中枢，等于给中枢破坏加了第二个充分条件。</p>
+
+  <div class="verdict v-warn">
+    <div class="sig">后果</div>
+    <div>
+      <p>教材在别处补充过维持中枢的充要条件："任何一个离开该中枢的走势类型都必须是<strong>次级别以下</strong>的并以次级别以下的走势类型返回……只要是同级别的走势类型，就意味着形成新的走势中枢，这与原中枢的维持前提矛盾。"（教材 02 第 14 页）</p>
+      <p>这段话其实<strong>支持</strong>工程的做法——出现同级别新中枢确实意味着旧中枢不再维持。所以工程的第二条路径有理论依据，问题只在于：<strong>它绕过了三类点，于是这次中枢终结不产生任何买卖点</strong>。教材体系里，中枢的破坏和第三类买卖点是同一件事的两面；工程把它们解耦了，会漏掉一批本该出现的三类点。</p>
+    </div>
+  </div>
+
+  <p>建议：保留后继核心关闭路径，但在关闭时<strong>补记一个 <code>candidate</code> 状态的三类点</strong>（标注"由后继核心推定，未经回试确认"），让买卖点集合不出现无声的空洞。</p>
+</section>
+
+<!-- 6 级别 -->
+<section class="rec" id="s6">
+  <div class="side"><div class="num">06</div><div class="tag">你的问题<br>第 3 条：级别</div></div>
+  <h2>级别：这块工程处理得比我预期清醒</h2>
+  <p>教材区分了两套级别体系，很多实现在这里翻车：</p>
+
+  <div class="tablewrap">
+    <table>
+      <caption>教材 02 第 7 页的级别定义</caption>
+      <thead><tr><th>体系</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td class="st note">K 线图级别</td><td class="v">直接把 N 分钟 K 线图分笔分段后当作 N 分钟走势级别。30 分钟图上最低级别就是 30 分钟级别</td></tr>
+        <tr><td class="st note">递归级别</td><td class="v">以某分钟 K 线图为最低单元，按中枢定义逐级递归上去（1 分钟 K 线 5F 走势级别、1 分钟 K 线 30F 走势级别……）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <blockquote>
+    <p>"5 分钟 K 线级别与 1 分钟 K 线 5F 走势级别，既有联系，<strong>但不能等同</strong>。其中的区别就是：5 分钟 K 线级别是小倍数显微镜看到的，比较粗糙，1 分钟 K 线 5F 走势级别是大倍数显微镜看到的，比较精细。"</p>
+    <cite>教材 02 第 7 页</cite>
+  </blockquote>
+
+  <div class="verdict v-ok">
+    <div class="sig">一致</div>
+    <div><p>工程规则文档写的是："工程把每个行情周期的确认笔视为该周期数据域内的最低完成走势单位；<strong>日线 L2/L3 不映射为真实周线或月线级别</strong>。"这正是教材要求的区分——日线图上递归出的 L2 是"日线 K 线 L2 走势级别"，不是周线级别。这一条<strong>不用改</strong>，而且应该在 UI 上更醒目地表达，否则用户会把 L2 当周线读。</p></div>
+  </div>
+
+  <h3>但有一处需要注意：5F 与 5f 的区别</h3>
+  <blockquote>
+    <p>"5F 中枢是站在<strong>同级别分解观点</strong>，由 3 个连续次级别的同级分解走势按照中枢定义形成的三段重叠中枢。而 5f 中枢是站在<strong>纯中枢观点</strong>形成的扩展中枢。"</p>
+    <cite>教材 02 第 18 页</cite>
+  </blockquote>
+  <p>教材用大小写 F/f 区分了这两种 L2。<strong>这正好对应第 04 节说的两条路径。</strong>工程把两者合并成同一个 L2，等于把 5F 和 5f 揉成了一个概念。如果采纳第 04 节的选项 2（分开存储不 merge），命名上可以直接沿用教材的 F/f 约定，语义立刻清晰。</p>
+</section>
+
+<!-- 7 汇总 -->
+<section class="rec" id="s7">
+  <div class="side"><div class="num">07</div><div class="tag">行动清单</div></div>
+  <h2>如果只做三件事</h2>
+
+  <div class="opts">
+    <div class="opt">
+      <div class="lbl">优先级 1</div>
+      <div><h4>把 L2 的两个来源分开</h4><p>按教材 F/f 约定拆成两个家族，不 merge。这一步改动集中在 <code>_merge_level_center_sources</code>，不触碰几何逻辑，但会让级别语义立刻变干净，也为后续选操作级别打好基础。</p></div>
+    </div>
+    <div class="opt">
+      <div class="lbl">优先级 2</div>
+      <div><h4>给超九段未升级的中枢打显式状态</h4><p>不改判决，只让多义性可见。成本极低，但能让你在看图时立刻知道"这里教材会判升级而工程没判"。</p></div>
+    </div>
+    <div class="opt">
+      <div class="lbl">优先级 3</div>
+      <div><h4>核心笔异常检测</h4><p>补上去掉线段之后缺失的事前滤波。三段核心提交前做一次异常笔筛查，可疑的标记而不是直接锁死 ZD/ZG。</p></div>
+    </div>
+  </div>
+
+  <div class="verdict v-note">
+    <div class="sig">不建议动</div>
+    <div><p>中枢的几何公式、DD/GG 口径、新生与扩展的阈值、三类点判据、周期不映射真实级别——这五处经校对与教材一致，动它们只会引入新问题。</p></div>
+  </div>
+
+  <div class="verdict v-warn">
+    <div class="sig">最后一句</div>
+    <div><p>札记里扫地僧有一段提醒，值得放在这份报告末尾："所谓的缠论的量化的指标、公式、系统什么的，其结果<strong>只能是工具，一个辅助工具</strong>，绝不会是交易系统。"（札记第 220 页）这不影响工程本身的价值，但它提示：把规则校对做到极致的收益是有上限的，超过某个点之后，精力应该转向信号质量的实证检验。</p></div>
+  </div>
+</section>
+
+<div class="close">
+  <p>校对源：《读缠论108课札记》651 页全文提取；红炉火教材 02《中枢、走势类型和买卖点》38 页、04《同级别分解》17 页，经 Keynote 转 PDF 后提取。</p>
+  <p>被校对对象：chan_rules <code>v31</code> 及 <code>app/chan_structure.py</code>、<code>app/chan_expansion.py</code>、<code>app/engine.py</code> 的实现。</p>
+  <p>本报告为规则语义校对，未执行回测与单元测试验证。</p>
+</div>
+
+</div>

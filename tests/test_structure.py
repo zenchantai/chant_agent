@@ -12,10 +12,10 @@ from app.store import Store
 from tests.chan_fixtures import seed, session_rows
 
 
-def test_rulebook_and_definition_version_are_v27():
+def test_rulebook_and_definition_version_are_pen_center_l2():
     rulebook = load_rulebook()
     assert rulebook["version"] == PERIOD_DEFINITION_VERSION
-    assert PERIOD_DEFINITION_VERSION == "chan-period-daily-led-reference-v27"
+    assert PERIOD_DEFINITION_VERSION == "chan-period-pen-center-l2-v1"
 
 
 def test_calculator_fingerprint_is_deterministic_and_fails_closed(tmp_path):
@@ -65,7 +65,8 @@ def test_period_snapshot_is_reproducible_and_uses_new_structure_groups(tmp_path)
     assert first["meta"]["structure_version"] == second["meta"]["structure_version"]
     assert first["structure"] == second["structure"]
     assert set(first) == {"meta", "structure"}
-    assert {"pens", "components", "centers", "center_revisions", "movements", "movement_revisions", "points", "point_revisions", "relations", "issues"} <= set(first["structure"])
+    assert {"pens", "components", "centers", "center_revisions", "promotion_candidates", "promotion_candidate_revisions", "segment_proofs", "segment_proof_revisions", "relations", "issues"} <= set(first["structure"])
+    assert not {"movements", "movement_revisions", "points", "point_revisions"} & set(first["structure"])
 
 
 def test_chart_page_is_nested_and_pagination_preserves_structure_identity(tmp_path):
@@ -112,6 +113,34 @@ def test_preview_never_writes_or_activates_run(tmp_path):
     assert preview["meta"]["persisted"] is False
     assert store.db.execute("SELECT COUNT(*) FROM chan_structure_runs").fetchone()[0] == run_count
     assert store.active_chan_run("000001", "5")["id"] == formal["meta"]["run_id"]
+
+
+def test_preview_tracks_forming_tail_and_keeps_database_formal(tmp_path):
+    store = Store(str(tmp_path / "forming-preview.db"))
+    rows = session_rows(12)
+    seed(store, "000001", rows)
+    service = PeriodStructureService(store, "forming-preview")
+    formal = service.ensure("000001", "5", force=True)
+    run_count = store.db.execute("SELECT COUNT(*) FROM chan_structure_runs").fetchone()[0]
+    forming = {**rows[-1], "trade_date": "2026-01-21 10:00:00", "close": rows[-1]["close"] + 1,
+               "high": rows[-1]["high"] + 1, "low": rows[-1]["low"] + 1}
+    marker = {"trade_date": forming["trade_date"], "is_forming": True, "status": "provisional"}
+
+    first = service.preview_period("000001", "5", "2", [*rows, forming], marker)
+    tail = first["structure"]["pens"][-1]
+    assert tail["status"] == "provisional"
+    assert tail["end_date"] == forming["trade_date"]
+    assert any(center["status"] == "provisional" for center in first["structure"]["centers"])
+    assert "movements" not in first["structure"] and "points" not in first["structure"]
+    assert store.db.execute("SELECT COUNT(*) FROM chan_structure_runs").fetchone()[0] == run_count
+    assert service.load("000001", "5")["meta"]["run_id"] == formal["meta"]["run_id"]
+
+    forming["close"] += 2
+    forming["high"] += 2
+    forming["low"] -= 2
+    second = service.preview_period("000001", "5", "2", [*rows, forming], marker)
+    assert second["structure"]["pens"][-1]["end_price"] != tail["end_price"]
+    assert second["meta"]["structure_version"] != first["meta"]["structure_version"]
 
 
 def test_source_paths_exist_in_repository():

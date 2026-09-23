@@ -21,8 +21,8 @@ const fixture = (patch: Partial<ChartData> = {}): ChartData => ({
   symbol: "000001", timeframe: "m", adjustflag: "2", calculation_profile: "pen_centers_only",
   bars: ["2026-01-30", "2026-02-27", "2026-03-31"].map(trade_date => ({ trade_date, open: 10, close: 10.5, high: 12, low: 8, volume: 100, amount: 1000 })),
   pens: [{ id: "p", kind: "pen", ordinal: 0, level: 0, status: "confirmed", start_date: "2026-01-30", end_date: "2026-02-27", start_price: 8, end_price: 12 }],
-  centers: [native()], center_revisions: [native()], components: [], movements: [], movement_revisions: [], points: [], point_revisions: [], relations: [], issues: [],
-  levels: [1], center_levels: [1], movement_levels: [], unassigned_by_level: {}, drawings: [], drawings_version: "", indicators: {macd: []},
+  centers: [native()], center_revisions: [native()], components: [], promotion_candidates: [], promotion_candidate_revisions: [], relations: [], issues: [],
+  levels: [1], center_levels: [1], unassigned_by_level: {}, drawings: [], drawings_version: "", indicators: {macd: []},
   available: true, has_more: true, active_structure_level: 1, max_available_center_level: 1,
   definition_version: "v27", calculator_fingerprint: "engine", structure_version: "monthly", run_id: 5,
   display_centers: [{ revision_id: "native", display_role: "active", parent_revision_ids: [] }], display_center_levels: [1],
@@ -87,20 +87,16 @@ describe("周月独立日线 L2 参考", () => {
     } finally { chart.dispose(); }
   });
 
-  it("遗留周月高阶中枢、走势、组件、买卖点不绘制，选中原生中枢只高亮笔", () => {
+  it("周月高阶中枢和组件不绘制，选中原生中枢只高亮笔", () => {
     const data = fixture();
     data.centers.push(native({id: "old-l2", level: 2}));
     data.center_revisions.push(native({id: "old-l2", level: 2}));
     data.display_centers!.push({revision_id: "old-l2", display_role: "active", parent_revision_ids: []});
-    data.movements = [{id: "old-movement", kind: "movement", level: 1, status: "confirmed", start_date: "2026-01-30", end_date: "2026-02-27", start_price: 8, end_price: 12}] as any;
     data.components = [{id: "old-component", kind: "component"}] as any;
-    data.points = [{id: "old-point", kind: "structural_point"}] as any;
     const before = JSON.stringify(data);
-    const artifacts = buildChartArtifacts({data, selectedStructureId: "native", visible: {components: true, movements: true}});
+    const artifacts = buildChartArtifacts({data, selectedStructureId: "native", visible: {components: true}});
     expect(artifacts.visibleCenters.map(center => center.level)).toEqual([1]);
-    expect(artifacts.visibleMovements).toEqual([]);
     expect(artifacts.visibleComponents).toEqual([]);
-    expect(artifacts.option?.series.some((item: any) => item.id === "buy-sell-points")).toBe(false);
     expect(buildComponentSeries({data, selectedStructureId: "native", visible: {components: true}}, data.bars.map(bar => bar.trade_date)).series).toEqual([]);
     expect(buildPenSeries({data, selectedStructureId: "native"}, data.bars.map(bar => bar.trade_date))[0].lineStyle.width).toBe(3.4);
     expect(JSON.stringify(data)).toBe(before);
@@ -109,7 +105,7 @@ describe("周月独立日线 L2 参考", () => {
 
   it("日线与分钟原生 L2 不受参考模式过滤，也不展示参考投影", () => {
     for (const timeframe of ["d", "5", "30"]) {
-      const data = fixture({timeframe, calculation_profile: "full", centers: [native({level: 2})], center_revisions: [native({level: 2})]});
+      const data = fixture({timeframe, calculation_profile: "pen_centers_l2", centers: [native({level: 2})], center_revisions: [native({level: 2})]});
       expect(normalizeChartData(data)?.centers[0].level).toBe(2);
       expect(buildChartArtifacts({data}).visibleDailyL2).toEqual([]);
     }

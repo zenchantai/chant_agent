@@ -22,7 +22,7 @@ def test_audit_scope_reads_enabled_stock_pool_only():
     assert enabled_symbols(connection) == ("A", "B")
 
 
-def test_nested_api_audit_accepts_v25_and_rejects_legacy_fields():
+def test_nested_api_audit_accepts_center_only_contract_and_rejects_legacy_fields():
     payload = {
         "meta": {
             "definition_version": PERIOD_DEFINITION_VERSION,
@@ -32,13 +32,15 @@ def test_nested_api_audit_accepts_v25_and_rejects_legacy_fields():
         "market": {"bars": []},
         "structure": {
             "centers": [{"id": "c", "level": 2}],
-            "movements": [{"id": "m", "level": 2}],
         },
         "indicators": {},
         "drawings": {"items": [], "version": ""},
         "pagination": {"has_more": False},
     }
     assert audit_api_payload(payload, 2) == []
+    payload["structure"]["movements"] = [{"id": "m", "level": 2}]
+    assert "API返回已删除字段:movements" in audit_api_payload(payload, 2)
+    payload["structure"].pop("movements")
     payload["pen_centers"] = []
     assert "API泄漏已删除的旧结构语义" in audit_api_payload(payload, 2)
 
@@ -51,7 +53,7 @@ def test_api_audit_rejects_cross_level_structure_rows():
             "active_level": 1,
         },
         "market": {},
-        "structure": {"centers": [{"level": 2}], "movements": []},
+        "structure": {"centers": [{"level": 2}]},
         "indicators": {}, "drawings": {}, "pagination": {},
     }
     assert "API centers混入其他级别" in audit_api_payload(payload, 1)
@@ -95,24 +97,30 @@ def test_audit_accepts_reference_native_structure_and_daily_single_bar_projectio
     assert audit_api_payload(reference_payload(timeframe), 1) == []
 
 
-@pytest.mark.parametrize("group", ["movements", "movement_revisions", "points", "point_revisions", "relations"])
-def test_reference_api_audit_rejects_every_full_only_group(group):
+@pytest.mark.parametrize("group", [
+    "movements", "movement_revisions", "points", "point_revisions",
+    "promotion_candidates", "promotion_candidate_revisions",
+])
+def test_reference_api_audit_rejects_retired_or_promotion_groups(group):
     payload = reference_payload()
     payload["structure"][group] = [{"id": "forbidden", "level": 1}]
-    assert f"profile:forbidden_group:{group}" in audit_api_payload(payload, 1)
+    expected = (f"profile:forbidden_group:{group}" if group in {"movements", "movement_revisions", "points", "point_revisions"}
+                else "profile:promotion_evidence_forbidden")
+    assert expected in audit_api_payload(payload, 1)
 
 
 def test_reference_audit_checks_profile_and_all_revisions_not_just_active_centers():
     payload = reference_payload()
     payload["meta"]["calculation_profile"] = "full"
+    assert "profile:unexpected:w:full" in audit_api_payload(payload, 1)
+    payload["meta"]["calculation_profile"] = "pen_centers_only"
     payload["meta"]["max_level"] = 2
     payload["structure"]["center_revisions"][0].update(
         level=2, active=False, unit_kind="center_revision", formation_modes=["expansion_envelope_overlap"],
     )
     problems = audit_api_payload(payload, 1)
-    assert "profile:unexpected:w:full" in problems
-    assert "profile:max_level_above_l1" in problems
-    assert any(item.startswith("profile:non_l1:center_revisions:") for item in problems)
+    assert "profile:max_level_above_limit" in problems
+    assert any(item.startswith("profile:invalid_level:center_revisions:") for item in problems)
     assert any(item.startswith("profile:promotion_evidence:center_revisions:") for item in problems)
 
 

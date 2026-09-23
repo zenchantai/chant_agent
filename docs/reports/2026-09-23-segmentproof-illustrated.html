@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SegmentProof 图解与完整分类</title>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f9f9f7; --surface:#fcfcfb; --surface-2:#f3f2ee;
+  --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
+  --pass:#2a78d6; --fail:#d03b3b; --dyn:#eb6834; --wit:#1baf7a;
+  --band:rgba(42,120,214,.13); --band2:rgba(27,175,122,.16);
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19; --surface-2:#222221;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+    --pass:#3987e5; --fail:#e66767; --dyn:#d95926; --wit:#199e70;
+    --band:rgba(57,135,229,.20); --band2:rgba(25,158,112,.22);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface:#1a1a19; --surface-2:#222221;
+  --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+  --pass:#3987e5; --fail:#e66767; --dyn:#d95926; --wit:#199e70;
+  --band:rgba(57,135,229,.20); --band2:rgba(25,158,112,.22);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--plane);color:var(--ink);font-family:var(--sans);
+  font-size:15px;line-height:1.7;overflow-x:hidden}
+.wrap{max-width:1000px;margin:0 auto;padding:44px 20px 96px}
+header{border-bottom:1px solid var(--grid);padding-bottom:24px;margin-bottom:8px}
+h1{font-size:clamp(25px,4vw,34px);margin:0 0 10px;letter-spacing:-.01em}
+.sub{color:var(--ink-2);margin:0;font-size:15px}
+.meta{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px}
+.tag{font-family:var(--mono);font-size:12px;padding:3px 9px;border-radius:5px;
+  background:var(--surface-2);color:var(--ink-2);border:1px solid var(--ring)}
+h2{font-size:21px;margin:52px 0 4px;letter-spacing:-.005em}
+h2 .num{font-family:var(--mono);color:var(--muted);font-size:14px;margin-right:9px;font-weight:400}
+h3{font-size:15.5px;margin:30px 0 8px}
+.lede{color:var(--ink-2);margin:0 0 20px;font-size:14.5px}
+p{margin:0 0 13px}
+code{font-family:var(--mono);font-size:.86em;background:var(--surface-2);
+  padding:1.5px 5px;border-radius:4px;border:1px solid var(--ring)}
+figure{margin:24px 0;background:var(--surface);border:1px solid var(--ring);
+  border-radius:12px;padding:20px 22px 16px;overflow-x:auto}
+figure svg{display:block;max-width:100%;height:auto;margin:0 auto}
+figcaption{font-size:12.5px;color:var(--muted);margin-top:14px;line-height:1.6}
+figcaption b{color:var(--ink-2);font-weight:600}
+/* svg roles */
+.dg{stroke:currentColor;fill:none}
+.dg-box{stroke:currentColor;fill:none;stroke-width:1.3}
+.dg-t{fill:currentColor;font-family:var(--sans);font-size:12px}
+.dg-tm{fill:currentColor;font-family:var(--mono);font-size:11px}
+.dg-mut{fill:var(--muted);font-family:var(--sans);font-size:11.5px}
+.dg-mutm{fill:var(--muted);font-family:var(--mono);font-size:10.5px}
+.dg-pen{stroke:currentColor;fill:none;stroke-width:2;stroke-linejoin:round}
+.dg-pass{stroke:var(--pass);fill:none;stroke-width:1.8}
+.dg-passf{fill:var(--pass)}
+.dg-fail{stroke:var(--fail);fill:none;stroke-width:1.6}
+.dg-failf{fill:var(--fail)}
+.dg-dyn{stroke:var(--dyn);fill:none;stroke-width:2}
+.dg-dynf{fill:var(--dyn)}
+.dg-wit{stroke:var(--wit);fill:none;stroke-width:2.2}
+.dg-witf{fill:var(--wit)}
+.dg-band{fill:var(--band);stroke:none}
+.dg-band2{fill:var(--band2);stroke:none}
+.dg-dash{stroke:currentColor;fill:none;stroke-width:1.1;stroke-dasharray:4 3;opacity:.55}
+.dg-ax{stroke:var(--axis);fill:none;stroke-width:1}
+.dg-cell{fill:none;stroke:var(--grid);stroke-width:1}
+.scroll{overflow-x:auto;margin:18px 0;border:1px solid var(--ring);border-radius:10px;background:var(--surface)}
+table{width:100%;border-collapse:collapse;font-size:13.5px;min-width:520px}
+th{text-align:left;font-weight:600;font-size:12px;color:var(--ink-2);background:var(--surface-2);
+  padding:10px 14px;border-bottom:1px solid var(--grid);white-space:nowrap}
+td{padding:9px 14px;border-bottom:1px solid var(--grid);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:var(--surface-2)}
+td.mono,.mono{font-family:var(--mono);font-size:12.5px}
+.legend{display:flex;flex-wrap:wrap;gap:18px;margin:18px 0 2px;font-size:13px}
+.legend .li{display:flex;align-items:center;gap:7px;color:var(--ink-2)}
+.sw{width:22px;height:0;border-top-width:2.5px;border-top-style:solid;flex:0 0 auto}
+.card{background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:18px 22px;margin:18px 0}
+.card p:last-child{margin-bottom:0}
+ul{padding-left:22px;margin:0 0 13px}
+li{margin:5px 0;font-size:14px}
+footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--grid);font-size:12.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>SegmentProof 图解与完整分类</h1>
+  <p class="sub">8 张图覆盖：一段的解剖、三段成 L2、fixed/dynamic、两种方向、六种失败、多解仲裁、两条入口。</p>
+  <div class="meta">
+    <span class="tag">2026-09-23</span>
+    <span class="tag">app/chan_expansion.py</span>
+    <span class="tag">事实源 → 同名 .md</span>
+  </div>
+</header>
+
+<div class="legend">
+  <span class="li"><span class="sw" style="border-color:var(--pass)"></span>通过路径 / L2 区间</span>
+  <span class="li"><span class="sw" style="border-color:var(--wit)"></span>中枢见证（段内自证）</span>
+  <span class="li"><span class="sw" style="border-color:var(--dyn)"></span>动态 / 未收口</span>
+  <span class="li"><span class="sw" style="border-color:var(--fail)"></span>失败出口</span>
+  <span class="li"><span class="sw" style="border-color:currentColor"></span>笔 / 结构</span>
+</div>
+
+<h2><span class="num">01</span>全景：从 L1 中枢到 L2 的所有出口</h2>
+<p class="lede">主干向下是唯一的成功路径，向右每个分叉都是一个具名失败码。</p>
+
+<figure>
+<svg viewBox="0 0 860 700" role="img" aria-label="从 L1 笔中枢到 L2 中枢的完整判定流程，主干为成功路径，右侧七个分叉为具名失败码">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+    <marker id="arf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--fail)"/>
+    </marker>
+    <marker id="arp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--pass)"/>
+    </marker>
+    <marker id="ard" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--dyn)"/>
+    </marker>
+  </defs>
+
+  <!-- 顶部两入口 -->
+  <rect class="dg-box" x="90" y="14" width="200" height="44" rx="7"/>
+  <text class="dg-t" x="190" y="34" text-anchor="middle">入口① extension</text>
+  <text class="dg-mutm" x="190" y="50" text-anchor="middle">单中枢 owned_unit_ids</text>
+  <rect class="dg-box" x="330" y="14" width="210" height="44" rx="7"/>
+  <text class="dg-t" x="435" y="34" text-anchor="middle">入口② expansion</text>
+  <text class="dg-mutm" x="435" y="50" text-anchor="middle">扩展关系对 + 右滑窗</text>
+  <path class="dg" marker-end="url(#ar)" d="M190,58 L190,74 L312,74 L312,88"/>
+  <path class="dg" marker-end="url(#ar)" d="M435,58 L435,74 L312,74"/>
+
+  <!-- 主干节点 -->
+  <rect class="dg-box" x="152" y="90" width="320" height="42" rx="7"/>
+  <text class="dg-t" x="312" y="108" text-anchor="middle">search_unit_ids ／ required_unit_ids</text>
+  <text class="dg-mutm" x="312" y="124" text-anchor="middle">候选笔范围 ／ 冻结前 9 个</text>
+
+  <path class="dg" marker-end="url(#ar)" d="M312,132 L312,162"/>
+  <rect class="dg-box" x="192" y="164" width="240" height="34" rx="7"/>
+  <text class="dg-t" x="312" y="185" text-anchor="middle">拥有单位数 ≥ 9 ？</text>
+  <path class="dg-fail" marker-end="url(#arf)" d="M432,181 L560,181"/>
+  <text class="dg-mutm" x="496" y="175" text-anchor="middle">否</text>
+  <text class="dg-tm" style="fill:var(--fail)" x="568" y="185">nine_owned_units</text>
+
+  <path class="dg" marker-end="url(#ar)" d="M312,198 L312,228"/>
+  <rect class="dg-box" x="172" y="230" width="280" height="34" rx="7"/>
+  <text class="dg-t" x="312" y="251" text-anchor="middle">笔连续 · 无重复 · 前缀未改 ？</text>
+  <path class="dg-fail" marker-end="url(#arf)" d="M452,240 L560,240"/>
+  <text class="dg-tm" style="fill:var(--fail)" x="568" y="237">segment_continuity_failed</text>
+  <path class="dg-fail" marker-end="url(#arf)" d="M452,256 L560,256"/>
+  <text class="dg-tm" style="fill:var(--fail)" x="568" y="260">segment_ownership_conflict</text>
+
+  <path class="dg" marker-end="url(#ar)" d="M312,264 L312,294"/>
+  <rect class="dg-box" x="182" y="296" width="260" height="42" rx="7"/>
+  <text class="dg-t" x="312" y="314" text-anchor="middle">切三段 S1 | S2 | S3</text>
+  <text class="dg-mutm" x="312" y="330" text-anchor="middle">每段 ≥ 3 笔，滑窗枚举全部切法</text>
+
+  <path class="dg" marker-end="url(#ar)" d="M312,338 L312,368"/>
+  <rect class="dg-box" x="172" y="370" width="280" height="34" rx="7"/>
+  <text class="dg-t" x="312" y="391" text-anchor="middle">方向 = 上下上 或 下上下 ？</text>
+  <path class="dg-fail" marker-end="url(#arf)" d="M452,387 L560,387"/>
+  <text class="dg-tm" style="fill:var(--fail)" x="568" y="384">segment_direction_mismatch</text>
+  <text class="dg-mutm" x="568" y="399">dir0≠dir2 或 dir0=dir1</text>
+
+  <path class="dg" marker-end="url(#ar)" d="M312,404 L312,434"/>
+  <rect class="dg-box" x="152" y="436" width="320" height="34" rx="7" style="stroke:var(--wit)"/>
+  <text class="dg-t" x="312" y="457" text-anchor="middle" style="fill:var(--wit)">每段内部都能证出 L1 中枢见证 ？</text>
+  <path class="dg-fail" marker-end="url(#arf)" d="M472,453 L560,453"/>
+  <text class="dg-tm" style="fill:var(--fail)" x="568" y="456">segment_child_core_missing</text>
+
+  <path class="dg" marker-end="url(#ar)" d="M312,470 L312,500"/>
+  <rect class="dg-box" x="172" y="502" width="280" height="42" rx="7"/>
+  <text class="dg-t" x="312" y="520" text-anchor="middle">zd = max(low)，zg = min(high)</text>
+  <text class="dg-mutm" x="312" y="536" text-anchor="middle">三段区间交集，非包络</text>
+  <path class="dg-fail" marker-end="url(#arf)" d="M452,523 L560,523"/>
+  <text class="dg-tm" style="fill:var(--fail)" x="568" y="520">segment_common_overlap_empty</text>
+  <text class="dg-mutm" x="568" y="535">zd + ε ≥ zg</text>
+
+  <path class="dg-pass" marker-end="url(#arp)" d="M312,544 L312,574"/>
+  <text class="dg-mutm" x="322" y="563">zd + ε &lt; zg</text>
+  <rect x="222" y="576" width="180" height="36" rx="7" style="fill:none;stroke:var(--pass);stroke-width:2"/>
+  <text class="dg-t" x="312" y="599" text-anchor="middle" style="fill:var(--pass);font-weight:600">L2 中枢</text>
+
+  <!-- 末态二分 -->
+  <path class="dg-pass" marker-end="url(#arp)" d="M262,612 L262,634 L160,634 L160,652"/>
+  <path class="dg-dyn" marker-end="url(#ard)" d="M362,612 L362,634 L470,634 L470,652"/>
+  <rect class="dg-box" x="46" y="654" width="228" height="38" rx="7" style="stroke:var(--pass)"/>
+  <text class="dg-tm" x="160" y="670" text-anchor="middle" style="fill:var(--pass)">boundary_status = fixed</text>
+  <text class="dg-mutm" x="160" y="685" text-anchor="middle">S3 被反向 S4 收口 · 实线</text>
+  <rect class="dg-box" x="356" y="654" width="228" height="38" rx="7" style="stroke:var(--dyn)"/>
+  <text class="dg-tm" x="470" y="670" text-anchor="middle" style="fill:var(--dyn)">boundary_status = dynamic</text>
+  <text class="dg-mutm" x="470" y="685" text-anchor="middle">S3 仍是尾部 · 虚线</text>
+
+  <!-- 兜底 -->
+  <rect class="dg-box" x="610" y="596" width="238" height="56" rx="7" style="stroke:var(--fail);stroke-dasharray:4 3"/>
+  <text class="dg-tm" x="729" y="615" text-anchor="middle" style="fill:var(--fail)">three_segment_proofs_missing</text>
+  <text class="dg-mutm" x="729" y="630" text-anchor="middle">前六项全过但仍凑不出三段</text>
+  <text class="dg-mutm" x="729" y="645" text-anchor="middle">candidate.status = unresolved</text>
+</svg>
+<figcaption><b>七个失败出口全在右侧</b>，诊断码按上到下的顺序返回第一个卡住的环节——拿到码即知卡在哪一级。中间那道绿框是 SegmentProof 区别于「随便三组笔」的唯一门槛。</figcaption>
+</figure>
+
+<h2><span class="num">02</span>一段的解剖：笔组 + 内部见证</h2>
+<p class="lede">段的 <code>low/high</code> 是全段极值；见证的 <code>zd/zg</code> 是段内三笔的重叠——两个不同的量，L2 只用前者。</p>
+
+<figure>
+<svg viewBox="0 0 800 340" role="img" aria-label="一个 SegmentProof 的解剖：五笔上行段，内部第二至第四笔构成严格重叠的中枢见证">
+  <defs>
+    <marker id="arp2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--pass)"/>
+    </marker>
+  </defs>
+  <!-- 段整体范围虚线框 -->
+  <rect class="dg-dash" x="44" y="84" width="530" height="198" rx="4"/>
+  <text class="dg-mutm" x="52" y="78">段范围 [low, high]</text>
+
+  <!-- 见证带 -->
+  <rect class="dg-band2" x="44" y="186" width="530" height="44"/>
+  <line class="dg-wit" x1="44" y1="186" x2="574" y2="186"/>
+  <line class="dg-wit" x1="44" y1="230" x2="574" y2="230"/>
+  <text class="dg-tm" x="582" y="190" style="fill:var(--wit)">zg = min(high p2,p3,p4)</text>
+  <text class="dg-tm" x="582" y="234" style="fill:var(--wit)">zd = max(low p2,p3,p4)</text>
+
+  <!-- 笔折线 -->
+  <polyline class="dg-pen" points="60,270 150,190 240,240 330,170 420,230 510,90"/>
+  <!-- 端点 -->
+  <circle cx="60" cy="270" r="3.5" fill="currentColor"/><circle cx="150" cy="190" r="3.5" fill="currentColor"/>
+  <circle cx="240" cy="240" r="3.5" fill="currentColor"/><circle cx="330" cy="170" r="3.5" fill="currentColor"/>
+  <circle cx="420" cy="230" r="3.5" fill="currentColor"/><circle cx="510" cy="90" r="3.5" fill="currentColor"/>
+
+  <!-- 笔标签 -->
+  <text class="dg-mutm" x="105" y="243">p1 ↑</text>
+  <text class="dg-mutm" x="195" y="205">p2 ↓</text>
+  <text class="dg-mutm" x="285" y="222">p3 ↑</text>
+  <text class="dg-mutm" x="375" y="188">p4 ↓</text>
+  <text class="dg-mutm" x="465" y="170">p5 ↑</text>
+
+  <!-- 见证核心括号 -->
+  <path class="dg-wit" d="M150,296 L150,302 L420,302 L420,296"/>
+  <text class="dg-tm" x="285" y="318" text-anchor="middle" style="fill:var(--wit)">见证核心 = p2,p3,p4（连续 · 方向交替 · 严格重叠）</text>
+
+  <!-- 起终点标注 -->
+  <text class="dg-mutm" x="14" y="274">start</text>
+  <text class="dg-mutm" x="520" y="86">end</text>
+  <line class="dg-ax" x1="44" y1="84" x2="36" y2="84"/><text class="dg-mutm" x="0" y="88">high</text>
+  <line class="dg-ax" x1="44" y1="282" x2="36" y2="282"/><text class="dg-mutm" x="4" y="286">low</text>
+
+  <!-- 方向箭头 -->
+  <path class="dg-pass" marker-end="url(#arp2)" d="M600,270 L600,110"/>
+  <text class="dg-tm" x="610" y="196" style="fill:var(--pass)">direction = up</text>
+  <text class="dg-mutm" x="610" y="212">end_price &gt; start_price + ε</text>
+</svg>
+<figcaption><b>见证核心取最左</b>：<code>for offset in range(len(part)-2)</code> 找到第一个合法三笔就返回，所以 p1 和 p5 不参与见证。见证不必贴段的端点，但三笔必须都在段内。</figcaption>
+</figure>
+
+<h2><span class="num">03</span>三段成 L2：区间交集，不是包络</h2>
+<p class="lede">右侧三根竖条与左侧折线共用价格轴。横贯的蓝带就是 L2 的真实区间。</p>
+
+<figure>
+<svg viewBox="0 0 860 380" role="img" aria-label="三段 SegmentProof 上下上排列，三段各自价格区间的公共交集构成 L2 中枢的 zd 与 zg">
+  <!-- L2 交集带，横贯 -->
+  <rect class="dg-band" x="40" y="150" width="790" height="86"/>
+  <line class="dg-pass" x1="40" y1="150" x2="830" y2="150" stroke-dasharray="0"/>
+  <line class="dg-pass" x1="40" y1="236" x2="830" y2="236"/>
+
+  <!-- 折线：S1 上 -->
+  <polyline class="dg-pen" points="50,244 95,175 130,215 175,150"/>
+  <!-- S2 下 -->
+  <polyline class="dg-pen" points="175,150 215,222 250,182 290,248 330,205 370,250"/>
+  <!-- S3 上 -->
+  <polyline class="dg-pen" points="370,250 410,178 445,235 485,160 520,205 560,120"/>
+
+  <!-- 段分隔 -->
+  <line class="dg-dash" x1="175" y1="60" x2="175" y2="300"/>
+  <line class="dg-dash" x1="370" y1="60" x2="370" y2="300"/>
+  <text class="dg-t" x="112" y="52" text-anchor="middle">S1 ↑</text>
+  <text class="dg-t" x="272" y="52" text-anchor="middle">S2 ↓</text>
+  <text class="dg-t" x="465" y="52" text-anchor="middle">S3 ↑</text>
+  <text class="dg-mutm" x="112" y="68" text-anchor="middle">≥3 笔 + 见证</text>
+  <text class="dg-mutm" x="272" y="68" text-anchor="middle">≥3 笔 + 见证</text>
+  <text class="dg-mutm" x="465" y="68" text-anchor="middle">≥3 笔 + 见证</text>
+
+  <!-- 三根区间竖条，共用 y -->
+  <rect class="dg-box" x="640" y="150" width="44" height="94"/>
+  <rect class="dg-box" x="702" y="140" width="44" height="110"/>
+  <rect class="dg-box" x="764" y="120" width="44" height="116"/>
+  <text class="dg-mutm" x="662" y="264" text-anchor="middle">S1</text>
+  <text class="dg-mutm" x="724" y="264" text-anchor="middle">S2</text>
+  <text class="dg-mutm" x="786" y="264" text-anchor="middle">S3</text>
+  <text class="dg-mut" x="724" y="104" text-anchor="middle">各段 [low, high]</text>
+
+  <!-- ZD/ZG 标注 -->
+  <text class="dg-tm" x="40" y="144" style="fill:var(--pass)">ZG = min(high₁,high₂,high₃)</text>
+  <text class="dg-tm" x="40" y="252" style="fill:var(--pass)">ZD = max(low₁,low₂,low₃)</text>
+  <text class="dg-t" x="430" y="196" text-anchor="middle" style="fill:var(--pass);font-weight:600">L2 区间 = 三段交集</text>
+
+  <!-- 约束 -->
+  <text class="dg-mutm" x="40" y="298">方向约束：dir(S1) = dir(S3) ≠ dir(S2) —— 只有 上下上 / 下上下 两种合法模式</text>
+  <text class="dg-mutm" x="40" y="316">区间约束：zd + ε &lt; zg，否则 segment_common_overlap_empty</text>
+  <text class="dg-mutm" x="40" y="334">禁止：把 L1 的 dd/gg 包络直接抬一级当 L2（CENTER-NEWBORN-EXPANSION-V26）</text>
+</svg>
+<figcaption>三段的 <code>[low, high]</code> 是<b>全段极值</b>（含各自的见证核心与之外的笔）。交集非空才提交 L2；交集为空时整个切法作废，滑窗继续试下一种。</figcaption>
+</figure>
+
+<h2><span class="num">04</span>fixed 与 dynamic：差别只在 S4 是否存在</h2>
+<p class="lede">这是同一个 L2 的两个生命阶段，不是两种 L2。</p>
+
+<figure>
+<svg viewBox="0 0 860 300" role="img" aria-label="dynamic 与 fixed 的对比：S3 是否被一个反向且自带中枢见证的 S4 收口，决定 boundary_status">
+  <!-- 左：dynamic -->
+  <text class="dg-t" x="30" y="24" style="fill:var(--dyn);font-weight:600">dynamic —— S3 还没走完</text>
+  <rect class="dg-dash" x="24" y="34" width="386" height="180" rx="8"/>
+  <polyline class="dg-pen" points="46,170 80,120 110,155 140,108"/>
+  <polyline class="dg-pen" points="140,108 172,168 200,138 230,186"/>
+  <polyline class="dg-pen" points="230,186 262,130 290,172 318,112"/>
+  <polyline class="dg-dyn" points="318,112 352,86" stroke-dasharray="5 4"/>
+  <text class="dg-mutm" x="360" y="84" style="fill:var(--dyn)">？</text>
+  <line class="dg-dash" x1="140" y1="44" x2="140" y2="200"/>
+  <line class="dg-dash" x1="230" y1="44" x2="230" y2="200"/>
+  <text class="dg-mutm" x="92" y="58" text-anchor="middle">S1 ↑</text>
+  <text class="dg-mutm" x="185" y="58" text-anchor="middle">S2 ↓</text>
+  <text class="dg-mutm" x="300" y="58" text-anchor="middle">S3 ↑ 开放</text>
+  <text class="dg-tm" x="30" y="234">S3.status = provisional</text>
+  <text class="dg-tm" x="30" y="252">boundary_mode = "pen_group"</text>
+  <text class="dg-tm" x="30" y="270">completion_evidence_id = None</text>
+  <text class="dg-tm" x="30" y="288" style="fill:var(--dyn)">revision_no = len − 2　·　前端虚线</text>
+
+  <!-- 右：fixed -->
+  <text class="dg-t" x="450" y="24" style="fill:var(--pass);font-weight:600">fixed —— S3 被反向 S4 收口</text>
+  <rect class="dg-dash" x="444" y="34" width="392" height="180" rx="8"/>
+  <polyline class="dg-pen" points="462,170 492,120 518,155 544,108"/>
+  <polyline class="dg-pen" points="544,108 572,168 596,138 622,186"/>
+  <polyline class="dg-pen" points="622,186 650,130 674,172 700,104"/>
+  <polyline class="dg-wit" points="700,104 726,162 750,132 776,180"/>
+  <line class="dg-dash" x1="544" y1="44" x2="544" y2="200"/>
+  <line class="dg-dash" x1="622" y1="44" x2="622" y2="200"/>
+  <line class="dg-dash" x1="700" y1="44" x2="700" y2="200"/>
+  <text class="dg-mutm" x="503" y="58" text-anchor="middle">S1 ↑</text>
+  <text class="dg-mutm" x="583" y="58" text-anchor="middle">S2 ↓</text>
+  <text class="dg-mutm" x="661" y="58" text-anchor="middle">S3 ↑</text>
+  <text class="dg-mutm" x="740" y="58" text-anchor="middle" style="fill:var(--wit)">S4 ↓</text>
+  <text class="dg-mutm" x="740" y="200" text-anchor="middle" style="fill:var(--wit)">内部也须有见证</text>
+  <text class="dg-tm" x="450" y="234">S3.status = confirmed</text>
+  <text class="dg-tm" x="450" y="252">boundary_mode = "pen_group_reversal"</text>
+  <text class="dg-tm" x="450" y="270">completion_evidence_id = local-boundary-…</text>
+  <text class="dg-tm" x="450" y="288" style="fill:var(--pass)">revision_no = len + 1　·　前端实线</text>
+</svg>
+<figcaption>S4 的成立要同时满足四条（<code>_find_local_completion</code>）：剩余 ≥3 笔、连续且确认时间不晚于 <code>observed_at</code>、净方向与 S3 <b>相反</b>、<b>内部同样证出 L1 中枢见证</b>。第四条意味着收口证据自己也是一次小型段校验，不是「随便反向三笔」。</figcaption>
+</figure>
+
+<h2><span class="num">05</span>镜像：下-上-下</h2>
+<p class="lede">规则完全对称，仅方向取反。</p>
+
+<figure>
+<svg viewBox="0 0 860 260" role="img" aria-label="下上下模式的三段 SegmentProof，规则与上下上完全对称">
+  <rect class="dg-band" x="40" y="118" width="680" height="72"/>
+  <line class="dg-pass" x1="40" y1="118" x2="720" y2="118"/>
+  <line class="dg-pass" x1="40" y1="190" x2="720" y2="190"/>
+  <polyline class="dg-pen" points="50,62 92,140 126,100 166,168"/>
+  <polyline class="dg-pen" points="166,168 208,96 242,146 282,74"/>
+  <polyline class="dg-pen" points="282,74 324,156 358,112 398,182 432,140 470,196"/>
+  <line class="dg-dash" x1="166" y1="44" x2="166" y2="216"/>
+  <line class="dg-dash" x1="282" y1="44" x2="282" y2="216"/>
+  <text class="dg-t" x="108" y="36" text-anchor="middle">S1 ↓</text>
+  <text class="dg-t" x="224" y="36" text-anchor="middle">S2 ↑</text>
+  <text class="dg-t" x="376" y="36" text-anchor="middle">S3 ↓</text>
+  <text class="dg-tm" x="736" y="122" style="fill:var(--pass)">ZG</text>
+  <text class="dg-tm" x="736" y="194" style="fill:var(--pass)">ZD</text>
+  <text class="dg-t" x="380" y="158" text-anchor="middle" style="fill:var(--pass);font-weight:600">L2 区间</text>
+  <text class="dg-mutm" x="40" y="238">directions = [down, up, down]　·　zd/zg 计算、见证要求、fixed/dynamic 判定与上下上一致</text>
+  <text class="dg-mutm" x="40" y="254">只有这两种模式合法：dir(S1) = dir(S3) ≠ dir(S2)</text>
+</svg>
+<figcaption>「净方向」由首笔起点与末笔终点比较得出（带 ε）。若两者相等，<code>direction</code> 为 <code>None</code>，整段直接作废——横盘段不能充当 S1/S2/S3。</figcaption>
+</figure>
+
+<h2><span class="num">06</span>六种失败情况</h2>
+<p class="lede">每格一个具名码。第七种是兜底码，无独立图形。</p>
+
+<figure>
+<svg viewBox="0 0 860 470" role="img" aria-label="SegmentProof 的六种具名失败情况：单位不足、笔不连续、所有权冲突、方向不符、段内无中枢、三段无交集">
+  <defs>
+    <marker id="arf6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--fail)"/>
+    </marker>
+  </defs>
+
+  <!-- ① nine_owned_units -->
+  <rect class="dg-cell" x="14" y="14" width="272" height="200" rx="8"/>
+  <text class="dg-tm" x="30" y="36" style="fill:var(--fail)">① nine_owned_units</text>
+  <text class="dg-mutm" x="30" y="52">拥有单位不足 9，连切段都不尝试</text>
+  <g>
+    <rect class="dg-box" x="34" y="92" width="24" height="24" rx="4"/><rect class="dg-box" x="62" y="92" width="24" height="24" rx="4"/>
+    <rect class="dg-box" x="90" y="92" width="24" height="24" rx="4"/><rect class="dg-box" x="118" y="92" width="24" height="24" rx="4"/>
+    <rect class="dg-box" x="146" y="92" width="24" height="24" rx="4"/><rect class="dg-box" x="174" y="92" width="24" height="24" rx="4"/>
+    <rect class="dg-box" x="202" y="92" width="24" height="24" rx="4"/><rect class="dg-box" x="230" y="92" width="24" height="24" rx="4"/>
+    <rect x="258" y="92" width="24" height="24" rx="4" style="fill:none;stroke:var(--fail);stroke-width:1.3;stroke-dasharray:3 3"/>
+  </g>
+  <text class="dg-mutm" x="34" y="132">p1  p2  p3  p4  p5  p6  p7  p8</text>
+  <path class="dg-fail" d="M34,148 L254,148"/>
+  <text class="dg-tm" x="144" y="168" text-anchor="middle" style="fill:var(--fail)">只有 8 个</text>
+  <text class="dg-mutm" x="34" y="192">第 9 个缺位 → 直接 return，不进滑窗</text>
+
+  <!-- ② segment_continuity_failed -->
+  <rect class="dg-cell" x="294" y="14" width="272" height="200" rx="8"/>
+  <text class="dg-tm" x="310" y="36" style="fill:var(--fail)">② segment_continuity_failed</text>
+  <text class="dg-mutm" x="310" y="52">笔之间断开：跨区间或首尾价不接</text>
+  <polyline class="dg-pen" points="316,150 348,108 378,140 406,100"/>
+  <polyline class="dg-pen" points="454,132 484,92 512,126 542,86"/>
+  <line class="dg-fail" x1="418" y1="84" x2="442" y2="148" stroke-width="2"/>
+  <line class="dg-fail" x1="442" y1="84" x2="418" y2="148" stroke-width="2"/>
+  <text class="dg-tm" x="430" y="172" text-anchor="middle" style="fill:var(--fail)">断点</text>
+  <text class="dg-mutm" x="310" y="196">_units_contiguous 检查 range/sequence/价格相接</text>
+
+  <!-- ③ segment_ownership_conflict -->
+  <rect class="dg-cell" x="574" y="14" width="272" height="200" rx="8"/>
+  <text class="dg-tm" x="590" y="36" style="fill:var(--fail)">③ segment_ownership_conflict</text>
+  <text class="dg-mutm" x="590" y="52">冻结前缀被改动，或 id 重复</text>
+  <text class="dg-tm" x="590" y="88">required = [p1 … p9]</text>
+  <rect class="dg-box" x="590" y="98" width="200" height="20" rx="4" style="stroke:var(--pass)"/>
+  <text class="dg-mutm" x="690" y="112" text-anchor="middle" style="fill:var(--pass)">冻结前缀</text>
+  <text class="dg-tm" x="590" y="142">search　 = [p2 … p10]</text>
+  <rect class="dg-box" x="612" y="152" width="200" height="20" rx="4" style="stroke:var(--fail)"/>
+  <text class="dg-mutm" x="712" y="166" text-anchor="middle" style="fill:var(--fail)">前缀偏移</text>
+  <text class="dg-mutm" x="590" y="196">set(search[:9]) ≠ set(required) → 拒绝</text>
+
+  <!-- ④ segment_direction_mismatch -->
+  <rect class="dg-cell" x="14" y="228" width="272" height="226" rx="8"/>
+  <text class="dg-tm" x="30" y="250" style="fill:var(--fail)">④ segment_direction_mismatch</text>
+  <text class="dg-mutm" x="30" y="266">三段方向不是 上下上 / 下上下</text>
+  <polyline class="dg-pen" points="36,380 68,332 96,362 124,318"/>
+  <polyline class="dg-pen" points="124,318 152,378 178,348 206,398"/>
+  <polyline class="dg-fail" points="206,398 234,424 258,410 276,436" stroke-width="2"/>
+  <text class="dg-mutm" x="80" y="300" text-anchor="middle">S1 ↑</text>
+  <text class="dg-mutm" x="165" y="300" text-anchor="middle">S2 ↓</text>
+  <text class="dg-mutm" x="244" y="300" text-anchor="middle" style="fill:var(--fail)">S3 ↓</text>
+  <text class="dg-tm" x="30" y="448" style="fill:var(--fail)">dir(S1) ≠ dir(S3) → 拒绝</text>
+
+  <!-- ⑤ segment_child_core_missing -->
+  <rect class="dg-cell" x="294" y="228" width="272" height="226" rx="8"/>
+  <text class="dg-tm" x="310" y="250" style="fill:var(--fail)">⑤ segment_child_core_missing</text>
+  <text class="dg-mutm" x="310" y="266">某段内部证不出中枢见证</text>
+  <polyline class="dg-pen" points="320,420 356,368 386,392 416,336 444,356 474,300"/>
+  <text class="dg-mutm" x="396" y="296" text-anchor="middle">S2 内部单调递进</text>
+  <path class="dg-dash" d="M320,392 L540,392"/>
+  <path class="dg-dash" d="M320,336 L540,336"/>
+  <text class="dg-tm" x="486" y="368" style="fill:var(--fail)">无任何</text>
+  <text class="dg-tm" x="486" y="384" style="fill:var(--fail)">三笔严格</text>
+  <text class="dg-tm" x="486" y="400" style="fill:var(--fail)">重叠</text>
+  <text class="dg-tm" x="310" y="448" style="fill:var(--fail)">_local_core_witness → None</text>
+
+  <!-- ⑥ segment_common_overlap_empty -->
+  <rect class="dg-cell" x="574" y="228" width="272" height="226" rx="8"/>
+  <text class="dg-tm" x="590" y="250" style="fill:var(--fail)">⑥ segment_common_overlap_empty</text>
+  <text class="dg-mutm" x="590" y="266">三段各自合法，但无公共交集</text>
+  <rect class="dg-box" x="600" y="294" width="60" height="46"/>
+  <text class="dg-mutm" x="630" y="356" text-anchor="middle">S1</text>
+  <rect class="dg-box" x="672" y="344" width="60" height="46"/>
+  <text class="dg-mutm" x="702" y="406" text-anchor="middle">S2</text>
+  <rect class="dg-box" x="744" y="394" width="60" height="46"/>
+  <text class="dg-mutm" x="774" y="456" text-anchor="middle">S3</text>
+  <path class="dg-fail" marker-end="url(#arf6)" d="M818,300 L818,436"/>
+  <text class="dg-tm" x="590" y="286" style="fill:var(--fail)">区间完全错开 → zd + ε ≥ zg</text>
+</svg>
+<figcaption><b>⑦ three_segment_proofs_missing</b> 是兜底码：前六项全部通过，但滑窗仍凑不出合法三段切分（例如段长上限截断后没有可行组合）。它没有独立图形，因为它描述的是「组合搜索失败」而非某个具体几何缺陷。</figcaption>
+</figure>
+
+<h2><span class="num">07</span>多解仲裁：同一批笔的不同切法</h2>
+<p class="lede">滑窗枚举全部合法切分，排序取一。落选的也存库。</p>
+
+<figure>
+<svg viewBox="0 0 860 330" role="img" aria-label="同一批九笔的三种合法切分方式，按排序键选出唯一 selected，其余标记为 rejected">
+  <defs>
+    <marker id="arp7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--pass)"/>
+    </marker>
+  </defs>
+  <text class="dg-mutm" x="30" y="26">search_unit_ids = p1 … p9</text>
+
+  <!-- 切法 A -->
+  <text class="dg-tm" x="30" y="62">切法 A</text>
+  <rect x="96" y="46" width="132" height="24" rx="4" style="fill:none;stroke:var(--pass);stroke-width:1.8"/>
+  <rect x="232" y="46" width="132" height="24" rx="4" style="fill:none;stroke:var(--pass);stroke-width:1.8"/>
+  <rect x="368" y="46" width="132" height="24" rx="4" style="fill:none;stroke:var(--pass);stroke-width:1.8"/>
+  <text class="dg-mutm" x="162" y="63" text-anchor="middle">p1 p2 p3</text>
+  <text class="dg-mutm" x="298" y="63" text-anchor="middle">p4 p5 p6</text>
+  <text class="dg-mutm" x="434" y="63" text-anchor="middle">p7 p8 p9</text>
+  <text class="dg-tm" x="516" y="63" style="fill:var(--pass)">3 / 3 / 3</text>
+  <path class="dg-pass" marker-end="url(#arp7)" d="M596,58 L640,58"/>
+  <text class="dg-tm" x="650" y="62" style="fill:var(--pass);font-weight:600">selected</text>
+
+  <!-- 切法 B -->
+  <text class="dg-tm" x="30" y="122">切法 B</text>
+  <rect class="dg-box" x="96" y="106" width="178" height="24" rx="4"/>
+  <rect class="dg-box" x="278" y="106" width="132" height="24" rx="4"/>
+  <rect class="dg-box" x="414" y="106" width="132" height="24" rx="4"/>
+  <text class="dg-mutm" x="185" y="123" text-anchor="middle">p1 p2 p3 p4</text>
+  <text class="dg-mutm" x="344" y="123" text-anchor="middle">p5 p6 p7</text>
+  <text class="dg-mutm" x="480" y="123" text-anchor="middle">p8 p9 …</text>
+  <text class="dg-mutm" x="562" y="123">4 / 3 / N</text>
+  <path class="dg-fail" d="M596,118 L640,118"/>
+  <text class="dg-tm" x="650" y="122" style="fill:var(--fail)">rejected</text>
+
+  <!-- 切法 C -->
+  <text class="dg-tm" x="30" y="182">切法 C</text>
+  <rect class="dg-box" x="96" y="166" width="132" height="24" rx="4"/>
+  <rect class="dg-box" x="232" y="166" width="178" height="24" rx="4"/>
+  <rect class="dg-box" x="414" y="166" width="132" height="24" rx="4"/>
+  <text class="dg-mutm" x="162" y="183" text-anchor="middle">p1 p2 p3</text>
+  <text class="dg-mutm" x="321" y="183" text-anchor="middle">p4 p5 p6 p7</text>
+  <text class="dg-mutm" x="480" y="183" text-anchor="middle">p8 p9 …</text>
+  <text class="dg-mutm" x="562" y="183">3 / 4 / N</text>
+  <path class="dg-fail" d="M596,178 L640,178"/>
+  <text class="dg-tm" x="650" y="182" style="fill:var(--fail)">rejected</text>
+
+  <!-- 排序键 -->
+  <rect class="dg-dash" x="30" y="212" width="530" height="104" rx="8"/>
+  <text class="dg-tm" x="46" y="234">排序键（首个即 selected）</text>
+  <text class="dg-mutm" x="46" y="254">1. evidence_available_at　证据可用时间最早</text>
+  <text class="dg-mutm" x="46" y="270">2. len(S1.source_unit_ids)　S1 最短</text>
+  <text class="dg-mutm" x="46" y="286">3. len(S2.source_unit_ids)　S2 最短</text>
+  <text class="dg-mutm" x="46" y="302">4. len(source_unit_ids) → 5. id　总笔数最少 → 稳定 id 兜底</text>
+
+  <rect class="dg-dash" x="584" y="212" width="252" height="104" rx="8" style="stroke:var(--fail)"/>
+  <text class="dg-tm" x="600" y="234" style="fill:var(--fail)">落选也存库</text>
+  <text class="dg-mutm" x="600" y="254">selection_status = "rejected"</text>
+  <text class="dg-mutm" x="600" y="270">rejection_code =</text>
+  <text class="dg-mutm" x="600" y="286">　"noncanonical_segment_partition"</text>
+  <text class="dg-mutm" x="600" y="302">结论只认 selected</text>
+</svg>
+<figcaption>滑窗有上限以避免 O(n³)：<code>first_limit = min(len−5, required_len+6)</code>、<code>second_limit = min(len−2, required_len+9)</code>。落选切法整组写入 <code>chan_segment_proofs</code>——这是「为什么没选它」可回溯的基础。</figcaption>
+</figure>
+
+<h2><span class="num">08</span>两条晋级入口的范围差异</h2>
+<p class="lede">两条都调用同一个 <code>build_parent_center_proofs</code>，区别只在 <code>search_unit_ids</code> 怎么来。</p>
+
+<figure>
+<svg viewBox="0 0 860 330" role="img" aria-label="extension 与 expansion 两条晋级入口，分别从单个 L1 中枢的拥有单位和一对扩展关系中枢确定笔范围">
+  <defs>
+    <marker id="ar8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+    <marker id="arp8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--pass)"/>
+    </marker>
+  </defs>
+
+  <!-- 左：extension -->
+  <text class="dg-t" x="24" y="24">入口① extension_decomposition</text>
+  <rect class="dg-dash" x="18" y="34" width="380" height="164" rx="8"/>
+  <rect class="dg-box" x="122" y="52" width="172" height="52" rx="7"/>
+  <text class="dg-t" x="208" y="72" text-anchor="middle">单个 L1 中枢</text>
+  <text class="dg-mutm" x="208" y="90" text-anchor="middle">owned_unit_ids（≥9 才开闸）</text>
+  <path class="dg" marker-end="url(#ar8)" d="M208,104 L208,134"/>
+  <text class="dg-tm" x="40" y="152">search　 = snapshot.owned_unit_ids</text>
+  <text class="dg-tm" x="40" y="172">required = qualifying[0].owned[:9]</text>
+  <text class="dg-mutm" x="40" y="190">首个达 9 的修订，冻结其前 9 个</text>
+
+  <!-- 右：expansion -->
+  <text class="dg-t" x="450" y="24">入口② expansion_decomposition</text>
+  <rect class="dg-dash" x="444" y="34" width="394" height="164" rx="8"/>
+  <rect class="dg-box" x="474" y="52" width="122" height="40" rx="7"/>
+  <text class="dg-t" x="535" y="77" text-anchor="middle">L1 left</text>
+  <rect class="dg-box" x="666" y="52" width="122" height="40" rx="7"/>
+  <text class="dg-t" x="727" y="77" text-anchor="middle">L1 right</text>
+  <path class="dg" marker-end="url(#ar8)" d="M596,72 L662,72"/>
+  <text class="dg-mutm" x="629" y="64" text-anchor="middle">扩展</text>
+  <path class="dg" marker-end="url(#ar8)" d="M631,92 L631,126"/>
+  <text class="dg-tm" x="466" y="146">search　 = expansion_evidence.source_unit_ids</text>
+  <text class="dg-tm" x="466" y="166">　　　　 → 再向右滑窗 observation_spans[0..N]</text>
+  <text class="dg-mutm" x="466" y="186">required = observation_spans[0]</text>
+
+  <!-- 汇合 -->
+  <path class="dg-pass" marker-end="url(#arp8)" d="M208,198 L208,222 L420,222 L420,240"/>
+  <path class="dg-pass" marker-end="url(#arp8)" d="M631,198 L631,222 L420,222"/>
+  <rect x="250" y="242" width="340" height="40" rx="7" style="fill:none;stroke:var(--pass);stroke-width:2"/>
+  <text class="dg-t" x="420" y="267" text-anchor="middle" style="fill:var(--pass);font-weight:600">build_parent_center_proofs（同一个函数）</text>
+
+  <text class="dg-mutm" x="18" y="306">共同点：都只传「哪些笔」，不传中枢的 zd/zg/dd/gg　·　修订数上限 13（超出取前 12 + 最后 1）</text>
+  <text class="dg-mutm" x="18" y="324">共同点：一旦某个修订的 status == "fixed" 即 break，不再往后找</text>
+</svg>
+<figcaption>两条入口的本质区别是「从哪圈定笔」：①用一个中枢自己的拥有单位，②用一对中枢的扩展证据单位再向右扩。<b>两条都不把中枢区间当输入</b>——这是「禁止包络直接升级」在调用侧的落实。</figcaption>
+</figure>
+
+<h2><span class="num">09</span>字段取值完整分类</h2>
+
+<h3>9.1 单段字段</h3>
+<div class="scroll">
+<table>
+  <thead><tr><th>字段</th><th>取值</th><th>决定因素</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">level</td><td class="mono">恒 1</td><td><code>child_level</code>，只支持 L1→L2</td></tr>
+    <tr><td class="mono">source_kind</td><td class="mono">恒 "local_pen_group"</td><td>唯一来源是笔组</td></tr>
+    <tr><td class="mono">direction</td><td class="mono">up / down</td><td>首笔 start_price vs 末笔 end_price（带 ε；相等则整段作废）</td></tr>
+    <tr><td class="mono">status</td><td class="mono">confirmed / provisional</td><td>S1/S2 恒 confirmed；S3 视有无 completion</td></tr>
+    <tr><td class="mono">boundary_mode</td><td class="mono">pen_group_reversal / pen_group</td><td>有无 <code>completion_evidence_id</code></td></tr>
+    <tr><td class="mono">completion_evidence_id</td><td class="mono">local-boundary-… / None</td><td>S1/S2 恒有（下一段前 3 笔）；S3 视有无反向 S4</td></tr>
+    <tr><td class="mono">revision_no</td><td class="mono">len−2 / len+1</td><td>S3 且 confirmed 时为 len+1，其余 len−2</td></tr>
+    <tr><td class="mono">selection_status</td><td class="mono">selected / rejected</td><td>仲裁排序结果</td></tr>
+    <tr><td class="mono">rejection_code</td><td class="mono">noncanonical_segment_partition / 无</td><td>仅 rejected 有</td></tr>
+    <tr><td class="mono">recursive_eligible</td><td class="mono">恒 False</td><td>写死——段永不参与 L3</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>9.2 三段组合（parent proof）</h3>
+<div class="scroll">
+<table>
+  <thead><tr><th>字段</th><th>取值</th><th>决定因素</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">boundary_status</td><td class="mono">fixed / dynamic</td><td><code>segments[-1].status == "confirmed"</code></td></tr>
+    <tr><td class="mono">parent_level</td><td class="mono">恒 2</td><td><code>child_level + 1</code></td></tr>
+    <tr><td class="mono">zd / zg</td><td class="mono">三段 low/high 交集</td><td>必须 <code>zd + ε &lt; zg</code></td></tr>
+    <tr><td class="mono">evidence_available_at</td><td class="mono">三段最大 available_at</td><td>dynamic 时再与 <code>observed_at</code> 取大</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>9.3 晋级候选状态</h3>
+<div class="scroll">
+<table>
+  <thead><tr><th>status</th><th>含义</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">fixed</td><td>有 selected proof 且 S3 已收口</td></tr>
+    <tr><td class="mono">dynamic</td><td>有 selected proof 但 S3 仍开放</td></tr>
+    <tr><td class="mono">unresolved</td><td>无 selected proof，<code>missing_evidence</code> 带七码之一</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>9.4 见证的两条校验通道</h3>
+<div class="scroll">
+<table>
+  <thead><tr><th>维度</th><th>通道 A：正式 L1 中枢</th><th>通道 B：段内局部见证</th></tr></thead>
+  <tbody>
+    <tr><td>id 前缀</td><td class="mono">center-family-…</td><td class="mono">local-center-witness-…</td></tr>
+    <tr><td>级别校验</td><td class="mono">level == center.level − 1</td><td>隐含 level 1</td></tr>
+    <tr><td>时间校验</td><td class="mono">revision_at ≤ part.available_at</td><td>构造端保证</td></tr>
+    <tr><td>归属校验</td><td class="mono">owned_unit_ids ⊆ part.source_unit_ids</td><td>三笔须都在段内</td></tr>
+    <tr><td>区间校验</td><td>信任实体 zd/zg</td><td><b>重算 <code>_strict_overlap</code> 必须等于存值</b></td></tr>
+    <tr><td>落 chan_center_* 表</td><td>是</td><td><b>否</b>，只作 payload 字段</td></tr>
+    <tr><td>当前运行时产出</td><td>否（扩展 / 兼容位）</td><td>是</td></tr>
+  </tbody>
+</table>
+</div>
+<p style="font-size:13.5px;color:var(--ink-2)">两通道皆不命中 → <code>validate_structure</code> 报 <code>decomposition_level</code>。</p>
+
+<h2><span class="num">10</span>一眼对照</h2>
+<figure>
+<svg viewBox="0 0 860 300" role="img" aria-label="笔作为唯一原料，平行产出 L1 中枢与 SegmentProof，三段交集得出 L2 后停止递归">
+  <defs>
+    <marker id="ar10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+    <marker id="arp10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--pass)"/>
+    </marker>
+  </defs>
+  <rect class="dg-box" x="30" y="122" width="132" height="44" rx="7" style="stroke-width:2"/>
+  <text class="dg-t" x="96" y="142" text-anchor="middle" style="font-weight:600">确认笔</text>
+  <text class="dg-mutm" x="96" y="158" text-anchor="middle">唯一原料</text>
+
+  <path class="dg" marker-end="url(#ar10)" d="M162,136 L200,136 L200,66 L248,66"/>
+  <path class="dg" marker-end="url(#ar10)" d="M162,152 L200,152 L200,222 L248,222"/>
+
+  <rect class="dg-box" x="250" y="42" width="220" height="50" rx="7"/>
+  <text class="dg-t" x="360" y="62" text-anchor="middle">L1 笔中枢</text>
+  <text class="dg-mutm" x="360" y="80" text-anchor="middle">拥有笔 · 进账本 · 落 chan_center_* 表</text>
+
+  <rect class="dg-box" x="250" y="196" width="220" height="64" rx="7" style="stroke:var(--wit)"/>
+  <text class="dg-t" x="360" y="216" text-anchor="middle" style="fill:var(--wit)">SegmentProof ×3</text>
+  <text class="dg-mutm" x="360" y="232" text-anchor="middle">level=1 · 引用笔但不拥有</text>
+  <text class="dg-mutm" x="360" y="248" text-anchor="middle">内含 local_core_witness（不落库）</text>
+
+  <path class="dg-dash" marker-end="url(#ar10)" d="M360,92 L360,190"/>
+  <text class="dg-mutm" x="370" y="126">攒到 9 个拥有单位</text>
+  <text class="dg-mutm" x="370" y="142">→ 圈定 search / required</text>
+  <text class="dg-mutm" x="370" y="158">（只传笔，不传区间）</text>
+
+  <path class="dg-pass" marker-end="url(#arp10)" d="M470,228 L556,228"/>
+  <text class="dg-mutm" x="513" y="220" text-anchor="middle" style="fill:var(--pass)">三段交集</text>
+  <rect x="558" y="204" width="150" height="48" rx="7" style="fill:none;stroke:var(--pass);stroke-width:2"/>
+  <text class="dg-t" x="633" y="224" text-anchor="middle" style="fill:var(--pass);font-weight:600">L2 中枢</text>
+  <text class="dg-mutm" x="633" y="242" text-anchor="middle">zd / zg = 真实交集</text>
+
+  <path class="dg-fail" d="M712,228 L790,228"/>
+  <line class="dg-fail" x1="786" y1="212" x2="806" y2="244" stroke-width="2"/>
+  <line class="dg-fail" x1="806" y1="212" x2="786" y2="244" stroke-width="2"/>
+  <text class="dg-tm" x="742" y="266" text-anchor="middle" style="fill:var(--fail)">recursive_eligible = False</text>
+  <text class="dg-mutm" x="742" y="282" text-anchor="middle">无 L3</text>
+</svg>
+<figcaption>关键在于左侧那个分叉：<b>L1 中枢与 SegmentProof 是从同一批笔平行构造的两个东西</b>，不是串联。L1 中枢只贡献「哪些笔」和「何时开闸」，它的价格区间从不流入 L2。</figcaption>
+</figure>
+
+<footer>
+事实源：<code>docs/reports/2026-09-23-segmentproof-illustrated.md</code> · 本页为其视觉版<br>
+图形全部为手写 inline SVG，无外部库、无脚本；描边与文字使用 <code>currentColor</code>，随浅色/深色主题自动切换。
+</footer>
+
+</div>
+</body>
+</html>
