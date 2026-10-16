@@ -70,7 +70,13 @@ def validate_coverage(rows: list[dict[str, Any]], timeframe: str = "5",
         expected = {d for d in expected if lo <= d <= hi}
     incomplete: list[dict[str, Any]] = []; partial: list[dict[str, Any]] = []; complete_days: list[str] = []
     expected_times = set(EXPECTED_TIMES.get(timeframe, [])); expected_count = len(expected_times) or 1
+    formal_start = declared_start[:10] if declared_start else None
+    formal_end = declared_end[:10] if declared_end else None
     for day, clocks in grouped.items():
+        # Rows outside the declared target are useful as live/provisional chart
+        # data, but they must not downgrade the verified formal-history range.
+        if formal_start and day < formal_start or formal_end and day > formal_end:
+            continue
         if day in suspended: continue
         if expected_times:
             missing = sorted(expected_times - set(clocks)); unexpected = sorted(set(clocks) - expected_times)
@@ -108,7 +114,15 @@ def validate_coverage(rows: list[dict[str, Any]], timeframe: str = "5",
     if not ranges and complete_days and not expected:
         ranges = [{"start_date": min(complete_days), "end_date": max(complete_days), "session_count": len(complete_days)}]
     start, end = (min(seen), max(seen)) if seen else (None, None)
-    mismatch = bool((declared_start and start and start[:10] > declared_start[:10]) or (declared_end and end and end[:10] < declared_end[:10]))
+    start_mismatch = bool(declared_start and start and (
+        _period(start[:10], timeframe) > _period(declared_start[:10], timeframe)
+        if timeframe in {"w", "m", "y"} else start[:10] > declared_start[:10]
+    ))
+    end_mismatch = bool(declared_end and end and (
+        _period(end[:10], timeframe) < _period(declared_end[:10], timeframe)
+        if timeframe in {"w", "m", "y"} else end[:10] < declared_end[:10]
+    ))
+    mismatch = start_mismatch or end_mismatch
     # Daily/weekly/monthly rows are self-contained period observations when no
     # exchange calendar has been loaded; intraday coverage still requires an
     # explicit trading-day calendar to avoid inferring sessions from bars.

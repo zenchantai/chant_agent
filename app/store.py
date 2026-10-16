@@ -72,6 +72,20 @@ class Store:
                 exchange TEXT NOT NULL, trade_date TEXT NOT NULL, is_trading_day INTEGER NOT NULL,
                 session_type TEXT NOT NULL DEFAULT 'full', expected_5m_count INTEGER,
                 expected_30m_count INTEGER, PRIMARY KEY(exchange, trade_date))""")
+            self.db.execute("""CREATE TABLE IF NOT EXISTS market_sync_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL, timeframe TEXT NOT NULL, adjustflag TEXT NOT NULL,
+                mode TEXT NOT NULL, status TEXT NOT NULL,
+                target_start TEXT, target_end TEXT,
+                selected_sources_json TEXT NOT NULL DEFAULT '[]',
+                candidate_summaries_json TEXT NOT NULL DEFAULT '[]',
+                uncovered_ranges_json TEXT NOT NULL DEFAULT '[]',
+                source_conflicts_json TEXT NOT NULL DEFAULT '[]',
+                coverage_json TEXT NOT NULL DEFAULT '{}',
+                coverage_reason TEXT NOT NULL DEFAULT '',
+                started_at TEXT NOT NULL, finished_at TEXT, error TEXT NOT NULL DEFAULT '')""")
+            self.db.execute("""CREATE INDEX IF NOT EXISTS idx_market_sync_runs_lookup
+                ON market_sync_runs(symbol,timeframe,adjustflag,id DESC)""")
             market_columns = {row[1] for row in self.db.execute("PRAGMA table_info(market_bars)")}
             for name, definition in {
                 "period_key": "TEXT",
@@ -200,6 +214,12 @@ class Store:
             updates = []
             for row in rows:
                 key = period_row_key(dict(row), row["timeframe"])
+                # Older releases intentionally stored annual source dates as
+                # identities.  Keep those non-null keys untouched here: an
+                # automatic collapse could affect securities outside a scoped
+                # repair. Newly written annual bars use the logical year key.
+                if row["timeframe"] == "y" and row["period_key"] and row["period_key"] != key:
+                    continue
                 if row["period_key"] != key:
                     updates.append((key, row["id"]))
             if updates:
@@ -362,14 +382,29 @@ class Store:
             for row in rows:
                 item = dict(row)
                 item["enabled"] = bool(item["enabled"])
+                latest_sync = self.db.execute("""SELECT r.status,r.finished_at,r.error
+                    FROM market_sync_runs r JOIN (
+                        SELECT timeframe,MAX(id) id FROM market_sync_runs
+                        WHERE symbol=? AND adjustflag='2' GROUP BY timeframe
+                    ) latest ON latest.id=r.id ORDER BY r.id DESC""", (item["symbol"],)).fetchall()
                 latest = self.db.execute("""SELECT r.status,r.finished_at,r.error
                     FROM chan_structure_runs r JOIN chan_active_runs a ON a.run_id=r.id
                     WHERE a.symbol=? ORDER BY r.id DESC""", (item["symbol"],)).fetchall()
-                item["sync_status"] = "success" if latest else None
+                statuses = {run["status"] for run in latest_sync}
+                if statuses & {"pending", "running"}:
+                    item["sync_status"] = "running"
+                elif latest_sync and statuses <= {"failed"}:
+                    item["sync_status"] = "failed"
+                elif statuses & {"partial", "failed"}:
+                    item["sync_status"] = "partial_failed"
+                elif latest_sync:
+                    item["sync_status"] = "success"
+                else:
+                    item["sync_status"] = "success" if latest else None
                 item["last_sync"] = max(
-                    (run["finished_at"] for run in latest if run["finished_at"]), default=None,
+                    (run["finished_at"] for run in (*latest_sync, *latest) if run["finished_at"]), default=None,
                 )
-                item["sync_error"] = ""
+                item["sync_error"] = next((run["error"] for run in latest_sync if run["error"]), "")
                 item["market"] = self.market_summary(item["symbol"], "2")
                 result.append(item)
             return result
@@ -399,6 +434,66 @@ class Store:
                 WHERE exchange=? AND is_trading_day=1 AND trade_date BETWEEN ? AND ? ORDER BY trade_date""",
                 (exchange, start_date[:10], end_date[:10])).fetchall()
         return [row[0] for row in rows]
+
+    def begin_market_sync(self, symbol: str, timeframe: str, adjustflag: str, mode: str,
+                          target_start: str | None, target_end: str | None) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            cursor = self.db.execute("""INSERT INTO market_sync_runs
+                (symbol,timeframe,adjustflag,mode,status,target_start,target_end,started_at)
+                VALUES(?,?,?,?,?,?,?,?)""", (
+                symbol, timeframe, adjustflag, mode, "running", target_start, target_end, now,
+            ))
+            self.db.commit()
+        return int(cursor.lastrowid)
+
+    def finish_market_sync(self, run_id: int, status: str, *, selected_sources: list[str] | None = None,
+                           candidate_summaries: list[dict[str, Any]] | None = None,
+                           uncovered_ranges: list[dict[str, Any]] | None = None,
+                           source_conflicts: list[dict[str, Any]] | None = None,
+                           coverage: dict[str, Any] | None = None,
+                           coverage_reason: str = "", error: str = "") -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            self.db.execute("""UPDATE market_sync_runs SET status=?,selected_sources_json=?,
+                candidate_summaries_json=?,uncovered_ranges_json=?,source_conflicts_json=?,
+                coverage_json=?,coverage_reason=?,finished_at=?,error=? WHERE id=?""", (
+                status,
+                json.dumps(selected_sources or [], ensure_ascii=False, sort_keys=True),
+                json.dumps(candidate_summaries or [], ensure_ascii=False, sort_keys=True),
+                json.dumps(uncovered_ranges or [], ensure_ascii=False, sort_keys=True),
+                json.dumps(source_conflicts or [], ensure_ascii=False, sort_keys=True),
+                json.dumps(coverage or {}, ensure_ascii=False, sort_keys=True),
+                coverage_reason, now, error, run_id,
+            ))
+            self.db.commit()
+
+    def update_market_sync_target(self, run_id: int, target_start: str | None, target_end: str | None) -> None:
+        with self._lock:
+            self.db.execute("UPDATE market_sync_runs SET target_start=?,target_end=? WHERE id=?",
+                            (target_start, target_end, run_id))
+            self.db.commit()
+
+    def latest_market_sync(self, symbol: str, timeframe: str, adjustflag: str = "2") -> dict[str, Any] | None:
+        with self._lock:
+            row = self.db.execute("""SELECT * FROM market_sync_runs
+                WHERE symbol=? AND timeframe=? AND adjustflag=? ORDER BY id DESC LIMIT 1""",
+                (symbol, timeframe, adjustflag)).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        for column, name in (
+            ("selected_sources_json", "selected_sources"),
+            ("candidate_summaries_json", "candidate_summaries"),
+            ("uncovered_ranges_json", "uncovered_ranges"),
+            ("source_conflicts_json", "source_conflicts"),
+            ("coverage_json", "coverage"),
+        ):
+            try:
+                result[name] = json.loads(result.pop(column) or ("{}" if name == "coverage" else "[]"))
+            except json.JSONDecodeError:
+                result[name] = {} if name == "coverage" else []
+        return result
 
     def trade_calendar_range(self, exchange: str = "CN") -> tuple[str | None, str | None]:
         with self._lock:
@@ -944,8 +1039,9 @@ class Store:
 
     def upsert_bars_with_changes(self, symbol: str, timeframe: str, adjustflag: str, rows: list[dict[str, Any]], source: str = "baostock", snapshot_id: str = "", allow_lower_priority: bool = False,
                                 *, fetched_at: datetime | None = None,
-                                request_started_at: datetime | None = None) -> tuple[int, str | None]:
-        priority = {"tencent": 0, "baostock": 1, "api": 2, "csv": 3}
+                                request_started_at: datetime | None = None,
+                                prune_after: str | None = None) -> tuple[int, str | None]:
+        priority = {"tencent": 0, "baostock": 1, "daily_aggregate": 2, "api": 3, "csv": 4}
         prepared = [
             {
                 **row,
@@ -986,7 +1082,10 @@ class Store:
                                 continue
                         except (TypeError, ValueError):
                             pass
-                if old and not allow_lower_priority and priority.get(new_source, 0) < priority.get(old.get("source", "baostock"), 0):
+                old_source = old.get("source", "baostock") if old else None
+                if old and old_source in {"csv", "api"} and new_source != old_source:
+                    continue
+                if old and not allow_lower_priority and priority.get(new_source, 0) < priority.get(old_source, 0):
                     continue
                 new_prices = tuple(float(row.get(key, 0) or 0) for key in ("open", "high", "low", "close", "volume", "amount"))
                 old_prices = tuple(old[key] for key in ("open", "high", "low", "close", "volume", "amount")) if old else None
@@ -1013,6 +1112,22 @@ class Store:
                 }
             try:
                 self.db.execute("BEGIN IMMEDIATE")
+                if prune_after is not None:
+                    pruned = [row[0] for row in self.db.execute("""SELECT trade_date FROM market_bars
+                        WHERE symbol=? AND timeframe=? AND adjustflag=? AND trade_date>?""",
+                        (symbol, timeframe, adjustflag, prune_after)).fetchall()]
+                    if pruned:
+                        changed.extend(pruned)
+                        self.db.execute("""DELETE FROM period_confirmations
+                            WHERE symbol=? AND timeframe=? AND adjustflag=? AND period_key>?""",
+                            (symbol, timeframe, adjustflag, prune_after))
+                        if timeframe == "d":
+                            self.db.execute("""DELETE FROM daily_bar_confirmations
+                                WHERE symbol=? AND adjustflag=? AND trade_date>?""",
+                                (symbol, adjustflag, prune_after))
+                        self.db.execute("""DELETE FROM market_bars
+                            WHERE symbol=? AND timeframe=? AND adjustflag=? AND trade_date>?""",
+                            (symbol, timeframe, adjustflag, prune_after))
                 conflict = ("symbol,timeframe,adjustflag,period_key" if self._has_period_key_index()
                             else "symbol,timeframe,trade_date,adjustflag")
                 if accepted:

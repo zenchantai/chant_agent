@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { centerDisplayLabel, centerParents, centersForDisplay, compareCenterHit, displayCenterCollection, sameDisplayRun, selectedCenterEvidence } from "./centerDisplay";
+import { centerDisplayLabel, centerParents, centersForDisplay, collapseToFinalForm, compareCenterHit, displayCenterCollection, sameDisplayRun, selectedCenterEvidence } from "./centerDisplay";
 import { buildCenterAreas, buildPriceSeries, normalizeChartData } from "./chartBuilders";
 import type { Center, ChartData } from "./types";
 
@@ -76,5 +76,62 @@ describe("expanded center display", () => {
     expect(sameDisplayRun(data, { ...data })).toBe(true);
     expect(sameDisplayRun(data, { ...data, run_id: 2 })).toBe(false);
     expect(sameDisplayRun(data, { ...data, structure_preview: true })).toBe(false);
+  });
+});
+
+const l2 = (id: string, boundary: "dynamic" | "fixed", revisionAt: string, children: string[], active = false): Center => ({
+  ...center(id, 2, active), boundary_status: boundary, revision_at: revisionAt, child_center_ids: children,
+} as unknown as Center);
+
+const competing = (centers: Center[]): ChartData => ({
+  centers: centers.filter(item => item.active), center_revisions: centers, pens: [], components: [], relations: [], levels: [2],
+  display_centers: centers.map(item => ({ revision_id: item.id, display_role: item.active ? "active" : "constituent", parent_revision_ids: [] })),
+  timeframe: "d", run_id: 1, structure_version: "same", calculator_fingerprint: "same",
+} as unknown as ChartData);
+
+describe("final-form collapse", () => {
+  it("keeps the fixed center and drops the dynamic one sharing the same child centers", () => {
+    const dyn = l2("famA:1", "dynamic", "2015-11-04", ["c1", "c2"], true);
+    const fix = l2("famB:5", "fixed", "2016-03-23", ["c1", "c2"]);
+    expect(collapseToFinalForm([dyn, fix]).map(item => item.id)).toEqual([fix.id]);
+  });
+  it("picks the latest revision when several fixed centers share the same children", () => {
+    const early = l2("famA:1", "fixed", "2016-01-11", ["c1", "c2"]);
+    const late = l2("famB:2", "fixed", "2017-01-11", ["c1", "c2"]);
+    expect(collapseToFinalForm([early, late]).map(item => item.id)).toEqual([late.id]);
+  });
+  it("drops every dynamic center even when its group has no fixed alternative", () => {
+    const older = l2("famA:1", "dynamic", "2016-10-26", ["c5", "c6"]);
+    const newer = l2("famB:2", "dynamic", "2016-12-27", ["c5", "c6"], true);
+    expect(collapseToFinalForm([older, newer])).toEqual([]);
+  });
+  it("drops a lone dynamic center that has no competitor at all", () => {
+    const only = l2("famA:1", "dynamic", "2016-08-03", ["c7", "c8"], true);
+    expect(collapseToFinalForm([only])).toEqual([]);
+  });
+  it("never collapses centers without child centers, so L1 survives untouched", () => {
+    const first = center("l1a:1", 1, true), second = center("l1b:1", 1, true), third = center("l1c:1", 1, false);
+    expect(collapseToFinalForm([first, second, third]).map(item => item.id)).toEqual([first.id, second.id, third.id]);
+  });
+  it("collapses through centersForDisplay only when the switch is on", () => {
+    const dyn = l2("famA:1", "dynamic", "2015-11-04", ["c1", "c2"], true);
+    const fix = l2("famB:5", "fixed", "2016-03-23", ["c1", "c2"]);
+    const data = competing([dyn, fix]);
+    expect(centersForDisplay(data, null, true, undefined, false).map(item => item.id).sort()).toEqual([dyn.id, fix.id]);
+    expect(centersForDisplay(data, null, true, undefined, true).map(item => item.id)).toEqual([fix.id]);
+  });
+  it("still reveals a collapsed center once the user selects it", () => {
+    const dyn = l2("famA:1", "dynamic", "2015-11-04", ["c1", "c2"], true);
+    const fix = l2("famB:5", "fixed", "2016-03-23", ["c1", "c2"]);
+    const data = competing([dyn, fix]);
+    expect(centersForDisplay(data, dyn.id, true, undefined, true).map(item => item.id)).toContain(dyn.id);
+  });
+  it("drops the collapsed rectangle from the chart when the layer switch is on", () => {
+    const dyn = l2("famA:1", "dynamic", "2015-11-04", ["c1", "c2"], true);
+    const fix = l2("famB:5", "fixed", "2016-03-23", ["c1", "c2"]);
+    const data = competing([dyn, fix]);
+    const dates = ["2026-01-01", "2026-01-03"];
+    expect(buildCenterAreas({ data, visible: { centers: true } }, dates).visibleCenters).toHaveLength(2);
+    expect(buildCenterAreas({ data, visible: { centers: true, finalForm: true } }, dates).visibleCenters.map(item => item.id)).toEqual([fix.id]);
   });
 });

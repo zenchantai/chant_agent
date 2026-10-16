@@ -122,6 +122,26 @@ def test_history_pagination_returns_older_market_window(tmp_path, monkeypatch):
     assert second["market"]["bars"][-1]["trade_date"] < first["market"]["bars"][0]["trade_date"]
 
 
+def test_market_coverage_exposes_persisted_source_selection_and_gaps(tmp_path, monkeypatch):
+    client, store = _client(tmp_path, monkeypatch)
+    run_id = store.begin_market_sync("000001", "5", "2", "full", "2020-01-03", "2026-01-22")
+    gap = {"start_date": "2024-01-02", "end_date": "2024-01-03", "reason": "missing_session"}
+    store.finish_market_sync(
+        run_id, "partial", selected_sources=["baostock", "tencent"],
+        candidate_summaries=[{"source": "baostock", "bar_count": 100}],
+        uncovered_ranges=[gap], source_conflicts=[],
+        coverage={"status": "incomplete", "complete": False, "missing_sessions": ["2024-01-02"]},
+        coverage_reason="缺少1个交易单元",
+    )
+
+    payload = client.get("/api/market-coverage/000001?timeframe=5").json()
+
+    assert payload["selected_sources"] == ["baostock", "tencent"]
+    assert payload["uncovered_ranges"] == [gap]
+    assert payload["coverage_reason"] == "缺少1个交易单元"
+    assert gap in payload["gap_tasks"]
+
+
 def test_realtime_delta_is_small_and_skips_structure_analysis(tmp_path, monkeypatch):
     client, store = _client(tmp_path, monkeypatch)
     active = store.active_chan_run("000001", "5", "2")

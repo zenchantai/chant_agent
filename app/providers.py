@@ -220,7 +220,7 @@ def fetch_baostock(symbol: str, timeframe: str, start_date: str = "2015-01-01", 
             rows.append({"trade_date": stamp, "open": float(raw["open"]), "high": float(raw["high"]),
                          "low": float(raw["low"]), "close": float(raw["close"]),
                          "volume": float(raw.get("volume") or 0), "amount": float(raw.get("amount") or 0),
-                         "adjustflag": adjustflag})
+                         "adjustflag": adjustflag, "source": "baostock"})
         # BaoStock does not expose intraday bars for many Shanghai indices
         # (for example sh.000002). Fall back for the whole Shanghai index
         # family, while retaining BaoStock as the preferred source.
@@ -231,6 +231,44 @@ def fetch_baostock(symbol: str, timeframe: str, start_date: str = "2015-01-01", 
         return rows
     finally:
         bs.logout()
+
+
+def _year_ranges(start_date: str, end_date: str) -> list[tuple[str, str]]:
+    start = date.fromisoformat(start_date[:10])
+    end = date.fromisoformat(end_date[:10])
+    ranges = []
+    for year in range(start.year, end.year + 1):
+        left = max(start, date(year, 1, 1))
+        right = min(end, date(year, 12, 31))
+        ranges.append((left.isoformat(), right.isoformat()))
+    return ranges
+
+
+def fetch_baostock_chunked(
+    symbol: str,
+    timeframe: str,
+    start_date: str = "2015-01-01",
+    end_date: str = "",
+    adjustflag: str = "2",
+) -> list[dict[str, Any]]:
+    """Fetch bounded yearly windows so BaoStock cannot silently truncate history."""
+    end_date = end_date or date.today().isoformat()
+    rows: dict[str, dict[str, Any]] = {}
+    errors = []
+    for left, right in _year_ranges(start_date, end_date):
+        try:
+            batch = fetch_baostock(symbol, timeframe, left, right, adjustflag)
+        except RuntimeError as exc:
+            if "返回空数据" in str(exc):
+                continue
+            errors.append(f"{left}~{right}: {exc}")
+            continue
+        for row in batch:
+            rows[str(row["trade_date"])] = row
+    if not rows:
+        detail = "; ".join(errors) if errors else f"{start_date}~{end_date}"
+        raise RuntimeError(f"BaoStock 分段查询无可用数据: {symbol} {timeframe} {detail}")
+    return [rows[key] for key in sorted(rows)]
 
 
 def fetch_security_profile(symbol: str) -> dict[str, Any] | None:
@@ -252,7 +290,10 @@ def fetch_security_profile(symbol: str) -> dict[str, Any] | None:
                 return None
             return {"market_code": market_code, "symbol": catalog_symbol(market_code),
                     "name": row.get("code_name", ""), "market": market_code[:2].upper(),
-                    "trade_status": row.get("status", "1")}
+                    "trade_status": row.get("status", "1"),
+                    "ipo_date": row.get("ipoDate", ""),
+                    "out_date": row.get("outDate", ""),
+                    "security_type": row.get("type", "")}
         return None
     finally:
         bs.logout()
@@ -346,9 +387,10 @@ def read_csv(path: str, symbol: str) -> list[dict[str, Any]]:
     return rows
 
 
-async def fetch_api(url: str, symbol: str, start_date: str = "", end_date: str = "", adjustflag: str = "2") -> dict[str, Any]:
+async def fetch_api(url: str, symbol: str, start_date: str = "", end_date: str = "", adjustflag: str = "2",
+                    timeframe: str = "5") -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get(url, params={"symbol": symbol, "timeframe": "5", "start_date": start_date,
+        response = await client.get(url, params={"symbol": symbol, "timeframe": timeframe, "start_date": start_date,
                                                   "end_date": end_date, "adjustflag": adjustflag})
         response.raise_for_status()
         data = response.json()
