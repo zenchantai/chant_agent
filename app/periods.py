@@ -35,8 +35,4 @@ def period_key(value: str | date | datetime, timeframe: str) -> str:
 
 
 def period_row_key(row: dict, timeframe: str) -> str:
-    # Yearly bars are outside the live-refresh scope; retain their source-date
-    # identity so the migration does not silently collapse legacy annual rows.
-    if timeframe == "y":
-        return str(row["trade_date"])[:10]
     return period_key(str(row["trade_date"]), timeframe)

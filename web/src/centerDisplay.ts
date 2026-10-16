@@ -45,10 +45,39 @@ export const centerDisplayLabel = (data: ChartData, center: Center): string => {
   return `L${center.level} ${isWeeklyCoreCenter(center, data.timeframe) ? (center.formation_stage ? `三笔核心 · ${type}` : "三笔核心") : type} #${center.ordinal + 1}${suffix}${candidate}${evidence}${center.temporary_evidence ? " · 临时证据" : ""}`;
 };
 
-export const centersForDisplay = (data: ChartData, selectedId?: string | null, enabled = true, levels?: Record<string, boolean>): Center[] => {
+/** Newer evidence wins a tie between settled centers; the id keeps it deterministic. */
+const finalFormRank = (item: Center): string => `${item.revision_at ?? item.formed_at ?? ""}|${item.id}`;
+
+/**
+ * Keep only centers whose boundary has settled.
+ *
+ * A dynamic boundary means the right edge still moves with new bars, so it is
+ * never a final form — it is dropped even when nothing else covers its pens.
+ * L1 centers always carry a fixed boundary, so this never hides a pen center.
+ * Among the survivors, centers sharing one set of child centers describe the
+ * same pens, so only the latest of those is drawn.
+ */
+export const collapseToFinalForm = (centers: Center[]): Center[] => {
+  const settled = centers.filter((item) => item.boundary_status !== "dynamic");
+  const groups = new Map<string, Center[]>();
+  const passthrough: Center[] = [];
+  settled.forEach((item) => {
+    const children = item.child_center_ids ?? [];
+    if (!children.length) { passthrough.push(item); return; }
+    const key = `${item.level}|${[...children].sort().join(",")}`;
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  });
+  const kept = [...groups.values()].map((members) => members.reduce((best, item) =>
+    finalFormRank(item) > finalFormRank(best) ? item : best));
+  return [...passthrough, ...kept];
+};
+
+export const centersForDisplay = (data: ChartData, selectedId?: string | null, enabled = true, levels?: Record<string, boolean>, finalForm = false): Center[] => {
   // Reference charts expose one native center layer, so obsolete L1/L2 preferences do not hide it.
   if (isReferenceProfile(data)) levels = undefined;
   let centers = displayCenterCollection(data).filter((center) => enabled && levels?.[String(center.level)] !== false);
+  // Selection is applied after the collapse, so a hidden competitor stays reachable by click.
+  if (finalForm) centers = collapseToFinalForm(centers);
   const selected = selectedCenterEvidence(data, selectedId);
   if (selected && (!isReferenceProfile(data) || selected.level === 1)) {
     const representative = displayCenterCollection(data).find((center) => center.family_id === selected.family_id && center.level === selected.level);

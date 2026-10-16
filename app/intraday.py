@@ -73,6 +73,21 @@ def aggregate_daily_rows(rows: list[dict], timeframe: str, key: str) -> dict | N
     }
 
 
+def aggregate_daily_history(rows: list[dict], timeframe: str, *, exclude_key: str | None = None) -> list[dict]:
+    """Aggregate every completed logical period from confirmed daily rows."""
+    if timeframe not in {"w", "m", "y"}:
+        raise ValueError(f"不支持日线聚合周期: {timeframe}")
+    keys = sorted({period_key(row["trade_date"], timeframe) for row in rows})
+    result = []
+    for key in keys:
+        if key == exclude_key:
+            continue
+        aggregate = aggregate_daily_rows(rows, timeframe, key)
+        if aggregate:
+            result.append(aggregate)
+    return result
+
+
 def session_state(now: datetime, calendar: dict[str, bool]) -> dict:
     now = now.astimezone(TZ)
     today = now.date().isoformat()

@@ -25,6 +25,7 @@ export type ChartBuildContext = {
     components?: boolean;
     centerLevels?: Record<string, boolean>;
     dailyL2?: boolean;
+    finalForm?: boolean;
   };
   subplotIndicators?: SubplotIndicator[];
   subplotVisible?: boolean[];
@@ -428,7 +429,7 @@ export const buildCenterAreas = (context: ChartBuildContext, dates: string[], is
     issues.push({ code: "center_dates_empty" });
     return { areas: [] as any[], visibleCenters: [] as Center[] };
   }
-  const visible = centersForDisplay(data, context.selectedStructureId, context.visible?.centers !== false, context.visible?.centerLevels).filter((center) => {
+  const visible = centersForDisplay(data, context.selectedStructureId, context.visible?.centers !== false, context.visible?.centerLevels, context.visible?.finalForm === true).filter((center) => {
     if (!Number.isInteger(Number(center.level))) return false;
     const range = centerDisplayRange(center, data.timeframe);
     const zd = centerZd(center), zg = centerZg(center);
@@ -618,7 +619,7 @@ export const buildPriceSeries = (context: ChartBuildContext, centerAreas: any[] 
   if (centerAreas.length) {
     candle.markArea = { silent: false, label: { show: false }, data: centerAreas, tooltip: { trigger: "item", formatter: (params: any) => {
       const item = Array.isArray(params?.data) ? params.data[0] : params?.data;
-      const center = centersForDisplay(data, context.selectedStructureId, context.visible?.centers !== false, context.visible?.centerLevels).find((candidate) => candidate.id === item?.centerId);
+      const center = centersForDisplay(data, context.selectedStructureId, context.visible?.centers !== false, context.visible?.centerLevels, context.visible?.finalForm === true).find((candidate) => candidate.id === item?.centerId);
       return center && context.formatCenterTooltip ? context.formatCenterTooltip(center, data.timeframe) : "";
     } } };
   }
@@ -670,14 +671,26 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
   if (context.data.timeframe === "1" || context.visible?.pens === false) return [];
   const color = periodStructureColor(context.theme === "light" ? "light" : "dark", context.data.timeframe);
   const selectedCenter = selectedCenterEvidence(context.data, context.selectedStructureId);
-  const roleColors = { entry: "#d97706", core: "#7c3aed", z_wave: "#0891b2", peripheral: "#64748b", departure: "#dc2626", retest: "#16a34a", connection: "#db2777", witness: "#e11d9b", parent_segment_1: "#0e7490", parent_segment_2: "#b45309", parent_segment_3: "#7e22ce" };
+  // S1/S2/S3 are an ordered ramp of one hue no L1 role uses, so depth reads as sequence.
+  const roleColors = { entry: "#d97706", core: "#7c3aed", z_wave: "#0891b2", peripheral: "#64748b", departure: "#dc2626", retest: "#16a34a", connection: "#db2777", witness: "#e11d9b", parent_segment_1: "#86b6ef", parent_segment_2: "#3987e5", parent_segment_3: "#1c5cab" };
+  const roleLabels: Partial<Record<keyof typeof roleColors, string>> = { parent_segment_1: "S1", parent_segment_2: "S2", parent_segment_3: "S3" };
   const roles = new Map<string, keyof typeof roleColors>();
+  // A pen inside a parent segment keeps the segment colour: the child L1 that also
+  // owns it is drawn later, and must not repaint the segment the user selected.
+  const segmentPens = new Set<string>();
   const roleCenters = selectedCenter ? [selectedCenter, ...context.data.center_revisions.filter((item) => selectedCenter.child_center_ids.includes(item.id))] : [];
   const segmentMap = new Map((context.data.segment_proofs || []).map((segment) => [segment.id, segment]));
   const assign = (identifiers: string[], role: keyof typeof roleColors) => identifiers.forEach((identifier) => {
     const segment = segmentMap.get(identifier);
-    (segment?.source_pen_ids || [identifier]).forEach((penId) => roles.set(penId, role));
+    (segment?.source_pen_ids || [identifier]).forEach((penId) => {
+      if (segmentPens.has(penId)) return;
+      roles.set(penId, role);
+      if (role.startsWith("parent_segment_")) segmentPens.add(penId);
+    });
   });
+  // Claim the selected parent's segments before any child L1 role is assigned.
+  roleCenters.forEach((center) => center.decomposition_proof?.segments.forEach((part, index) =>
+    assign(part.source_pen_ids, `parent_segment_${index + 1}` as keyof typeof roleColors)));
   roleCenters.forEach((center) => {
     if (isWeeklyCoreCenter(center, context.data.timeframe)) {
       assign(center.core_unit_ids || [], "core");
@@ -689,7 +702,6 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
     assign(center.retest_unit_ids || [], "retest");
     assign(center.core_unit_ids || [], "core");
     assign(center.z_unit_ids || [], "z_wave");
-    center.decomposition_proof?.segments.forEach((part, index) => assign(part.source_pen_ids, `parent_segment_${index + 1}` as keyof typeof roleColors));
     context.data.components.filter((component) => center.connection_component_ids?.includes(component.id)).forEach((component) => assign(component.source_unit_ids, "connection"));
   });
   const selectedRelations = selectedCenter ? (context.data.relations || []).filter(r => r.expansion_status === "confirmed" && [r.from_id, r.to_id].includes(selectedCenter.id)) : [];
@@ -710,7 +722,7 @@ export const buildPenSeries = (context: ChartBuildContext, dates: string[], issu
     const coreIndex = selectedCenter?.core_unit_ids.indexOf(pen.id) ?? -1;
     const coreLabel = coreIndex >= 0 ? ` · 核心 ${["A", "B", "C"][coreIndex]}` : "";
     const provisional = isProvisionalStatus(pen.status);
-    return { id: pen.id, name: `笔 ${(Number(pen.ordinal) || 0) + 1}${provisional ? " · 形成中" : ""}${role ? ` · ${role}` : ""}${coreLabel}`, type: "line", data: [[boundary.startDate, boundary.startPrice], [boundary.endDate, boundary.endPrice]], showSymbol: true, symbolSize: selected || role ? 8 : 5, lineStyle: { width: selected || role ? 3.4 : 1.8, type: provisional ? "dashed" : "solid", color: lineColor, opacity: selected || role ? 1 : selectedCenter ? 0.3 : 0.88 }, itemStyle: { color: lineColor }, z: provisional ? 6 : role ? 11 : 5 };
+    return { id: pen.id, name: `笔 ${(Number(pen.ordinal) || 0) + 1}${provisional ? " · 形成中" : ""}${role ? ` · ${roleLabels[role] ?? role}` : ""}${coreLabel}`, type: "line", data: [[boundary.startDate, boundary.startPrice], [boundary.endDate, boundary.endPrice]], showSymbol: true, symbolSize: selected || role ? 8 : 5, lineStyle: { width: selected || role ? 3.4 : 1.8, type: provisional ? "dashed" : "solid", color: lineColor, opacity: selected || role ? 1 : selectedCenter ? 0.3 : 0.88 }, itemStyle: { color: lineColor }, z: provisional ? 6 : role ? 11 : 5 };
   }).filter(Boolean) as Record<string, any>[];
 };
 

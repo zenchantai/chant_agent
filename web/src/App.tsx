@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { chartDates, intradayCoordinate, intradayPointDates } from "./intradayTimeline";
-import { centerDisplayLabel, centerDisplayRange, centerParents, compareCenterHit, displayCenterCollection, isWeeklyCoreCenter, sameDisplayRun, selectedCenterEvidence } from "./centerDisplay";
+import { centerDisplayLabel, centerDisplayRange, centerParents, centersForDisplay, collapseToFinalForm, compareCenterHit, displayCenterCollection, isWeeklyCoreCenter, sameDisplayRun, selectedCenterEvidence } from "./centerDisplay";
 import { mergeIntradayData, mergeRealtimeData, startIntradayRefresh } from "./intradayRefresh";
 import { dailyL2Label, dailyL2StatusLabel, isReferenceProfile, mergeDailyL2Overlays, projectionContains, projectionRectangle } from "./dailyL2Overlay";
 import type { DailyL2Projection } from "./types";
@@ -108,6 +108,8 @@ type LayerVisibility = {
   components: boolean;
   dailyL2: boolean;
   centerLevels: Record<string, boolean>;
+  /** Collapse competing same-pen centers down to their settled form. */
+  finalForm: boolean;
 };
 echarts.use([
   BarChart,
@@ -184,7 +186,7 @@ export const centersForStructureLevel = (centers: StructureEntity[], activeLevel
   );
 
 const syncLabel = (status?: string) => ({
-  pending: "等待同步", running: "同步中", partial_failed: "部分失败",
+  pending: "等待同步", running: "同步中", partial_failed: "部分覆盖",
   failed: "同步失败", success: "已完成",
 }[status || ""] || "");
 const defaultDrawingStyle = (timeframe: string, theme: string, rectangle = false): DrawingStyle => {
@@ -300,7 +302,7 @@ function Chart({
   subplotIndicators: SubplotIndicator[];
   subplotVisible: SubplotVisibility;
   onSubplotIndicator: (index: number, value: SubplotIndicator) => void;
-  onLayerToggle: (key: "pens" | "centers" | "components" | "dailyL2", level?: number) => void;
+  onLayerToggle: (key: "pens" | "centers" | "components" | "dailyL2" | "finalForm", level?: number) => void;
   mainIndicator?: {mode:"ma"|"boll"|"pen_center"|"none"; maPeriods:number[]; bollPeriod:number; bollMultiplier:number};
   onMainIndicator?: (mode:"ma"|"boll"|"pen_center"|"none") => void;
   onOpenIndicatorSettings?: () => void;
@@ -754,7 +756,8 @@ function Chart({
   const infoMa = infoBar ? (data?.indicators?.ma || []).find((item) => item.trade_date === infoBar.trade_date) : undefined;
   const chartCenters = data ? displayCenterCollection(data) : [];
   const referenceProfile = data ? isReferenceProfile(data) : false;
-  const visibleCenters = chartCenters.filter((item) => visible.centers && (referenceProfile || visible.centerLevels[String(nodeLevel(item))] !== false));
+  const filteredCenters = chartCenters.filter((item) => visible.centers && (referenceProfile || visible.centerLevels[String(nodeLevel(item))] !== false));
+  const visibleCenters = visible.finalForm ? collapseToFinalForm(filteredCenters) : filteredCenters;
   const visibleCenterCount = visibleCenters.filter((item) => item.display_role === "active").length;
   const constituentCenterCount = visibleCenters.filter((item) => item.display_role === "constituent").length;
   const constituentL1Count = chartCenters.filter((item) => item.level === 1 && item.display_role === "constituent").length;
@@ -810,6 +813,7 @@ function Chart({
           </button>
         ))}
         {!referenceProfile && centerLevels.map((level) => <button key={`center-level-${level}`} className={`chart-layer-toggle chart-level-toggle ${visible.centers && visible.centerLevels[String(level)] !== false ? "active" : ""}`} aria-label={`${visible.centerLevels[String(level)] !== false ? "隐藏" : "显示"}中枢 L${level}`} aria-pressed={visible.centers && visible.centerLevels[String(level)] !== false} title={`${visible.centerLevels[String(level)] !== false ? "隐藏" : "显示"}中枢 L${level}`} onClick={() => onLayerToggle("centers", level)}><i className="legend-swatch center" style={{borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level), background: `${levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", level)}${theme === "light" ? "1A" : "24"}`}} aria-hidden="true"/><span>中枢 L{level}</span></button>)}
+        {!referenceProfile && <button className={`chart-layer-toggle ${visible.finalForm ? "active" : ""}`} aria-label={`${visible.finalForm ? "显示全部中枢形态" : "只显示中枢最终形态"}`} aria-pressed={visible.finalForm} title={visible.finalForm ? "当前只画每组中枢的最终形态，点击恢复显示全部" : "同一批笔上有多个中枢解释时，只画已固定的最终形态"} onClick={() => onLayerToggle("finalForm")}><i className="legend-swatch center" style={{borderColor: levelStructureColor(theme === "light" ? "light" : "dark", data?.timeframe || "d", 2), background: "transparent"}} aria-hidden="true"/><span>最终形态</span></button>}
         {referenceProfile && <button className={`chart-layer-toggle ${visible.dailyL2 ? "active" : ""}`} aria-label={`${visible.dailyL2 ? "隐藏" : "显示"}日线 L2 参考`} aria-pressed={visible.dailyL2} onClick={() => onLayerToggle("dailyL2")}><i className="legend-swatch center" style={{borderColor: levelStructureColor(theme, "d", 2)}} aria-hidden="true"/><span>日线 L2 参考</span></button>}
       </div>}
       {referenceProfile && <div role="status" title={dailyL2StatusLabel(data)} style={{position:"absolute", top:34, left:0, maxWidth:"100%", overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis", fontSize:11, padding:"4px 6px", background:"var(--panel)"}}>{dailyL2StatusLabel(data)}</div>}
@@ -948,6 +952,7 @@ export function App() {
     components: false,
     dailyL2: true,
     centerLevels: {},
+    finalForm: false,
   });
   const [subplotIndicators, setSubplotIndicators] = useState<SubplotIndicator[]>(["volume", "macd", "macd", "macd"]);
   const [subplotVisible, setSubplotVisible] = useState<SubplotVisibility>(() => {
@@ -1247,11 +1252,11 @@ export function App() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        const migrated = { pens: parsed.pens ?? true, centers: parsed.centers ?? true, components: parsed.components ?? false, dailyL2: parsed.dailyL2 ?? true, centerLevels: parsed.centerLevels || {} };
+        const migrated = { pens: parsed.pens ?? true, centers: parsed.centers ?? true, components: parsed.components ?? false, dailyL2: parsed.dailyL2 ?? true, centerLevels: parsed.centerLevels || {}, finalForm: parsed.finalForm ?? false };
         setVisible(migrated);
       }
       catch { /* Ignore invalid legacy browser state. */ }
-    } else setVisible({ pens: true, centers: true, components: false, dailyL2: true, centerLevels: {} });
+    } else setVisible({ pens: true, centers: true, components: false, dailyL2: true, centerLevels: {}, finalForm: false });
     const indicatorKey = `chan-subplots-${symbol}-${timeframe}`;
     try {
       const savedIndicators = JSON.parse(localStorage.getItem(indicatorKey) || "null");
@@ -1264,7 +1269,7 @@ export function App() {
     try { const saved = JSON.parse(localStorage.getItem(`chan-main-indicator-${symbol}-${timeframe}`) || "null"); const next = saved && Array.isArray(saved.maPeriods) ? {...defaultMainIndicator, ...saved, maPeriods: saved.maPeriods.filter((x:number)=>Number.isInteger(x)&&x>=1&&x<=1000).slice(0,10)} : defaultMainIndicator; setMainIndicator((current) => JSON.stringify(current) === JSON.stringify(next) ? current : next); } catch { setMainIndicator((current) => JSON.stringify(current) === JSON.stringify(defaultMainIndicator) ? current : defaultMainIndicator); }
     load(false);
   }, [load]);
-  const setLayer = (key: "pens" | "centers" | "components" | "dailyL2", checked: boolean, level?: number) => {
+  const setLayer = (key: "pens" | "centers" | "components" | "dailyL2" | "finalForm", checked: boolean, level?: number) => {
     const next = level === undefined
       ? { ...visible, [key]: checked }
       : { ...visible, centerLevels: { ...visible.centerLevels, [String(level)]: checked } };
@@ -1942,14 +1947,21 @@ export function App() {
               结构不可用：{data?.stale_reason || "等待本周期行情与结构同步"}
             </div>
           )}
-          {((coverage || data?.coverage)?.missing_sessions?.length || 0) >
-            0 && (
+          {(() => {
+            const currentCoverage = coverage || data?.coverage;
+            const gapCount = currentCoverage?.uncovered_ranges?.length || currentCoverage?.missing_sessions?.length || 0;
+            const coverageStatus = currentCoverage?.status;
+            const explicitlyPartial = Boolean(
+              currentCoverage && coverageStatus && !["complete", "success"].includes(coverageStatus),
+            );
+            if (!gapCount && !currentCoverage?.source_conflicts?.length && !explicitlyPartial) return null;
+            const firstGap = currentCoverage?.uncovered_ranges?.[0];
+            return (
             <div className="coverage-warning">
               <span>
-                缺少 {(coverage || data?.coverage)?.missing_sessions?.length}{" "}
-                个周期单位，本周期结构已隔离为{" "}
-                {(coverage || data?.coverage)?.continuous_ranges?.length || 0}{" "}
-                个连续区间。
+                {currentCoverage?.coverage_reason || `存在 ${gapCount} 段行情缺口`}
+                {firstGap ? `（${firstGap.start_date} 至 ${firstGap.end_date}）` : ""}
+                {currentCoverage?.selected_sources?.length ? `；已采用：${currentCoverage.selected_sources.join("、")}` : ""}
               </span>
               <button
                 className="text-command"
@@ -1960,7 +1972,8 @@ export function App() {
                 {repairing ? "扫描中" : "扫描并补齐缺口"}
               </button>
             </div>
-          )}
+            );
+          })()}
           <Chart
             data={data}
             theme={theme}
@@ -2023,7 +2036,7 @@ export function App() {
               <dd>{periodLabels[timeframe] || timeframe}</dd>
               <dt>结构数量</dt>
               <dd>
-                {data?.pens.length || 0} 笔 · {(data ? displayCenterCollection(data) : []).filter((item) => item.display_role === "active" && visible.centers && (isReferenceProfile(data!) || visible.centerLevels[String(item.level)] !== false)).length} 活动中枢 · {(data ? displayCenterCollection(data) : []).filter((item) => item.display_role === "constituent" && visible.centers && (isReferenceProfile(data!) || visible.centerLevels[String(item.level)] !== false)).length} 组成中枢{data && isReferenceProfile(data) ? ` · ${visible.dailyL2 ? data.overlays?.daily_l2.centers.length || 0 : 0} 日线 L2 参考` : ""}
+                {data?.pens.length || 0} 笔 · {(data ? centersForDisplay(data, null, visible.centers, isReferenceProfile(data) ? undefined : visible.centerLevels, visible.finalForm) : []).filter((item) => item.display_role === "active").length} 活动中枢 · {(data ? centersForDisplay(data, null, visible.centers, isReferenceProfile(data) ? undefined : visible.centerLevels, visible.finalForm) : []).filter((item) => item.display_role === "constituent").length} 组成中枢{data && isReferenceProfile(data) ? ` · ${visible.dailyL2 ? data.overlays?.daily_l2.centers.length || 0 : 0} 日线 L2 参考` : ""}
               </dd>
             </dl>
           </section>

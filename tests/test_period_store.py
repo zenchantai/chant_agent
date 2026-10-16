@@ -64,6 +64,32 @@ def test_initialization_backfills_period_keys_without_silently_deleting_duplicat
     ).fetchone() is None
 
 
+def test_initialization_preserves_legacy_annual_keys_outside_scoped_repair(tmp_path):
+    path = tmp_path / "old-annual-keys.db"
+    store = Store(str(path))
+    store.db.executemany("""INSERT INTO market_bars
+        (symbol,timeframe,trade_date,period_key,open,high,low,close,volume,amount,adjustflag)
+        VALUES ('000001','y',?,?,?,?,?,?,?,?,'2')""", [
+        ("2026-01-05", "2026-01-05", 10, 11, 9, 10, 100, 1000),
+        ("2026-12-31", "2026-12-31", 12, 13, 11, 12, 100, 1000),
+    ])
+    store.db.commit()
+    store.db.close()
+
+    migrated = Store(str(path))
+    rows = migrated.db.execute(
+        "SELECT trade_date,period_key FROM market_bars WHERE timeframe='y' ORDER BY trade_date"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("2026-01-05", "2026-01-05"),
+        ("2026-12-31", "2026-12-31"),
+    ]
+    assert migrated.period_key_migration_report()["delete_row_count"] == 0
+    assert migrated.db.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='uq_market_bars_period'"
+    ).fetchone() is not None
+
+
 def test_canonicalization_requires_exact_reviewed_ids_and_keeps_latest_period_row(tmp_path):
     path = tmp_path / "duplicate-periods.db"
     legacy_market_database(path, [
@@ -90,6 +116,7 @@ def test_canonicalization_requires_exact_reviewed_ids_and_keeps_latest_period_ro
 @pytest.mark.parametrize("timeframe,dates,expected_key", [
     ("w", ("2026-01-05", "2026-01-06"), "2026-W02"),
     ("m", ("2026-01-05", "2026-01-30"), "2026-01"),
+    ("y", ("2026-01-05", "2026-12-31"), "2026"),
 ])
 def test_upsert_is_idempotent_by_logical_period(tmp_path, timeframe, dates, expected_key):
     store = Store(str(tmp_path / f"{timeframe}.db"))

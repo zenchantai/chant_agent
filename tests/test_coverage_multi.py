@@ -21,6 +21,23 @@ def test_current_session_is_partial_not_missing():
     assert result["partial_sessions"][0]["date"] == "2026-01-05"
 
 
+def test_provisional_rows_after_declared_end_do_not_downgrade_formal_coverage():
+    rows = [
+        *_bars("2026-01-05", EXPECTED_30M_TIMES),
+        *_bars("2026-01-06", EXPECTED_30M_TIMES[:2]),
+    ]
+    result = validate_coverage(
+        rows, "30", expected_trading_dates=["2026-01-05"],
+        declared_start="2026-01-05", declared_end="2026-01-05",
+        now=datetime(2026, 1, 6, 10, 45),
+    )
+
+    assert result["status"] == "complete"
+    assert result["complete"] is True
+    assert result["partial_sessions"] == []
+    assert result["range_end"] == "2026-01-06 10:30:00"
+
+
 def test_week_and_month_missing_are_period_keys():
     rows = [{"trade_date": "2026-01-05", "open": 1, "high": 2, "low": 1, "close": 1.5, "volume": 1},
             {"trade_date": "2026-02-02", "open": 1, "high": 2, "low": 1, "close": 1.5, "volume": 1}]

@@ -266,6 +266,8 @@ def test_sync_records_confirmation_and_recomputes_when_prices_are_unchanged(mark
     structures = Structures()
     monkeypatch.setattr(sync, "datetime", Clock)
     monkeypatch.setattr(sync, "fetch_baostock", lambda *args: [row])
+    monkeypatch.setattr(sync, "fetch_tencent", lambda *args: (_ for _ in ()).throw(RuntimeError("unavailable")))
+    monkeypatch.setattr(sync, "fetch_security_profile", lambda *args: {"ipo_date": row["trade_date"]})
     monkeypatch.setattr(store, "active_chan_run", lambda *args: {"id": 1})
     result = asyncio.run(sync.SyncService(store, structures=structures).sync_one(SYMBOL, "d"))
     assert result["result"] == "success"
@@ -297,8 +299,11 @@ def test_history_sync_clears_old_refresh_error_only_after_usable_confirmed_respo
     service._live_rows[(SYMBOL, "d", "2")] = [bar(close=10.5)]
     monkeypatch.setattr(sync, "datetime", Clock)
     monkeypatch.setattr(sync, "fetch_baostock", lambda *args: [] if outcome == "empty" else [bar()])
+    monkeypatch.setattr(sync, "fetch_tencent", lambda *args: (_ for _ in ()).throw(RuntimeError("unavailable")))
+    monkeypatch.setattr(sync, "fetch_security_profile", lambda *args: {"ipo_date": bar()["trade_date"]})
     result = asyncio.run(sync.SyncService(store, structures=Structures(), intraday=service).sync_one(SYMBOL, "d"))
-    assert result["result"] == "success"
+    expected_result = "failed" if outcome == "intraday" else "partial" if outcome == "empty" else "success"
+    assert result["result"] == expected_result
     if outcome == "confirmed":
         assert service.daily_source_error(SYMBOL) is None
         assert service.live_rows(SYMBOL, "d") == []

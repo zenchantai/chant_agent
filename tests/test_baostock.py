@@ -33,6 +33,35 @@ def test_supplemental_science_technology_index_profile():
     }
 
 
+def test_security_profile_retains_listing_date_and_security_type(monkeypatch):
+    class Result:
+        error_code = "0"
+        error_msg = "success"
+        fields = ["code", "code_name", "ipoDate", "outDate", "type", "status"]
+        used = False
+
+        def next(self):
+            if self.used:
+                return False
+            self.used = True
+            return True
+
+        def get_row_data(self):
+            return ["sh.588000", "科创50ETF", "2020-11-16", "", "5", "1"]
+
+    fake = types.SimpleNamespace(
+        login=lambda: types.SimpleNamespace(error_code="0", error_msg="success"),
+        logout=lambda: types.SimpleNamespace(error_code="0"),
+        query_stock_basic=lambda **kwargs: Result(),
+    )
+    monkeypatch.setitem(sys.modules, "baostock", fake)
+
+    profile = fetch_security_profile("588000")
+
+    assert profile["ipo_date"] == "2020-11-16"
+    assert profile["security_type"] == "5"
+
+
 def test_baostock_minute_mapping_and_adjustflag(monkeypatch):
     calls = {}
 
@@ -114,6 +143,25 @@ def test_stock_pool_sort_and_structure_summary(tmp_path):
     item = store.list_stock_pool()[0]
     assert item["sync_status"] is None
     assert item["sync_error"] == ""
+
+
+def test_stock_pool_uses_persisted_multi_source_sync_status(tmp_path):
+    store = Store(str(tmp_path / "sync-status.db"))
+    store.upsert_stock("588000", "科创50ETF")
+    run_id = store.begin_market_sync("588000", "d", "2", "full", "2020-11-16", "2026-09-23")
+    assert store.list_stock_pool()[0]["sync_status"] == "running"
+    store.finish_market_sync(
+        run_id, "partial", selected_sources=["tencent"],
+        uncovered_ranges=[{"start_date": "2020-11-16", "end_date": "2020-11-20"}],
+        coverage={"status": "incomplete", "complete": False},
+        coverage_reason="起点晚于目标范围",
+    )
+
+    item = store.list_stock_pool()[0]
+    audit = store.latest_market_sync("588000", "d")
+    assert item["sync_status"] == "partial_failed"
+    assert audit["selected_sources"] == ["tencent"]
+    assert audit["coverage_reason"] == "起点晚于目标范围"
 
 
 def test_watchlist_groups_memberships_and_legacy_migration(tmp_path):
@@ -240,7 +288,7 @@ def test_scheduler_next_target():
     assert (target.hour, target.minute) == (18, 0)
 
 
-def test_full_sync_starts_at_2015_and_precomputes_structure(tmp_path, monkeypatch):
+def test_full_sync_starts_at_listing_date_and_precomputes_structure(tmp_path, monkeypatch):
     store = Store(str(tmp_path / "sync.db"))
     store.upsert_stock("000001", "平安银行")
     calls = []
@@ -250,8 +298,13 @@ def test_full_sync_starts_at_2015_and_precomputes_structure(tmp_path, monkeypatc
         return [{"trade_date": "2026-09-01", "open": 1, "high": 2, "low": .5, "close": 1.5, "volume": 10, "amount": 15}]
 
     monkeypatch.setattr("app.sync.fetch_baostock", fake_fetch)
+    monkeypatch.setattr("app.sync.fetch_tencent", lambda *args: (_ for _ in ()).throw(RuntimeError("unavailable")))
+    monkeypatch.setattr("app.sync.fetch_security_profile", lambda *args: {"ipo_date": "2026-09-01"})
+    monkeypatch.setattr(SyncService, "ensure_trade_calendar_start", lambda self, start: asyncio.sleep(0))
+    monkeypatch.setattr(SyncService, "_last_completed_date", lambda self: "2026-09-01")
+    store.upsert_trade_calendar([{"trade_date": "2026-09-01", "is_trading_day": True}])
     result = asyncio.run(SyncService(store).sync_one("000001", "d", "full"))
-    assert calls == [("000001", "d", "2015-01-01", "2")]
+    assert calls == [("000001", "d", "2026-09-01", "2")]
     assert result["result"] == "success"
     assert store.market_range("000001", "d", "2") == ("2026-09-01", "2026-09-01")
     assert store.active_chan_run("000001", "d", "2") is not None

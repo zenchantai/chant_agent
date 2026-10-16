@@ -84,9 +84,38 @@ describe("chart builders", () => {
     });
     const data = base({ pens, centers: [selected], center_revisions: [selected] });
     const series = buildPenSeries({ data, selectedStructureId: selected.id }, data.bars.map((item: any) => item.trade_date));
-    expect(series.map((item) => item.lineStyle.color)).toEqual(["#0e7490", "#b45309", "#7e22ce"]);
+    expect(series.map((item) => item.lineStyle.color)).toEqual(["#86b6ef", "#3987e5", "#1c5cab"]);
     const area = buildCenterAreas({ data }, data.bars.map((item: any) => item.trade_date)).areas[0];
     expect(area[0].itemStyle.borderType).toBe("dashed");
+  });
+
+  it("段色盖住子 L1 的角色色，三段各自成色，段外的笔仍归 L1", () => {
+    // Mirrors real data: the child L1 owns pens that also belong to S1/S2 of the parent.
+    const ids = ["s1a", "s1b", "s2a", "s2b", "s3a", "outside"];
+    const pens = ids.map((id, ordinal) => ({ id, ordinal, kind: "pen", level: 0, status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", start_price: 9, end_price: 11 }));
+    const childL1 = center({ id: "child", level: 1, core_unit_ids: ["s1a", "s2a"], z_unit_ids: ["s1b", "s2b"], entry_unit_ids: ["outside"] });
+    const parent = center({
+      id: "parent", level: 2, child_center_ids: ["child"],
+      decomposition_proof: { boundary_status: "fixed", available_at: "2026-01-03", segments: [
+        { source_pen_ids: ["s1a", "s1b"], status: "confirmed", low: 8, high: 12, start_date: "2026-01-01", end_date: "2026-01-03" },
+        { source_pen_ids: ["s2a", "s2b"], status: "confirmed", low: 8, high: 12, start_date: "2026-01-01", end_date: "2026-01-03" },
+        { source_pen_ids: ["s3a"], status: "confirmed", low: 8, high: 12, start_date: "2026-01-01", end_date: "2026-01-03" },
+      ] },
+    });
+    const data = base({ pens, centers: [parent], center_revisions: [parent, childL1] });
+    const byId = new Map(buildPenSeries({ data, selectedStructureId: "parent" }, data.bars.map((item: any) => item.trade_date)).map((item) => [item.id, item]));
+    expect([byId.get("s1a")!.lineStyle.color, byId.get("s1b")!.lineStyle.color]).toEqual(["#86b6ef", "#86b6ef"]);
+    expect([byId.get("s2a")!.lineStyle.color, byId.get("s2b")!.lineStyle.color]).toEqual(["#3987e5", "#3987e5"]);
+    expect(byId.get("s3a")!.lineStyle.color).toBe("#1c5cab");
+    expect(byId.get("outside")!.lineStyle.color).toBe("#d97706");
+  });
+
+  it("为 L2 的三段标注 S1 S2 S3 而不是内部角色名", () => {
+    const pens = ["a", "b", "c"].map((id, ordinal) => ({ id, ordinal, kind: "pen", level: 0, status: "confirmed", start_date: "2026-01-01", end_date: "2026-01-03", start_price: 9, end_price: 11 }));
+    const selected = center({ level: 2, decomposition_proof: { boundary_status: "fixed", available_at: "2026-01-03", segments: pens.map((pen) => ({ source_pen_ids: [pen.id], status: "confirmed", low: 8, high: 12, start_date: pen.start_date, end_date: pen.end_date })) } });
+    const data = base({ pens, centers: [selected], center_revisions: [selected] });
+    const names = buildPenSeries({ data, selectedStructureId: "c1" }, data.bars.map((item: any) => item.trade_date)).map((item) => item.name);
+    expect(names.map((name) => name.split(" · ")[1])).toEqual(["S1", "S2", "S3"]);
   });
 
   it("区分核心、Z延伸、进入和连接笔的选择高亮，不绘制历史中枢", () => {

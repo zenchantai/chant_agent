@@ -191,6 +191,7 @@ async def analyze_endpoint(request: AnalyzeRequest):
             timeframe = request.timeframes[0] if request.timeframes else "d"
             fetched = await fetch_api(
                 request.api_url, request.symbol, request.start_date, request.end_date or "", request.adjustflag,
+                timeframe,
             )
             rows = fetched["rows"]
             _, changed_from = store.upsert_bars_with_changes(
@@ -709,6 +710,18 @@ def chart_data(
         formal_coverage = snapshot["meta"].get("coverage") or period_structure_service.coverage(
             symbol, timeframe, adjustflag,
         )
+        latest_sync = store.latest_market_sync(symbol, timeframe, adjustflag)
+        if latest_sync and latest_sync.get("coverage"):
+            formal_coverage = {
+                **latest_sync["coverage"],
+                "selected_sources": latest_sync.get("selected_sources", []),
+                "candidate_summaries": latest_sync.get("candidate_summaries", []),
+                "uncovered_ranges": latest_sync.get("uncovered_ranges", []),
+                "source_conflicts": latest_sync.get("source_conflicts", []),
+                "coverage_reason": latest_sync.get("coverage_reason", ""),
+                "target_start": latest_sync.get("target_start"),
+                "target_end": latest_sync.get("target_end"),
+            }
         if include_live:
             stored_rows = store.market_bars(symbol, timeframe, adjustflag, "0000-01-01")
             all_rows = merge_period_rows(stored_rows, live_rows, timeframe)
@@ -856,16 +869,29 @@ def batch_drawings(symbol: str, request: DrawingBatchRequest):
 def market_coverage(symbol: str, timeframe: str = "5", adjustflag: str = "2"):
     if timeframe not in TIMEFRAMES:
         raise HTTPException(status_code=400, detail=f"不支持的周期: {timeframe}")
-    coverage = period_structure_service.coverage(symbol, timeframe, adjustflag)
+    latest = store.latest_market_sync(symbol, timeframe, adjustflag)
+    coverage = (latest or {}).get("coverage") or period_structure_service.coverage(symbol, timeframe, adjustflag)
+    if latest:
+        coverage = {
+            **coverage,
+            "target_start": latest.get("target_start"),
+            "target_end": latest.get("target_end"),
+            "selected_sources": latest.get("selected_sources", []),
+            "candidate_summaries": latest.get("candidate_summaries", []),
+            "uncovered_ranges": latest.get("uncovered_ranges", []),
+            "source_conflicts": latest.get("source_conflicts", []),
+            "coverage_reason": latest.get("coverage_reason", ""),
+        }
     gaps = [
         {"start_date": item.get("date", item.get("start_date")),
          "end_date": item.get("date", item.get("end_date"))}
         for item in coverage.get("incomplete_days", [])
     ]
     gaps.extend({"start_date": item, "end_date": item} for item in coverage.get("missing_sessions", []))
+    gaps.extend(coverage.get("uncovered_ranges", []))
     return {
         "symbol": symbol, "timeframe": timeframe, "adjustflag": adjustflag,
-        **coverage, "gap_tasks": [item for item in gaps if item["start_date"] and item["end_date"]],
+        **coverage, "gap_tasks": [item for item in gaps if item.get("start_date") and item.get("end_date")],
     }
 
 
@@ -873,7 +899,7 @@ def market_coverage(symbol: str, timeframe: str = "5", adjustflag: str = "2"):
 async def repair_market_data(symbol: str, timeframe: str = "5", adjustflag: str = "2"):
     if timeframe not in TIMEFRAMES:
         raise HTTPException(status_code=400, detail=f"不支持的周期: {timeframe}")
-    result = await sync_service.sync_one(symbol, timeframe, "incremental", adjustflag=adjustflag)
+    result = await sync_service.sync_one(symbol, timeframe, "full", adjustflag=adjustflag)
     if result and result.get("result") == "failed":
         raise HTTPException(status_code=502, detail=result["error"])
     return market_coverage(symbol, timeframe, adjustflag)
